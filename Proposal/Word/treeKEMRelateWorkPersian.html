@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>مرور ادبیات مبادله کلید گروهی و پروتکل ترکیبی پیشنهادی</title>
+    <style>
+        body {
+            font-family: 'B Nazanin', 'Vazirmatn', serif;
+            line-height: 1.8;
+            margin: 2em;
+            color: #222;
+            max-width: 1200px;
+            margin-left: auto;
+            margin-right: auto;
+            direction: rtl;
+            text-align: justify;
+        }
+        h1, h2, h3 {
+            font-family: 'Vazirmatn', sans-serif;
+            color: #0b3d91;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 0.3em;
+        }
+        h1 {
+            text-align: center;
+            border-bottom: 2px solid #0b3d91;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 2em 0;
+        }
+        th, td {
+            border: 1px solid #bbb;
+            padding: 12px;
+            text-align: center;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+        .my-protocol {
+            background-color: #e8f5e9 !important;
+            font-weight: bold;
+        }
+        .citation {
+            font-style: italic;
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 0.5em;
+        }
+        .highlight {
+            background-color: #fff3cd;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+
+<h1>مبادله کلید گروهی: مرور ادبیات و پروتکل ترکیبی پیشنهادی</h1>
+
+<div class="section">
+    <h2>۱. پروتکل‌های کلاسیک مبادله کلید گروهی</h2>
+
+    <h3>۱.۱ Group Diffie-Hellman (GDH) – اثر Steiner و همکاران (۱۹۹۶)</h3>
+    <p><strong>ایده:</strong> این روش، مبادله کلید دوطرفه Diffie-Hellman را به یک گروه گسترش می‌دهد. یکی از اعضا (کنترل‌کننده گروه) مشارکت همه اعضا را جمع‌آوری کرده و پیام نهایی را پخش می‌کند تا همه اعضا بتوانند کلید مشترک گروه را محاسبه کنند.</p>
+    <p><strong>ویژگی سادگی:</strong> توسعه‌ای مستقیم از یک سازوکار شناخته‌شده است، اما برای تنظیم اولیه نیازمند ارتباط خطی <span class="highlight">O(n)</span> بوده و برای گروه‌های بزرگ یا پویا کارایی کافی ندارد.</p>
+    <p class="citation">منبع: Steiner, M., Tsudik, G., & Waidner, M. (1996). A secure and scalable group key agreement system. Information Security Technical Report.</p>
+
+    <h3>۱.۲ پروتکل Burmester-Desmedt (BD) – سال ۱۹۹۴</h3>
+    <p><strong>ایده:</strong> در ساختاری حلقوی عمل می‌کند. هر عضو یک مقدار عمومی مبتنی بر بذر مشترک منتشر می‌کند و سپس با استفاده از مقادیر همسایگان خود، کلید را محاسبه می‌نماید. این روش تنها در دو مرحله (۲ round) انجام می‌شود و از نظر کارایی بسیار مناسب است.</p>
+    <p><strong>ویژگی سادگی:</strong> جریان پروتکل آن ساده و شفاف است و الگویی پایه برای پروتکل‌های دارای تعداد دور ثابت فراهم می‌کند، اما از پشتیبانی ذاتی برای تغییر پویای اعضا (افزودن/حذف) برخوردار نیست.</p>
+    <p class="citation">منبع: Burmester, M., & Desmedt, Y. (1994). A secure and efficient conference key distribution system. EUROCRYPT.</p>
+
+    <h3>۱.۳ CLIQUES – اثر Amir و همکاران (۱۹۹۸)</h3>
+    <p><strong>ایده:</strong> مجموعه‌ای از پروتکل‌ها مبتنی بر فرضیه Diffie-Hellman است که مدل رسمی برای توافق کلید گروهی ارائه می‌دهد و پروتکل‌هایی برای تشکیل اولیه گروه و افزودن اعضا پیشنهاد می‌کند. این ساختار درختی است و کارایی را نسبت به طرح‌های خطی بهبود می‌دهد.</p>
+    <p><strong>ویژگی سادگی:</strong> اگرچه پیشرفته‌تر از GDH است، اما CLIQUES یک پروتکل بنیادین در خانواده «درختی» محسوب می‌شود که مسیر را برای طرح‌هایی مانند <span class="highlight">TreeKEM</span> هموار کرد و پیچیدگی بسیاری از عملیات را از خطی به لگاریتمی کاهش داد.</p>
+    <p class="citation">منبع: Amir, Y., Kim, Y., Nita-Rotaru, C., & Schultz, J. (1998). From total order to database replication. ICDCS.</p>
+</div>
+
+<div class="section">
+    <h2>۲. پروتکل‌های مدرن اصلی</h2>
+
+    <h3>۲.۱ TreeKEM در Messaging Layer Security (MLS)</h3>
+    <p>پروتکل <span class="highlight">Messaging Layer Security (MLS)</span> استانداردی از IETF برای پیام‌رسانی گروهی امن و غیرهمزمان در گروه‌های بزرگ است. هسته اصلی آن، <span class="highlight">TreeKEM</span> است که یک پروتکل <span class="highlight">Continuous Group Key Agreement (CGKA)</span> محسوب می‌شود.</p>
+    <p>TreeKEM اعضای گروه را در یک درخت دودویی سازمان‌دهی می‌کند. هر برگ متعلق به یک عضو است و هر گره دارای یک جفت کلید است. قاعده اساسی درخت تضمین می‌کند که هر عضو کلیدهای خصوصی مسیر از برگ خود تا ریشه را می‌داند. به‌دلیل همین ساختار، عملیات بروزرسانی تنها به <span class="highlight">O(log N)</span> پیچیدگی نیاز دارد.</p>
+    <p>TreeKEM ویژگی‌های <span class="highlight">Forward Secrecy (FS)</span> و <span class="highlight">Post-Compromise Security (PCS)</span> را فراهم می‌کند، به‌طوری‌که حتی پس از افشای کلید یک عضو، پیام‌های گذشته امن می‌مانند و گروه می‌تواند با انجام یک بروزرسانی، خود را از نفوذ بهبود دهد.</p>
+    <p class="citation">منبع: "TreeKEM: A Modular Machine-Checked Symbolic Security Analysis of Group Key Agreement in Messaging Layer Security"</p>
+
+    <h3>۲.۲ mKEM برای پیاده‌سازی پساکوانتومی</h3>
+    <p>یکی از چالش‌های بزرگ در پذیرش رمزنگاری پساکوانتومی (PQC)، افزایش چشمگیر اندازه کلید و متن رمزشده در مقایسه با طرح‌های کلاسیک مانند ECC است. <span class="highlight">Alwen et al.</span> با معرفی <span class="highlight">Multi-Recipient KEMs (mKEM)</span> مانند <span class="highlight">mKyber</span> و <span class="highlight">amKyber</span> این مشکل را در محیط گروهی حل کردند.</p>
+    <p>به‌جای ارسال N رمزنگاری مستقل برای N گیرنده، mKEM یک متن رمزشده فشرده و چندگیرنده‌ای تولید می‌کند که هر گیرنده می‌تواند بخش خود را به‌طور مستقل رمزگشایی کند. این روش با استفاده از ساختار Kyber، متن رمزشده را به‌صورت قابل تجزیه طراحی می‌کند.</p>
+    <p>نتیجه این کار کاهش چشمگیر پهنای باند است، زیرا هزینه میانگین برای هر گیرنده بسیار کمتر از N × PQC-KEM خواهد بود. نسخه <span class="highlight">amKyber</span> همچنین در برابر <span class="highlight">adaptive corruption</span> امنیت بالاتری دارد.</p>
+    <p class="citation">منبع: "How Multi-Recipient KEMs can help the Deployment of Post-Quantum Cryptography"</p>
+</div>
+
+<div class="section">
+    <h2>۳. پروتکل ترکیبی و شکاف پژوهشی</h2>
+
+    <h3>۳.۱ رویکرد Hybrid GKE</h3>
+    <p><span class="highlight">Boyd et al.</span> چارچوبی جدید برای <span class="highlight">Hybrid Group Key Exchange</span> ارائه کرده‌اند. در این روش، هدف ترکیب رمزنگاری کلاسیک و پساکوانتومی نیست، بلکه <span class="highlight">ترکیب دو پروتکل GKE مجزا</span> است تا ویژگی‌هایی به‌دست آید که هیچ‌کدام به‌تنهایی ندارند.</p>
+    <p>آن‌ها مدل امنیتی رسمی را گسترش داده و اثبات می‌کنند که پروتکل ترکیبی حاصل، حداقل به‌اندازه قوی‌ترین زیرپروتکل خود ایمن است.</p>
+    <p>نمونه عملی آن‌ها شامل ترکیب یک پروتکل سبک و کم‌پهنای‌باند مبتنی بر <span class="highlight">Secure Element (SE)</span> با پروتکل کامل‌تری مانند <span class="highlight">TreeKEM</span> است. در این ساختار، SE محرمانگی پیشرو را از طریق ratcheting تأمین می‌کند و TreeKEM مسئول مدیریت پویای اعضا است. این ترکیب برای شبکه‌های محدود از نظر پهنای باند طراحی شده است.</p>
+    <p class="citation">منبع: "Hybrid Group Key Exchange with Application to Constrained Networks"</p>
+
+    <h3>۳.۲ شکاف پژوهشی شناسایی‌شده</h3>
+    <p>شکاف اصلی در <span class="highlight">نقطه تلاقی سه کار فوق</span> قرار دارد. اگرچه مدل ترکیبی Boyd و همکاران قدرتمند است، پیاده‌سازی آن به <span class="highlight">انتقال پساکوانتومی</span> نمی‌پردازد. در مقابل، <span class="highlight">mKEM</span> تنها لایه رمزنگاری را پوشش می‌دهد و ترکیب سطح‌پروتکل کلاسیک/پساکوانتومی را بررسی نکرده است.</p>
+    <p>در نتیجه، پرسش باز این است: <span class="highlight">چگونه می‌توان پروتکل GKE ترکیبی‌ای طراحی کرد که رمزنگاری کلاسیک و پساکوانتومی را به‌صورت بومی درهم‌تنیده کرده و ضمن حفظ یا بهبود کارایی، امنیت گذار رمزنگاری را تضمین کند؟</span></p>
+</div>
+
+<div class="section">
+    <h2>۴. مقایسه ویژگی‌ها و پروتکل پیشنهادی</h2>
+
+    <table>
+        <thead>
+            <tr>
+                <th>ویژگی</th>
+                <th>GKE کلاسیک (مانند GDH, BD)</th>
+                <th>TreeKEM (MLS)</th>
+                <th>mKEM (PQC)</th>
+                <th>Hybrid GKE (Boyd et al.)</th>
+                <th>Hybrid TreeKEM پیشنهادی</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Forward Secrecy (FS)</strong></td>
+                <td>محدود / ندارد</td>
+                <td><strong>دارد</strong></td>
+                <td>شرطی</td>
+                <td><strong>دارد</strong></td>
+                <td class="my-protocol"><strong>دارد</strong></td>
+            </tr>
+            <tr>
+                <td><strong>Post-Compromise Security (PCS)</strong></td>
+                <td>ندارد</td>
+                <td><strong>دارد</strong></td>
+                <td>شرطی</td>
+                <td>وابسته به مدل</td>
+                <td class="my-protocol"><strong>دارد</strong></td>
+            </tr>
+            <tr>
+                <td><strong>عضویت پویا</strong></td>
+                <td>ندارد</td>
+                <td><strong>دارد</strong></td>
+                <td>نامرتبط</td>
+                <td><strong>دارد</strong></td>
+                <td class="my-protocol"><strong>دارد</strong></td>
+            </tr>
+            <tr>
+                <td><strong>مقیاس‌پذیری (پیچیدگی)</strong></td>
+                <td>O(n) / O(1)</td>
+                <td><strong>O(log n)</strong></td>
+                <td><strong>O(1) میانگین</strong></td>
+                <td>متغیر</td>
+                <td class="my-protocol"><strong>O(log n)</strong></td>
+            </tr>
+            <tr>
+                <td><strong>امنیت پساکوانتومی</strong></td>
+                <td>ندارد</td>
+                <td>خیر (کلاسیک)</td>
+                <td><strong>دارد</strong></td>
+                <td>خیر</td>
+                <td class="my-protocol"><strong>دارد (کلاسیک/پساکوانتومی)</strong></td>
+            </tr>
+            <tr>
+                <td><strong>کارایی پهنای باند</strong></td>
+                <td>پایین</td>
+                <td>متوسط</td>
+                <td><strong>بالا</strong></td>
+                <td><strong>بالا</strong></td>
+                <td class="my-protocol"><strong>بالاتر</strong></td>
+            </tr>
+            <tr>
+                <td><strong>امنیت تطبیقی</strong></td>
+                <td>معمولاً ندارد</td>
+                <td>دارد</td>
+                <td><strong>دارد (amKyber)</strong></td>
+                <td>مدلسازی‌شده</td>
+                <td class="my-protocol"><strong>هدف‌گذاری‌شده</strong></td>
+            </tr>
+            <tr>
+                <td><strong>نوآوری کلیدی</strong></td>
+                <td>DH گروهی پایه</td>
+                <td>بروزرسانی درختی</td>
+                <td>رمزنگاری چندگیرنده</td>
+                <td>ترکیب پروتکل‌ها</td>
+                <td class="my-protocol"><strong>گره دوکلیدی در یک درخت واحد</strong></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>پیاده‌سازی پیشنهادی Hybrid TreeKEM</h3>
+    <p><strong>ایده اصلی:</strong> در <span class="highlight">Hybrid TreeKEM</span> هر گره شامل دو جفت کلید (کلاسیک و پساکوانتومی) در یک ساختار درختی واحد است.</p>
+
+    <h4>پیشنهادهای پیاده‌سازی:</h4>
+    <ol>
+        <li><strong>درخت یکپارچه:</strong> استفاده از یک درخت واحد برای هر دو نوع رمزنگاری جهت کاهش سربار مدیریتی.</li>
+        <li><strong>کلیدهای ترکیبی گره:</strong> هر گره شامل <code>(pk_classic, sk_classic, pk_pq, sk_pq)</code> است.</li>
+        <li><strong>به‌روزرسانی ترکیبی:</strong> هنگام commit، برای هر گره مسیر، دو متن رمزشده (کلاسیک و PQ) تولید می‌شود.</li>
+        <li><strong>کارایی پهنای باند:</strong> هدف این است که اندازه کل رمز <code>|C_hybrid| &lt; |C_classic| + |C_pq|</code> باشد.</li>
+        <li><strong>مدل امنیتی:</strong> کلید گروهی از ترکیب دو کلید مشتق می‌شود <code>K = KDF(K_classic || K_pq)</code> و تا زمانی که یکی از مفروضات پابرجا باشد، پروتکل ایمن می‌ماند.</li>
+        <li><strong>بهینه‌سازی:</strong> استفاده از mKEM (مانند mKyber) برای بخش PQ به‌منظور هدف‌گیری کارای زیر‌درخت.</li>
+    </ol>
+
+    <p><strong>خلاصه‌ی مشارکت:</strong> این طرح شکاف شناسایی‌شده را مستقیماً هدف قرار می‌دهد و پروتکلی ترکیبی، کارا و اثبات‌پذیر ارائه می‌کند که آماده دوران پساکوانتومی است و در عین حفظ امنیت، عملکرد بهتری از اجرای دو TreeKEM جداگانه دارد.</p>
+</div>
+
+</body>
+</html>

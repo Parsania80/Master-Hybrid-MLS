@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Summary — How Multi-Recipient KEMs can help the Deployment of Post-Quantum Cryptography</title>
+  <style>
+    body { font-family: "Georgia", serif; line-height:1.45; margin:40px; color:#111; }
+    h1,h2,h3 { font-family: "Helvetica Neue", Arial, sans-serif; color:#0b3d91; }
+    pre { background:#f7f7f7; padding:12px; border-radius:6px; overflow:auto; }
+    table { border-collapse: collapse; width:100%; margin:12px 0; }
+    th, td { border:1px solid #ddd; padding:8px; text-align:left; }
+    th { background:#f0f6ff; }
+    .cite { font-style:italic; color:#555; font-size:0.9em; }
+    section { margin-bottom:22px; }
+    ol { margin-left:18px; }
+  </style>
+</head>
+<body>
+  <h1>Summary & Analysis</h1>
+
+  <section>
+    <h2>1. Basic information</h2>
+    <ol>
+      <li><strong>Title</strong>: How Multi-Recipient KEMs can help the Deployment of Post-Quantum Cryptography. <span class="cite">(source: uploaded PDF)</span></li>
+      <li><strong>Authors</strong>: Joël Alwen, Matthew Campagna, Dominik Hartmann, Shuichi Katsumata, Eike Kiltz, Jake Massimo, Marta Mularczyk, Guillermo Pascual-Perez, Thomas Prest, Peter Schwabe. <span class="cite">(uploaded PDF)</span></li>
+      <li><strong>Year</strong>: 2023 (document and references). <span class="cite">(uploaded PDF)</span></li>
+      <li><strong>Venue</strong>: Technical report / short research paper (see references for related proceedings CCS 2023). <span class="cite">(uploaded PDF)</span></li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>2. Introduction and motivation</h2>
+    <p>The paper addresses the increased communication cost imposed by post-quantum KEMs and proposes multi-recipient KEMs (mKEMs) — in particular mKyber and amKyber — as practical constructions to reduce bandwidth and computation in group/broadcast settings. The motivation is rooted in the substantially larger public keys and ciphertexts of PQC KEMs compared to classical ECC mechanisms (e.g., Kyber ciphertexts >> ECDH public keys). <span class="cite">(uploaded PDF)</span></p>
+  </section>
+
+  <section>
+    <h2>3. Objective</h2>
+    <p>Produce practical mKEM constructions based on Kyber, propose parameters, analyze security tradeoffs (including adaptive corruption issues), and demonstrate gains in applications such as MLS and broadcast synchronization of HSM fleets. <span class="cite">(uploaded PDF)</span></p>
+  </section>
+
+  <section>
+    <h2>4. Main idea & innovation</h2>
+    <ol>
+      <li>Use a single multi-recipient ciphertext that can be decomposed into small per-recipient shares.</li>
+      <li>Adapt Kyber's building blocks (MLWE/MLWR, FO transform) to the mKEM setting and introduce a decomposable FO transform to enable efficient per-recipient decapsulation.</li>
+      <li>Provide amKyber to obtain IND-CCA security under adaptive corruptions at modest overhead.</li>
+    </ol>
+    <p><span class="cite">(uploaded PDF)</span></p>
+  </section>
+
+  <section>
+    <h2>5. Methods and implementation</h2>
+    <p>The constructions are built on standard Kyber-style polynomial MLWE operations, but with the matrix A shared across recipients; encoding optimizations (shorter message, coefficient dropping, bit dropping) reduce per-recipient v_i sizes; the decomposable FO transform enables CCA security while keeping per-recipient ciphertexts small. amKyber uses a two-instance trick inspired by broadcast encryption to achieve adaptively secure mPKE → mKEM. <span class="cite">(uploaded PDF)</span></p>
+  </section>
+
+  <section>
+    <h2>6. Computational and operational complexity</h2>
+    <p>Multi-recipient ciphertext size grows O(N · |v_i|) but amortized per-recipient bytes can be far smaller than N independent KEMs because of the shared u. For concrete Kyber512 vs mKyber512 parameters: per-recipient amortized ~48 B (mKyber) vs 768 B (Kyber) for large groups; amKyber doubles mKyber ciphertexts but remains substantially smaller than N×Kyber. See Table 1 in the paper for parameter values. <span class="cite">(uploaded PDF)</span></p>
+  </section>
+
+  <section>
+    <h2>7. Results and evaluation</h2>
+    <ol>
+      <li><strong>Bandwidth savings:</strong> asymptotic ~16× improvement; concrete scenario savings demonstrated for TreeKEM/MLS commits and broadcast.</li>
+      <li><strong>Security:</strong> mKyber achieves IND-CCA (non-adaptive) and amKyber provides IND-CCA with adaptive corruptions (at additional size cost).' </li>
+      <li><strong>Tradeoffs:</strong> presence of many MLWER samples necessitates careful parameter selection and ongoing cryptanalysis vigilance.</li>
+    </ol>
+    <p><span class="cite">(uploaded PDF)</span></p>
+  </section>
+
+  <section>
+    <h2>8. Security feature analysis</h2>
+    <table>
+      <thead><tr><th>Security Feature</th><th>Supported?</th><th>Short explanation</th></tr></thead>
+      <tbody>
+        <tr><td>Forward Secrecy</td><td>Conditional / Yes</td><td>Depends on protocol; KEM semantics support ephemeral keys (MLS ratchet usage provides FS).</td></tr>
+        <tr><td>Backward Secrecy</td><td>Conditional / Yes</td><td>Protocol property (e.g., TreeKEM); mKEMs integrate without preventing it.</td></tr>
+        <tr><td>MitM Resistance</td><td>Conditional</td><td>Requires authentication (signatures/HPKE). mKEM provides confidentiality primitive only.</td></tr>
+        <tr><td>Replay Resistance</td><td>Conditional</td><td>Protocol responsibility (nonces, state); KEMs do not inherently prevent replays.</td></tr>
+        <tr><td>Post-Quantum Security</td><td>Yes</td><td>Built on MLWE/MLWR assumptions (Kyber family).</td></tr>
+        <tr><td>Adaptive Corruption Security</td><td>mKyber: gap / amKyber: Yes</td><td>mKyber lacks tight adaptive proofs; amKyber is designed to provide adaptive IND-CCA security.</td></tr>
+        <tr><td>Scalability</td><td>Yes</td><td>Significant amortized bandwidth and sender CPU savings for large N.</td></tr>
+        <tr><td>Performance</td><td>Improved</td><td>Sender does one multi-encapsulation; receivers need only small fragments.</td></tr>
+      </tbody>
+    </table>
+    <p><span class="cite">(uploaded PDF)</span></p>
+  </section>
+
+  <section>
+    <h2>9. Conclusions & future research</h2>
+    <p>The paper gives a clear roadmap to reduce PQC deployment costs in multi-recipient settings via mKyber/amKyber and shows concrete gains in MLS/broadcast scenarios. Future research should target adaptive-security proof techniques, more detailed cryptanalysis for MLWER in the many-sample regime, implementation studies, and standardization/verification adaptation from Kyber artifacts. <span class="cite">(uploaded PDF)</span></p>
+  </section>
+
+  <section>
+    <h2>10. Selected citation</h2>
+    <p>Primary source: "How Multi-Recipient KEMs can help the Deployment of Post-Quantum Cryptography" (uploaded PDF).</p>
+  </section>
+
+</body>
+</html>
