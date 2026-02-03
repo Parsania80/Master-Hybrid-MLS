@@ -136,3 +136,18 @@ You cannot add a user to a tree if they are offline.
 *   **The Welcome:** How the creator picks up that resume and invites them in.
 
 Have a good night. I am ready for Part 2 whenever you return.
+
+
+
+Summary of Tonight's Session(1404-11-14) (Part 2,3) 
+### **Part 2: Group Creation & The KeyPackage [SKIPPED]**
+*   *Status:* Skipped temporarily to focus on the core Engine logic.
+*   *Key Takeaway:* A KeyPackage is an "Offline Resume" required to add a user.
+
+### **Part 3: The Engine - Proposals vs. Commits [COMPLETED]**
+*   **Concepts:** Separation of Intent (Proposal) vs. Execution (Commit).
+*   **Mechanism:**
+    *   **Proposals:** A "Wishlist" of changes (Add, Remove, Update) sent to a holding area.
+    *   **Commit:** A single atomic message that executes selected proposals and advances the **Epoch**.
+    *   **Governance:** No voting. First-Come-First-Served logic, validated by Application Policy (e.g., Admin rights).
+*   **Hybrid Implication:** Batching is critical. One Hybrid Commit should handle multiple adds/removes to minimize the overhead of heavy Post-Quantum keys.
