@@ -14,6 +14,7 @@ This document defines the collaboration protocol between the AI Agent (Rust Arch
 - Executes cargo commands and file edits.
 - Runs tests and benchmarks (`cargo test`, `criterion`).
 - Returns compiler errors and borrow checker issues.
+- Updates `README.md` after each message.
 
 ### Operator (Human Implementer)
 - Makes final decisions on architectural trade-offs.
