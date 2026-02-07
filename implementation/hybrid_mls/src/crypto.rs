@@ -1,6 +1,6 @@
 use x25519_dalek::{PublicKey as X25519Pub, StaticSecret as X25519Priv};
-use ml_kem::{MlKem768, EncapsulationKey, DecapsulationKey, Ciphertext};
-use ed25519_dalek::{SigningKey as EdSecret, VerifyingKey as EdPublic, Signature as EdSig, Signer, Verifier};
+use ml_kem::{MlKem768, EncapsulationKey, DecapsulationKey, Ciphertext, KeyExport};
+use ed25519_dalek::{SigningKey as EdSecret, VerifyingKey as EdPublic, Signature as EdSig, Signer};
 use ml_dsa::{MlDsa65}; // Dilithium3 (NIST Level 3)
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -13,6 +13,16 @@ pub type KyberCiphertext = Ciphertext<MlKem768>;
 pub struct HybridPublicKey {
     pub classic: X25519Pub,
     pub pq: KyberPub,
+}
+
+impl HybridPublicKey {
+    /// Serialize the hybrid public key (X25519 || ML-KEM-768).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(self.classic.as_bytes());
+        out.extend_from_slice(self.pq.to_bytes().as_ref());
+        out
+    }
 }
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -29,7 +39,6 @@ pub struct HybridCiphertext {
 }
 
 // --- HYBRID SIGNATURES (Authentication) ---
-// We use MlDsa65 (Dilithium3) to match security level of MlKem768 (Kyber768)
 
 pub type DilithiumPublic = ml_dsa::VerifyingKey<MlDsa65>;
 pub type DilithiumSecret = ml_dsa::SigningKey<MlDsa65>;
@@ -39,17 +48,6 @@ pub type DilithiumSig = ml_dsa::Signature<MlDsa65>;
 pub struct HybridSignPubKey {
     pub classic: EdPublic,
     pub pq: DilithiumPublic,
-}
-
-impl HybridSignPubKey {
-    /// Serializes the hybrid identity for network transmission
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(self.classic.as_bytes());
-        // FIX: Use as_ref() because ml_dsa keys don't have as_bytes()
-        out.extend_from_slice(self.pq.as_ref()); 
-        out
-    }
 }
 
 #[derive(Clone)] 
@@ -78,13 +76,16 @@ pub struct HybridSignature {
     pub pq: DilithiumSig,
 }
 
-impl HybridSignature {
-    /// Verify both signatures. Returns true ONLY if both are valid.
-    pub fn verify(&self, pub_key: &HybridSignPubKey, message: &[u8]) -> bool {
-        // We use the Verifier trait imported from ed25519_dalek which is compatible
-        let classic_ok = pub_key.classic.verify(message, &self.classic).is_ok();
-        let pq_ok = pub_key.pq.verify(message, &self.pq).is_ok();
-        
-        classic_ok && pq_ok
+impl HybridSignPubKey {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+
+        // Ed25519 (classic)
+        out.extend_from_slice(self.classic.as_bytes());
+
+        // Dilithium / ML-DSA (pq)
+        out.extend_from_slice(&self.pq.encode());
+
+        out
     }
 }
