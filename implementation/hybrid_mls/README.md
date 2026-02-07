@@ -71,3 +71,14 @@ Conceptual steps:
 **Security Notes**
 - This is a research prototype, not production-ready.
 - Cryptographic encoding and ciphersuite details still need RFC‑compatible finalization.
+
+**Delivery Service (Planned)**
+- HTTP server with disk-backed message store and in-memory index.
+- Configurable limits: max storage bytes (default 20 GiB) and min proposals per commit (default 10).
+- Hybrid authentication: DS has classic+PQ signing keys; users register classic+PQ public keys.
+- Web UI: sign up/sign in, group list, group actions (Add/Remove/Update), and event logs.
+
+**Delivery Service (Part 1 Implemented)**
+- Disk-backed storage with SQLite metadata + file spool per group.
+- Storage quota and eviction: oldest messages are deleted when `max_bytes` is exceeded.
+- Config in `src/ds/config.rs` with `DEFAULT_MAX_BYTES = 20 * 1024 * 1024 * 1024`.
