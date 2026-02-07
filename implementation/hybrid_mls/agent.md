@@ -11,26 +11,25 @@ This document defines the collaboration protocol between the AI Agent (Rust Arch
 - Manages `Cargo.toml` dependencies.
 - Explains cryptographic logic (Kyber/X25519 interactions).
 - Suggests test cases and benchmarks.
-
-### Operator (Human Implementer)
 - Executes cargo commands and file edits.
 - Runs tests and benchmarks (`cargo test`, `criterion`).
 - Returns compiler errors and borrow checker issues.
+- Updates `README.md` after each message.
+
+### Operator (Human Implementer)
 - Makes final decisions on architectural trade-offs.
 
 ## Workflow Loop
 
     1. Agent sends a command/code block + explanation.
-    2. Operator applies changes / runs commands.
-    3. Operator pastes output (compiler errors or test results) to Agent.
-    4. Agent analyzes and sends next step.
+    2. Agent applies changes / runs commands.
+    4. Agent analyzes and sends next step asks for permission.
     (repeat until thesis is complete)
 
 ## Rules
 
-1. **Batch when sequential** - When initializing projects or adding multiple dependencies, batch commands. Always start with `clear` (or similar) to ensure clean output capture.
+
 2. **Always explain why** - Explain the cryptographic or architectural reason for a change (e.g., "Why we are wrapping this in an `Arc<Mutex<...>>`").
-3. **Full error output** - Rust errors are verbose for a reason. Operator must share the *entire* error message, including "Help" suggestions from the compiler.
 4. **No assumptions** - Do not assume specific library versions unless verified. When choosing between crates (e.g., `ml-kem` vs `pqcrypto-kyber`), present a comparison table.
 5. **Security First** - Even for a thesis, treat keys as sensitive. Use `Zeroize` traits where applicable.
 6. **English only in code** - All variable names, comments, and git commits must be in English. Conversation can be in Persian or English.
@@ -50,4 +49,4 @@ Agent sends:
 
 Operator responds:
 **Output:**
-[raw terminal output or "Done"]
+[operate accpet or deny changes]
