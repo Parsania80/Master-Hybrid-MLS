@@ -82,3 +82,37 @@ Conceptual steps:
 - Disk-backed storage with SQLite metadata + file spool per group.
 - Storage quota and eviction: oldest messages are deleted when `max_bytes` is exceeded.
 - Config in `src/ds/config.rs` with `DEFAULT_MAX_BYTES = 20 * 1024 * 1024 * 1024`.
+
+**Key Generation & Message Routing (RFC 9420)**
+- Clients generate their own KeyPackages and publish public keys to the DS directory.
+- The DS provides a group channel; it forwards MLS messages to group members, who decrypt locally.
+
+**Delivery Service (Part 2 In Progress)**
+- Axum HTTP API skeleton with request/response types.
+- All API requests include a `signature` field (hybrid signing enforced later).
+- Proposal/commit payloads are base64-encoded in HTTP JSON.
+- Commit submission enforces a configurable minimum pending proposals (default 10).
+- Signed-request verification is enforced for proposals, commits, and message listing.
+- KeyPackage publish/fetch endpoints are available.
+- Signing input uses `tag|username|group_id|SHA3(payload)`; path updates include `SHA3(path_update)` when present.
+- Application message endpoints are available for store/list/fetch (signed requests).
+- Deployment split: DS runs the HTTP server + storage; users run a separate client app (CLI/UI) that generates keys and processes commits.
+- Login/session endpoints exist (SQLite-backed) but need client wiring and UI.
+- Unit tests now cover DS storage/auth and signature verification helpers.
+
+**Delivery Service Client CLI (New)**
+The CLI is a prototype tool to register users, submit proposals/commits, and fetch messages from the DS.
+
+Example usage:
+```bash
+cargo run --bin ds_client -- register --base-url http://127.0.0.1:3000 --username alice --password secret
+cargo run --bin ds_client -- login --base-url http://127.0.0.1:3000 --username alice --password secret
+cargo run --bin ds_client -- submit-proposal --base-url http://127.0.0.1:3000 --group-id group1 --proposal-file /path/to/proposal.bin
+cargo run --bin ds_client -- submit-commit --base-url http://127.0.0.1:3000 --group-id group1 --commit-file /path/to/commit.bin --path-update-file /path/to/path.bin
+cargo run --bin ds_client -- list-messages --base-url http://127.0.0.1:3000 --group-id group1 --limit 50
+cargo run --bin ds_client -- publish-key-package --base-url http://127.0.0.1:3000 --keypackage-file /path/to/keypackage.bin
+cargo run --bin ds_client -- fetch-key-package --base-url http://127.0.0.1:3000 --target alice --out /path/to/keypackage.bin
+```
+The client stores signing keys in `ds-client.json` by default. This is for development only.
+
+Last updated: 2026-02-08 21:55
