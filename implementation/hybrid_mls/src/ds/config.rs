@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_MAX_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+pub const DEFAULT_MIN_PROPOSALS_PER_COMMIT: usize = 10;
 
 #[derive(Clone, Debug)]
 pub struct StorageConfig {
