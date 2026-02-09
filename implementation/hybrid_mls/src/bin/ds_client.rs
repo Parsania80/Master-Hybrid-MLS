@@ -9,6 +9,7 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_urlencoded;
 use sha3::{Digest, Sha3_256};
 
 use hybrid_mls::crypto::{HybridSignPrivKey, HybridSignature};
@@ -65,6 +66,38 @@ pub enum Commands {
         group_id: String,
         #[arg(long, default_value_t = 50)]
         limit: usize,
+        #[arg(long, default_value = "any")]
+        kind: String,
+        #[arg(long)]
+        before_id: Option<i64>,
+    },
+    SendAppMessage {
+        #[arg(long)]
+        username: Option<String>,
+        #[arg(long)]
+        group_id: String,
+        #[arg(long)]
+        message_file: PathBuf,
+    },
+    ListAppMessages {
+        #[arg(long)]
+        username: Option<String>,
+        #[arg(long)]
+        group_id: String,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        before_id: Option<i64>,
+    },
+    FetchAppMessage {
+        #[arg(long)]
+        username: Option<String>,
+        #[arg(long)]
+        group_id: String,
+        #[arg(long)]
+        message_id: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     PublishKeyPackage {
         #[arg(long)]
@@ -121,6 +154,13 @@ struct SubmitCommitRequest {
     username: String,
     commit_bytes: String,
     path_update_bytes: Option<String>,
+    signature: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SubmitAppMessageRequest {
+    username: String,
+    message_bytes: String,
     signature: String,
 }
 
@@ -247,24 +287,119 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             username,
             group_id,
             limit,
+            kind,
+            before_id,
         } => {
             let state = load_state(&cli.state)?;
             let username = resolve_username(username, &state)?;
             let priv_key = signing_key_from_state(&state)?;
-            let sign_input = list_signing_input(&username, &group_id, limit);
+            let kind_label = kind.to_lowercase();
+            let sign_input =
+                list_signing_input(&username, &group_id, limit, &kind_label, before_id);
             let signature = encode_signature(&priv_key.sign(&sign_input));
 
-            let url = format!("{}/v1/groups/{}/messages", cli.base_url, group_id);
-            let resp = client
-                .get(url)
-                .query(&[
-                    ("username", username.as_str()),
-                    ("signature", signature.as_str()),
-                    ("limit", &limit.to_string()),
-                ])
-                .send()
-                .await?;
+            let limit_string = limit.to_string();
+            let mut params = vec![
+                ("username", username.as_str()),
+                ("signature", signature.as_str()),
+                ("limit", limit_string.as_str()),
+                ("kind", kind_label.as_str()),
+            ];
+            let before_string;
+            if let Some(id) = before_id {
+                before_string = id.to_string();
+                params.push(("before_id", before_string.as_str()));
+            }
+            let query = serde_urlencoded::to_string(params)?;
+            let url = format!("{}/v1/groups/{}/messages?{}", cli.base_url, group_id, query);
+            let resp = client.get(url).send().await?;
             print_response(resp).await?;
+        }
+        Commands::SendAppMessage {
+            username,
+            group_id,
+            message_file,
+        } => {
+            let state = load_state(&cli.state)?;
+            let username = resolve_username(username, &state)?;
+            let payload = fs::read(&message_file)?;
+            let payload_b64 = STANDARD.encode(&payload);
+
+            let priv_key = signing_key_from_state(&state)?;
+            let sign_input = app_publish_signing_input(&username, &group_id, &payload);
+            let signature = encode_signature(&priv_key.sign(&sign_input));
+
+            let req = SubmitAppMessageRequest {
+                username,
+                message_bytes: payload_b64,
+                signature,
+            };
+
+            let url = format!("{}/v1/groups/{}/app-messages", cli.base_url, group_id);
+            let resp = client.post(url).json(&req).send().await?;
+            print_response(resp).await?;
+        }
+        Commands::ListAppMessages {
+            username,
+            group_id,
+            limit,
+            before_id,
+        } => {
+            let state = load_state(&cli.state)?;
+            let username = resolve_username(username, &state)?;
+            let priv_key = signing_key_from_state(&state)?;
+            let sign_input = app_list_signing_input(&username, &group_id, limit, before_id);
+            let signature = encode_signature(&priv_key.sign(&sign_input));
+            let limit_string = limit.to_string();
+            let mut params = vec![
+                ("username", username.as_str()),
+                ("signature", signature.as_str()),
+                ("limit", limit_string.as_str()),
+            ];
+            let before_string;
+            if let Some(id) = before_id {
+                before_string = id.to_string();
+                params.push(("before_id", before_string.as_str()));
+            }
+            let query = serde_urlencoded::to_string(params)?;
+
+            let url = format!("{}/v1/groups/{}/app-messages?{}", cli.base_url, group_id, query);
+            let resp = client.get(url).send().await?;
+            print_response(resp).await?;
+        }
+        Commands::FetchAppMessage {
+            username,
+            group_id,
+            message_id,
+            out,
+        } => {
+            let state = load_state(&cli.state)?;
+            let username = resolve_username(username, &state)?;
+            let priv_key = signing_key_from_state(&state)?;
+            let sign_input = app_fetch_signing_input(&username, &group_id, &message_id);
+            let signature = encode_signature(&priv_key.sign(&sign_input));
+            let query = serde_urlencoded::to_string([
+                ("username", username.as_str()),
+                ("signature", signature.as_str()),
+            ])?;
+
+            let url = format!(
+                "{}/v1/groups/{}/app-messages/{}?{}",
+                cli.base_url, group_id, message_id, query
+            );
+            let resp = client.get(url).send().await?;
+            let status = resp.status();
+            let body = resp.text().await?;
+            println!("{status}\n{body}");
+
+            if let Some(path) = out {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                    if let Some(bytes) = json.get("message_bytes").and_then(|v| v.as_str()) {
+                        let decoded = STANDARD.decode(bytes)?;
+                        fs::write(path, decoded)?;
+                    }
+                }
+            }
         }
         Commands::PublishKeyPackage {
             username,
@@ -444,7 +579,13 @@ fn commit_signing_input(
     out
 }
 
-fn list_signing_input(username: &str, group_id: &str, limit: usize) -> Vec<u8> {
+fn list_signing_input(
+    username: &str,
+    group_id: &str,
+    limit: usize,
+    kind: &str,
+    before_id: Option<i64>,
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"list|");
     out.extend_from_slice(username.as_bytes());
@@ -452,6 +593,10 @@ fn list_signing_input(username: &str, group_id: &str, limit: usize) -> Vec<u8> {
     out.extend_from_slice(group_id.as_bytes());
     out.extend_from_slice(b"|");
     out.extend_from_slice(limit.to_string().as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(kind.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(before_id.unwrap_or(0).to_string().as_bytes());
     out
 }
 
@@ -479,6 +624,47 @@ fn login_signing_input(username: &str, password: &str) -> Vec<u8> {
     out.extend_from_slice(username.as_bytes());
     out.extend_from_slice(b"|");
     out.extend_from_slice(password.as_bytes());
+    out
+}
+
+fn app_publish_signing_input(username: &str, group_id: &str, message: &[u8]) -> Vec<u8> {
+    let hash = hash_payload(message);
+    let mut out = Vec::new();
+    out.extend_from_slice(b"app_publish|");
+    out.extend_from_slice(username.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(group_id.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(&hash);
+    out
+}
+
+fn app_list_signing_input(
+    username: &str,
+    group_id: &str,
+    limit: usize,
+    before_id: Option<i64>,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"app_list|");
+    out.extend_from_slice(username.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(group_id.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(limit.to_string().as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(before_id.unwrap_or(0).to_string().as_bytes());
+    out
+}
+
+fn app_fetch_signing_input(username: &str, group_id: &str, message_id: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"app_fetch|");
+    out.extend_from_slice(username.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(group_id.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(message_id.as_bytes());
     out
 }
 

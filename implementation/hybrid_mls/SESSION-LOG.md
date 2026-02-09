@@ -20,4 +20,9 @@
 [2026-02-08 21:41] [AGENT] Fixed let-else syntax in fetch keypackage handler and re-ran cargo test successfully.
 [2026-02-08 21:46] [AGENT] Added integration tests for keypackage publish/fetch endpoints and verified with cargo test.
 [2026-02-08 21:55] [AGENT] Added application message delivery endpoints (store/list/fetch) and integration tests; updated docs.
+[2026-02-09 20:05] [AGENT] Added CLI support for app message send/list/fetch and verified with cargo test.
+[2026-02-09 20:19] [AGENT] Added CLI filters/paging for list-messages and list-app-messages; verified with cargo test.
 [2026-02-08 21:48] [AGENT] Answered 5‑VM readiness and UI/testing question; updated QUESTIONS and README.
+[2026-02-09 20:23] [AGENT] Added ds_server binary to run Axum router; updated docs and verified with cargo test.
+[2026-02-09 20:27] [AGENT] Added ds_server random-port health integration test; verified via cargo test --bin ds_server.
+[2026-02-09 20:31] [AGENT] Added ds_server register happy-path listener integration test; verified via cargo test --bin ds_server.

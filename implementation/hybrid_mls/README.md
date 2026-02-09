@@ -49,10 +49,22 @@ cargo run --example minimal
 This runs an in-memory flow and prints the derived path secrets on the receiver side. The example is deterministic and not production-safe.
 
 **How to Use (Conceptual Flow)**
-This is a library-only implementation. There is no network or server component yet. The typical MLS flow is:
+The repository now includes a DS server binary and a DS client CLI. The typical MLS flow is:
 1. Each client generates a `KeyPackage`.
 2. A group creator builds a `Commit` with `Add` proposals and a path update.
 3. The commit is distributed to all members, who update their local ratchet trees.
+
+**Run Delivery Service**
+```bash
+cargo run --bin ds_server
+```
+
+Optional environment variables:
+- `DS_BIND` (default `127.0.0.1:3000`)
+- `DS_DATA_DIR` (default `./data`)
+- `DS_DB_PATH` (default `${DS_DATA_DIR}/ds.sqlite`)
+- `DS_MAX_BYTES`
+- `DS_MIN_PROPOSALS_PER_COMMIT`
 
 **5 VM Example (1 Delivery Service + 4 Users)**
 Yes, that model is correct for MLS. The Delivery Service (DS) is **not** a group member. It only transports messages.
@@ -109,10 +121,13 @@ cargo run --bin ds_client -- register --base-url http://127.0.0.1:3000 --usernam
 cargo run --bin ds_client -- login --base-url http://127.0.0.1:3000 --username alice --password secret
 cargo run --bin ds_client -- submit-proposal --base-url http://127.0.0.1:3000 --group-id group1 --proposal-file /path/to/proposal.bin
 cargo run --bin ds_client -- submit-commit --base-url http://127.0.0.1:3000 --group-id group1 --commit-file /path/to/commit.bin --path-update-file /path/to/path.bin
-cargo run --bin ds_client -- list-messages --base-url http://127.0.0.1:3000 --group-id group1 --limit 50
+cargo run --bin ds_client -- list-messages --base-url http://127.0.0.1:3000 --group-id group1 --limit 50 --kind commit
 cargo run --bin ds_client -- publish-key-package --base-url http://127.0.0.1:3000 --keypackage-file /path/to/keypackage.bin
 cargo run --bin ds_client -- fetch-key-package --base-url http://127.0.0.1:3000 --target alice --out /path/to/keypackage.bin
+cargo run --bin ds_client -- send-app-message --base-url http://127.0.0.1:3000 --group-id group1 --message-file /path/to/message.bin
+cargo run --bin ds_client -- list-app-messages --base-url http://127.0.0.1:3000 --group-id group1 --limit 50 --before-id 100
+cargo run --bin ds_client -- fetch-app-message --base-url http://127.0.0.1:3000 --group-id group1 --message-id 123 --out /path/to/message.bin
 ```
 The client stores signing keys in `ds-client.json` by default. This is for development only.
 
-Last updated: 2026-02-08 21:55
+Last updated: 2026-02-09 20:31

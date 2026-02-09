@@ -111,6 +111,8 @@ pub struct ListMessagesQuery {
     pub username: Option<String>,
     pub signature: Option<String>,
     pub limit: Option<usize>,
+    pub kind: Option<String>,
+    pub before_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -407,10 +409,18 @@ async fn list_messages(
     Query(query): Query<ListMessagesQuery>,
 ) -> impl IntoResponse {
     if let (Some(username), Some(signature)) = (&query.username, &query.signature) {
+        let kind_label = query.kind.as_deref().unwrap_or("any");
+        let before_id = query.before_id;
         if let Err(resp) = verify_request_signature(
             &state,
             username,
-            list_signing_input(username, &group_id, query.limit.unwrap_or(50)),
+            list_signing_input(
+                username,
+                &group_id,
+                query.limit.unwrap_or(50),
+                kind_label,
+                before_id,
+            ),
             signature,
         ) {
             return resp;
@@ -424,7 +434,26 @@ async fn list_messages(
         Err(err) => return storage_error(err),
     };
 
-    let items = match storage.list_group(&group_id, limit) {
+    let kind = match query.kind.as_deref() {
+        None | Some("any") => None,
+        Some("proposal") => Some(MessageKind::Proposal),
+        Some("commit") => Some(MessageKind::Commit),
+        Some("path_update") => Some(MessageKind::PathUpdate),
+        Some("application") => Some(MessageKind::Application),
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    code: "invalid_kind".to_string(),
+                    message: "kind must be proposal, commit, path_update, application, or any"
+                        .to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let items = match storage.list_group_kind(&group_id, kind, limit, query.before_id) {
         Ok(list) => list,
         Err(err) => return storage_error(err),
     };
@@ -488,10 +517,11 @@ async fn list_app_messages(
         return auth_error("missing_signature");
     };
     let limit = query.limit.unwrap_or(50);
+    let before_id = query.before_id;
     if let Err(resp) = verify_request_signature(
         &state,
         username,
-        app_list_signing_input(username, &group_id, limit),
+        app_list_signing_input(username, &group_id, limit, before_id),
         signature,
     ) {
         return resp;
@@ -501,7 +531,12 @@ async fn list_app_messages(
         Ok(s) => s,
         Err(err) => return storage_error(err),
     };
-    let items = match storage.list_group_kind(&group_id, Some(MessageKind::Application), limit) {
+    let items = match storage.list_group_kind(
+        &group_id,
+        Some(MessageKind::Application),
+        limit,
+        before_id,
+    ) {
         Ok(list) => list,
         Err(err) => return storage_error(err),
     };
@@ -815,7 +850,13 @@ fn commit_signing_input(
     out
 }
 
-fn list_signing_input(username: &str, group_id: &str, limit: usize) -> Vec<u8> {
+fn list_signing_input(
+    username: &str,
+    group_id: &str,
+    limit: usize,
+    kind: &str,
+    before_id: Option<i64>,
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"list|");
     out.extend_from_slice(username.as_bytes());
@@ -823,6 +864,10 @@ fn list_signing_input(username: &str, group_id: &str, limit: usize) -> Vec<u8> {
     out.extend_from_slice(group_id.as_bytes());
     out.extend_from_slice(b"|");
     out.extend_from_slice(limit.to_string().as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(kind.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(before_id.unwrap_or(0).to_string().as_bytes());
     out
 }
 
@@ -838,7 +883,12 @@ fn app_publish_signing_input(username: &str, group_id: &str, message: &[u8]) -> 
     out
 }
 
-fn app_list_signing_input(username: &str, group_id: &str, limit: usize) -> Vec<u8> {
+fn app_list_signing_input(
+    username: &str,
+    group_id: &str,
+    limit: usize,
+    before_id: Option<i64>,
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"app_list|");
     out.extend_from_slice(username.as_bytes());
@@ -846,6 +896,8 @@ fn app_list_signing_input(username: &str, group_id: &str, limit: usize) -> Vec<u
     out.extend_from_slice(group_id.as_bytes());
     out.extend_from_slice(b"|");
     out.extend_from_slice(limit.to_string().as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(before_id.unwrap_or(0).to_string().as_bytes());
     out
 }
 
@@ -1245,7 +1297,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let sign_input = app_list_signing_input(username, group_id, 10);
+        let sign_input = app_list_signing_input(username, group_id, 10, None);
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let query = serde_urlencoded::to_string([
             ("username", username),
