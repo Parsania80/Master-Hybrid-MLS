@@ -134,11 +134,18 @@ Must be updated afer each message.
 ---
 
 ### 10. QUESTIONS.md — Persistent Knowledge Base
-- Every Operator question must be:
-  1. Appended to `QUESTIONS.md`
-  2. Timestamped
-  3. Answered in the file
-  4. Also explained inline in conversation and code when relevant
+- **Trigger Condition:** ONLY log questions prefixed with `Q-` or `Q<number>-`.
+  - Example: `Q- Why did we choose React?` or `Q1- Is this thread-safe?`
+  - **Do NOT** log casual conversation or clarifying questions.
+- **Action:**
+  1. Strip the `Q-` prefix.
+  2. Append the Question and the Answer to `QUESTIONS.md`.
+  3. Format: `## [YYYY-MM-DD] Question... Answer...`
+  4. Provide the answer inline in the chat as well.
+- **Context Governance:**
+  - When `QUESTIONS.md` exceeds 500 lines:
+    1. Move content to `archive/QUESTIONS-YYYY-MM.md`.
+    2. Clear `QUESTIONS.md` to restart.
 
 ---
 
@@ -244,6 +251,102 @@ The Agent MUST:
 
 
 ---
+
+## Flow Authority and Creation Rule
+
+### X. Operator-Driven Flow Creation and Agent Compliance
+
+Flow documents are authoritative instructions and must be treated as controlled artifacts.
+
+
+### Flow Creation Authority
+- The Agent MUST create a new flow document **only when explicitly instructed by the Operator**.
+- The Agent MUST NOT autonomously introduce new flow documents without Operator approval.
+
+Valid Operator instructions include:
+- "Add a flow for X"
+- "Document this process as a flow"
+- "Create a flow for this operation"
+
+If no such instruction is given, no flow file is created.
+
+
+
+### Flow Execution Rule
+- When a flow exists, the Agent MUST read and follow the flow exactly as written.
+- The Agent MUST NOT invent steps, reorder steps, or assume missing logic.
+- Flows are treated as the single source of truth for repeatable operations.
+
+
+### Flow Modification Rule
+- The Agent MUST NOT modify an existing flow document silently.
+- If the Agent detects:
+  - A missing step
+  - An ambiguous instruction
+  - An unsafe or incomplete sequence
+
+The Agent MUST stop and ask the Operator:
+
+- Whether the flow should be updated
+- What exact change is approved
+
+Only after explicit Operator approval may the flow document be modified.
+
+
+
+### Flow Optional Improvement Proposal  
+- The Agent MAY suggest improvements or missing steps.
+- Suggestions MUST be presented clearly and separately.
+- No changes are applied without explicit confirmation.
+
+
+
+### Mandatory Flow Structure
+All flow documents MUST follow the standard flow structure defined in this protocol
+- One file per flow.
+- File names must be:
+  - Lowercase
+  - Kebab-case
+  - Verb-first
+  - Descriptive
+
+Examples:
+- `add-api.md`
+- `add-access.md`
+- `add-feature-to-user-policy.md`
+
+
+
+### Mandatory Flow File Structure
+Every flow document MUST follow this structure:
+```md
+# <Flow Name>
+
+## Purpose
+Why this flow exists and what problem it solves.
+
+## Preconditions
+What must already exist or be true before this flow can be executed.
+
+## Inputs
+Data, configuration, or parameters required to run the flow.
+
+## Steps
+1. Step-by-step actions in correct execution order.
+2. Each step must be explicit and unambiguous.
+3. No hidden assumptions.
+
+## Outputs
+What changes as a result of completing the flow.
+
+## Verification
+How to confirm the flow completed successfully.
+
+## Related Files
+Code files, configs, or documents affected by this flow.
+```
+---
+
 ## Closing Principle
 
 This protocol prioritizes correctness over speed,

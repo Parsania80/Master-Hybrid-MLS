@@ -435,6 +435,72 @@ impl RatchetTree {
         Self { nodes }
     }
 
+    /// Serialize the full ratchet tree including blank nodes.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        encode_u32(&mut out, self.nodes.len() as u32);
+        for node in &self.nodes {
+            match node {
+                Node::Leaf(leaf) => {
+                    encode_u8(&mut out, NODE_TYPE_LEAF);
+                    encode_leaf_node(leaf, &mut out);
+                }
+                Node::Parent(parent) => {
+                    encode_u8(&mut out, NODE_TYPE_PARENT);
+                    encode_bytes(&mut out, &parent.public_key.to_bytes());
+                    encode_bytes(&mut out, &parent.parent_hash);
+                    encode_u32_vec(&mut out, &parent.unmerged_leaves);
+                }
+                Node::Blank => {
+                    encode_u8(&mut out, NODE_TYPE_BLANK);
+                }
+            }
+        }
+        out
+    }
+
+    /// Decode a full ratchet tree serialized with `encode`.
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let count = decoder.read_u32()? as usize;
+        let mut nodes = Vec::with_capacity(count);
+
+        for _ in 0..count {
+            let tag = decoder.read_u8()?;
+            match tag {
+                NODE_TYPE_LEAF => {
+                    let public_key_bytes = decoder.read_bytes()?;
+                    let credential_bytes = decoder.read_bytes()?;
+                    let public_key = decode_hybrid_public_key(&public_key_bytes)?;
+                    let credential = decode_hybrid_sign_pub_key(&credential_bytes)?;
+                    nodes.push(Node::Leaf(LeafNode {
+                        public_key,
+                        credential,
+                    }));
+                }
+                NODE_TYPE_PARENT => {
+                    let public_key_bytes = decoder.read_bytes()?;
+                    let parent_hash = decoder.read_bytes()?;
+                    let unmerged_leaves = decode_u32_vec(&mut decoder)?;
+                    let public_key = decode_hybrid_public_key(&public_key_bytes)?;
+                    nodes.push(Node::Parent(ParentNode {
+                        public_key,
+                        parent_hash,
+                        unmerged_leaves,
+                    }));
+                }
+                NODE_TYPE_BLANK => nodes.push(Node::Blank),
+                _ => return None,
+            }
+        }
+
+        if decoder.remaining() != 0 {
+            return None;
+        }
+
+        Some(Self { nodes })
+    }
+
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
@@ -1136,6 +1202,7 @@ fn parent_index_for_node(
 
 const NODE_TYPE_LEAF: u8 = 1;
 const NODE_TYPE_PARENT: u8 = 2;
+const NODE_TYPE_BLANK: u8 = 3;
 const PROPOSAL_ADD: u8 = 1;
 const PROPOSAL_UPDATE: u8 = 2;
 const PROPOSAL_REMOVE: u8 = 3;
@@ -1747,5 +1814,23 @@ mod tests {
 
         assert_eq!(decoded_commit.encode(), commit.encode());
         assert_eq!(decoded_path_update.encode(), path_update.encode());
+    }
+
+    #[test]
+    fn ratchet_tree_encode_decode_roundtrip() {
+        let leaf0 = make_leaf(80);
+        let leaf1 = make_leaf(81);
+        let mut tree = RatchetTree::from_leaves(vec![leaf0, leaf1]);
+
+        let root = tree.root_index().expect("root");
+        tree.nodes[root] = Node::Parent(ParentNode {
+            public_key: hybrid_public_key(82),
+            parent_hash: vec![1, 2, 3, 4],
+            unmerged_leaves: vec![0, 1],
+        });
+
+        let encoded = tree.encode();
+        let decoded = RatchetTree::decode(&encoded).expect("decode tree");
+        assert_eq!(decoded, tree);
     }
 }

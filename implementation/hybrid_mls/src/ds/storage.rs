@@ -161,7 +161,7 @@ impl Storage {
         group_id: &str,
         limit: usize,
     ) -> Result<Vec<StoredMessage>, StorageError> {
-        self.list_group_kind(group_id, None, limit)
+        self.list_group_kind(group_id, None, limit, None)
     }
 
     pub fn list_group_kind(
@@ -169,51 +169,104 @@ impl Storage {
         group_id: &str,
         kind: Option<MessageKind>,
         limit: usize,
+        before_id: Option<i64>,
     ) -> Result<Vec<StoredMessage>, StorageError> {
         let mut out = Vec::new();
-        if let Some(kind) = kind {
-            let mut stmt = self.conn.prepare(
-                "SELECT id, group_id, kind, size, created_at, path
-                 FROM messages
-                 WHERE group_id = ?1 AND kind = ?2
-                 ORDER BY created_at DESC, id DESC
-                 LIMIT ?3",
-            )?;
-            let rows = stmt.query_map(params![group_id, kind.as_str(), limit as i64], |row| {
-                let kind_str: String = row.get(2)?;
-                Ok(StoredMessage {
-                    id: row.get(0)?,
-                    group_id: row.get(1)?,
-                    kind: MessageKind::from_str(&kind_str),
-                    size: row.get::<_, i64>(3)? as u64,
-                    created_at: row.get(4)?,
-                    path: PathBuf::from(row.get::<_, String>(5)?),
-                })
-            })?;
-            for row in rows {
-                out.push(row?);
+        match (kind, before_id) {
+            (Some(kind), Some(before_id)) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, group_id, kind, size, created_at, path
+                     FROM messages
+                     WHERE group_id = ?1 AND kind = ?2 AND id < ?3
+                     ORDER BY created_at DESC, id DESC
+                     LIMIT ?4",
+                )?;
+                let rows = stmt.query_map(
+                    params![group_id, kind.as_str(), before_id, limit as i64],
+                    |row| {
+                        let kind_str: String = row.get(2)?;
+                        Ok(StoredMessage {
+                            id: row.get(0)?,
+                            group_id: row.get(1)?,
+                            kind: MessageKind::from_str(&kind_str),
+                            size: row.get::<_, i64>(3)? as u64,
+                            created_at: row.get(4)?,
+                            path: PathBuf::from(row.get::<_, String>(5)?),
+                        })
+                    },
+                )?;
+                for row in rows {
+                    out.push(row?);
+                }
             }
-        } else {
-            let mut stmt = self.conn.prepare(
-                "SELECT id, group_id, kind, size, created_at, path
-                 FROM messages
-                 WHERE group_id = ?1
-                 ORDER BY created_at DESC, id DESC
-                 LIMIT ?2",
-            )?;
-            let rows = stmt.query_map(params![group_id, limit as i64], |row| {
-                let kind_str: String = row.get(2)?;
-                Ok(StoredMessage {
-                    id: row.get(0)?,
-                    group_id: row.get(1)?,
-                    kind: MessageKind::from_str(&kind_str),
-                    size: row.get::<_, i64>(3)? as u64,
-                    created_at: row.get(4)?,
-                    path: PathBuf::from(row.get::<_, String>(5)?),
-                })
-            })?;
-            for row in rows {
-                out.push(row?);
+            (Some(kind), None) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, group_id, kind, size, created_at, path
+                     FROM messages
+                     WHERE group_id = ?1 AND kind = ?2
+                     ORDER BY created_at DESC, id DESC
+                     LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(params![group_id, kind.as_str(), limit as i64], |row| {
+                    let kind_str: String = row.get(2)?;
+                    Ok(StoredMessage {
+                        id: row.get(0)?,
+                        group_id: row.get(1)?,
+                        kind: MessageKind::from_str(&kind_str),
+                        size: row.get::<_, i64>(3)? as u64,
+                        created_at: row.get(4)?,
+                        path: PathBuf::from(row.get::<_, String>(5)?),
+                    })
+                })?;
+                for row in rows {
+                    out.push(row?);
+                }
+            }
+            (None, Some(before_id)) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, group_id, kind, size, created_at, path
+                     FROM messages
+                     WHERE group_id = ?1 AND id < ?2
+                     ORDER BY created_at DESC, id DESC
+                     LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(params![group_id, before_id, limit as i64], |row| {
+                    let kind_str: String = row.get(2)?;
+                    Ok(StoredMessage {
+                        id: row.get(0)?,
+                        group_id: row.get(1)?,
+                        kind: MessageKind::from_str(&kind_str),
+                        size: row.get::<_, i64>(3)? as u64,
+                        created_at: row.get(4)?,
+                        path: PathBuf::from(row.get::<_, String>(5)?),
+                    })
+                })?;
+                for row in rows {
+                    out.push(row?);
+                }
+            }
+            (None, None) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, group_id, kind, size, created_at, path
+                     FROM messages
+                     WHERE group_id = ?1
+                     ORDER BY created_at DESC, id DESC
+                     LIMIT ?2",
+                )?;
+                let rows = stmt.query_map(params![group_id, limit as i64], |row| {
+                    let kind_str: String = row.get(2)?;
+                    Ok(StoredMessage {
+                        id: row.get(0)?,
+                        group_id: row.get(1)?,
+                        kind: MessageKind::from_str(&kind_str),
+                        size: row.get::<_, i64>(3)? as u64,
+                        created_at: row.get(4)?,
+                        path: PathBuf::from(row.get::<_, String>(5)?),
+                    })
+                })?;
+                for row in rows {
+                    out.push(row?);
+                }
             }
         }
         Ok(out)
@@ -233,6 +286,22 @@ impl Storage {
         let path: String = row.get(0)?;
         let data = fs::read(path)?;
         Ok(Some(data))
+    }
+
+    pub fn load_message_group(
+        &self,
+        id: i64,
+        group_id: &str,
+    ) -> Result<Option<(MessageKind, Vec<u8>)>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT kind, path FROM messages WHERE id = ?1 AND group_id = ?2",
+        )?;
+        let mut rows = stmt.query(params![id, group_id])?;
+        let Some(row) = rows.next()? else { return Ok(None) };
+        let kind_str: String = row.get(0)?;
+        let path: String = row.get(1)?;
+        let data = fs::read(path)?;
+        Ok(Some((MessageKind::from_str(&kind_str), data)))
     }
 
     pub fn insert_user(
@@ -603,7 +672,7 @@ mod tests {
             .expect("store proposal");
 
         let app_only = storage
-            .list_group_kind("group-d", Some(MessageKind::Application), 10)
+            .list_group_kind("group-d", Some(MessageKind::Application), 10, None)
             .expect("list app");
         assert_eq!(app_only.len(), 1);
         assert_eq!(app_only[0].id, app_msg.id);

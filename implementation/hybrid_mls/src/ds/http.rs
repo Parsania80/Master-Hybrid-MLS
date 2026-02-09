@@ -111,6 +111,8 @@ pub struct ListMessagesQuery {
     pub username: Option<String>,
     pub signature: Option<String>,
     pub limit: Option<usize>,
+    pub kind: Option<String>,
+    pub before_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,6 +138,14 @@ pub struct ListMessagesResponse {
 pub struct FetchAppMessageResponse {
     pub id: String,
     pub group_id: String,
+    pub message_bytes: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FetchGroupMessageResponse {
+    pub id: String,
+    pub group_id: String,
+    pub kind: String,
     pub message_bytes: String,
 }
 
@@ -172,6 +182,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/groups/:group_id/proposals", post(submit_proposal))
         .route("/v1/groups/:group_id/commits", post(submit_commit))
         .route("/v1/groups/:group_id/messages", get(list_messages))
+        .route("/v1/groups/:group_id/messages/:message_id", get(fetch_group_message))
         .with_state(state)
 }
 
@@ -407,10 +418,18 @@ async fn list_messages(
     Query(query): Query<ListMessagesQuery>,
 ) -> impl IntoResponse {
     if let (Some(username), Some(signature)) = (&query.username, &query.signature) {
+        let kind_label = query.kind.as_deref().unwrap_or("any");
+        let before_id = query.before_id;
         if let Err(resp) = verify_request_signature(
             &state,
             username,
-            list_signing_input(username, &group_id, query.limit.unwrap_or(50)),
+            list_signing_input(
+                username,
+                &group_id,
+                query.limit.unwrap_or(50),
+                kind_label,
+                before_id,
+            ),
             signature,
         ) {
             return resp;
@@ -424,7 +443,26 @@ async fn list_messages(
         Err(err) => return storage_error(err),
     };
 
-    let items = match storage.list_group(&group_id, limit) {
+    let kind = match query.kind.as_deref() {
+        None | Some("any") => None,
+        Some("proposal") => Some(MessageKind::Proposal),
+        Some("commit") => Some(MessageKind::Commit),
+        Some("path_update") => Some(MessageKind::PathUpdate),
+        Some("application") => Some(MessageKind::Application),
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    code: "invalid_kind".to_string(),
+                    message: "kind must be proposal, commit, path_update, application, or any"
+                        .to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let items = match storage.list_group_kind(&group_id, kind, limit, query.before_id) {
         Ok(list) => list,
         Err(err) => return storage_error(err),
     };
@@ -488,10 +526,11 @@ async fn list_app_messages(
         return auth_error("missing_signature");
     };
     let limit = query.limit.unwrap_or(50);
+    let before_id = query.before_id;
     if let Err(resp) = verify_request_signature(
         &state,
         username,
-        app_list_signing_input(username, &group_id, limit),
+        app_list_signing_input(username, &group_id, limit, before_id),
         signature,
     ) {
         return resp;
@@ -501,7 +540,12 @@ async fn list_app_messages(
         Ok(s) => s,
         Err(err) => return storage_error(err),
     };
-    let items = match storage.list_group_kind(&group_id, Some(MessageKind::Application), limit) {
+    let items = match storage.list_group_kind(
+        &group_id,
+        Some(MessageKind::Application),
+        limit,
+        before_id,
+    ) {
         Ok(list) => list,
         Err(err) => return storage_error(err),
     };
@@ -561,6 +605,51 @@ async fn fetch_app_message(
         Json(FetchAppMessageResponse {
             id: message_id.to_string(),
             group_id,
+            message_bytes: payload_b64,
+        }),
+    )
+        .into_response()
+}
+
+async fn fetch_group_message(
+    State(state): State<ApiState>,
+    Path((group_id, message_id)): Path<(String, i64)>,
+    Query(query): Query<FetchMessageQuery>,
+) -> impl IntoResponse {
+    if let Err(resp) = verify_request_signature(
+        &state,
+        &query.username,
+        fetch_message_signing_input(&query.username, &group_id, message_id),
+        &query.signature,
+    ) {
+        return resp;
+    }
+
+    let storage = match open_storage(&state) {
+        Ok(s) => s,
+        Err(err) => return storage_error(err),
+    };
+    let Some((kind, payload)) = (match storage.load_message_group(message_id, &group_id) {
+        Ok(res) => res,
+        Err(err) => return storage_error(err),
+    }) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                code: "message_not_found".to_string(),
+                message: "message not found".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    let payload_b64 = STANDARD.encode(&payload);
+    (
+        StatusCode::OK,
+        Json(FetchGroupMessageResponse {
+            id: message_id.to_string(),
+            group_id,
+            kind: kind.as_str().to_string(),
             message_bytes: payload_b64,
         }),
     )
@@ -815,7 +904,13 @@ fn commit_signing_input(
     out
 }
 
-fn list_signing_input(username: &str, group_id: &str, limit: usize) -> Vec<u8> {
+fn list_signing_input(
+    username: &str,
+    group_id: &str,
+    limit: usize,
+    kind: &str,
+    before_id: Option<i64>,
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"list|");
     out.extend_from_slice(username.as_bytes());
@@ -823,6 +918,10 @@ fn list_signing_input(username: &str, group_id: &str, limit: usize) -> Vec<u8> {
     out.extend_from_slice(group_id.as_bytes());
     out.extend_from_slice(b"|");
     out.extend_from_slice(limit.to_string().as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(kind.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(before_id.unwrap_or(0).to_string().as_bytes());
     out
 }
 
@@ -838,7 +937,12 @@ fn app_publish_signing_input(username: &str, group_id: &str, message: &[u8]) -> 
     out
 }
 
-fn app_list_signing_input(username: &str, group_id: &str, limit: usize) -> Vec<u8> {
+fn app_list_signing_input(
+    username: &str,
+    group_id: &str,
+    limit: usize,
+    before_id: Option<i64>,
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"app_list|");
     out.extend_from_slice(username.as_bytes());
@@ -846,12 +950,25 @@ fn app_list_signing_input(username: &str, group_id: &str, limit: usize) -> Vec<u
     out.extend_from_slice(group_id.as_bytes());
     out.extend_from_slice(b"|");
     out.extend_from_slice(limit.to_string().as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(before_id.unwrap_or(0).to_string().as_bytes());
     out
 }
 
 fn app_fetch_signing_input(username: &str, group_id: &str, message_id: i64) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"app_fetch|");
+    out.extend_from_slice(username.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(group_id.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(message_id.to_string().as_bytes());
+    out
+}
+
+fn fetch_message_signing_input(username: &str, group_id: &str, message_id: i64) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"message_fetch|");
     out.extend_from_slice(username.as_bytes());
     out.extend_from_slice(b"|");
     out.extend_from_slice(group_id.as_bytes());
@@ -1245,7 +1362,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let sign_input = app_list_signing_input(username, group_id, 10);
+        let sign_input = app_list_signing_input(username, group_id, 10, None);
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let query = serde_urlencoded::to_string([
             ("username", username),
@@ -1296,6 +1413,190 @@ mod tests {
         let encoded = json["message_bytes"].as_str().unwrap();
         let decoded = STANDARD.decode(encoded).unwrap();
         assert_eq!(decoded, payload);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn group_message_fetch_commit_and_path_roundtrip() {
+        let (mut state, base) = temp_state("group-fetch");
+        state.min_proposals_per_commit = 1;
+        let app = router(state.clone());
+
+        let mut rng = OsRng;
+        let (priv_key, _pub_key, classic_b64, pq_b64) = make_signing_keys(&mut rng);
+        let username = "diana";
+        let password = "secret";
+        let sign_input = register_signing_input(username, password, &classic_b64, &pq_b64);
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
+        let register = RegisterRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+            classic_pub_key: classic_b64.clone(),
+            pq_pub_key: pq_b64.clone(),
+            signature,
+        };
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/auth/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&register).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let group_id = "group-fetch";
+
+        let proposal_payload = b"proposal-1";
+        let sign_input = proposal_signing_input(username, group_id, proposal_payload);
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
+        let proposal_req = serde_json::json!({
+            "username": username,
+            "proposal_bytes": STANDARD.encode(proposal_payload),
+            "signature": signature,
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/groups/{group_id}/proposals"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&proposal_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let commit_payload = b"commit-1";
+        let path_payload = b"path-1";
+        let sign_input = commit_signing_input(username, group_id, commit_payload, Some(path_payload));
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
+        let commit_req = serde_json::json!({
+            "username": username,
+            "commit_bytes": STANDARD.encode(commit_payload),
+            "path_update_bytes": STANDARD.encode(path_payload),
+            "signature": signature,
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/groups/{group_id}/commits"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&commit_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let sign_input = list_signing_input(username, group_id, 10, "commit", None);
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
+        let query = serde_urlencoded::to_string([
+            ("username", username),
+            ("signature", signature.as_str()),
+            ("limit", "10"),
+            ("kind", "commit"),
+        ])
+        .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/groups/{group_id}/messages?{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let commit_id = json["messages"][0]["id"].as_str().unwrap().parse::<i64>().unwrap();
+
+        let sign_input = fetch_message_signing_input(username, group_id, commit_id);
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
+        let query = serde_urlencoded::to_string([
+            ("username", username),
+            ("signature", signature.as_str()),
+        ])
+        .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/groups/{group_id}/messages/{commit_id}?{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"].as_str().unwrap(), "commit");
+        let decoded = STANDARD.decode(json["message_bytes"].as_str().unwrap()).unwrap();
+        assert_eq!(decoded, commit_payload);
+
+        let sign_input = list_signing_input(username, group_id, 10, "path_update", None);
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
+        let query = serde_urlencoded::to_string([
+            ("username", username),
+            ("signature", signature.as_str()),
+            ("limit", "10"),
+            ("kind", "path_update"),
+        ])
+        .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/groups/{group_id}/messages?{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let path_id = json["messages"][0]["id"].as_str().unwrap().parse::<i64>().unwrap();
+
+        let sign_input = fetch_message_signing_input(username, group_id, path_id);
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
+        let query = serde_urlencoded::to_string([
+            ("username", username),
+            ("signature", signature.as_str()),
+        ])
+        .unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/groups/{group_id}/messages/{path_id}?{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"].as_str().unwrap(), "path_update");
+        let decoded = STANDARD.decode(json["message_bytes"].as_str().unwrap()).unwrap();
+        assert_eq!(decoded, path_payload);
 
         let _ = std::fs::remove_dir_all(base);
     }
