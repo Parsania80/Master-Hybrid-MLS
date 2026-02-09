@@ -26,3 +26,9 @@
 [2026-02-09 20:23] [AGENT] Added ds_server binary to run Axum router; updated docs and verified with cargo test.
 [2026-02-09 20:27] [AGENT] Added ds_server random-port health integration test; verified via cargo test --bin ds_server.
 [2026-02-09 20:31] [AGENT] Added ds_server register happy-path listener integration test; verified via cargo test --bin ds_server.
+[2026-02-09 20:37] [AGENT] Added local startup scripts for 1 DS + 4 clients (up/down/status); validated shell syntax.
+[2026-02-09 20:47] [AGENT] Assessed feasibility for local-1ds-4clients-demo scenario script and constraints.
+[2026-02-09 20:50] [AGENT] Provided implementation roadmap for true end-to-end cryptographic 1-DS/4-client demo.
+[2026-02-09 20:58] [AGENT] Implemented ClientGroupState and persistence module, added RatchetTree encode/decode, and verified tests.
+[2026-02-09 21:02] [AGENT] Implemented envelope metadata types for proposal/commit/path payloads and verified tests.
+[2026-02-09 21:06] [AGENT] Added ds_client proposal builder commands (add/update/remove) from ClientGroupState and verified tests.

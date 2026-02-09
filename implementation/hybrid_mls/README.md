@@ -66,6 +66,19 @@ Optional environment variables:
 - `DS_MAX_BYTES`
 - `DS_MIN_PROPOSALS_PER_COMMIT`
 
+**Local 1-DS / 4-Client Startup Scripts**
+```bash
+scripts/local-1ds-4clients-up.sh
+scripts/local-1ds-4clients-status.sh
+scripts/local-1ds-4clients-down.sh
+```
+
+Environment variables supported by the scripts:
+- `DS_BIND`, `BASE_URL`
+- `RUN_DIR`, `RESET`, `SKIP_BUILD`
+- `CLIENT_NAMES`, `CLIENT_PASSWORD`
+- `WAIT_SECONDS`, `CLEAN`
+
 **5 VM Example (1 Delivery Service + 4 Users)**
 Yes, that model is correct for MLS. The Delivery Service (DS) is **not** a group member. It only transports messages.
 
@@ -114,6 +127,8 @@ Conceptual steps:
 
 **Delivery Service Client CLI (New)**
 The CLI is a prototype tool to register users, submit proposals/commits, and fetch messages from the DS.
+Client-side `ClientGroupState` persistence is now available in `src/client_state.rs` (group id, ratchet tree, epoch, own leaf index, pending proposals).
+Wire-format metadata envelopes are now available in `src/envelope.rs` for proposal/commit/path payloads (`group_id`, `epoch`, `sender_leaf`).
 
 Example usage:
 ```bash
@@ -127,7 +142,10 @@ cargo run --bin ds_client -- fetch-key-package --base-url http://127.0.0.1:3000 
 cargo run --bin ds_client -- send-app-message --base-url http://127.0.0.1:3000 --group-id group1 --message-file /path/to/message.bin
 cargo run --bin ds_client -- list-app-messages --base-url http://127.0.0.1:3000 --group-id group1 --limit 50 --before-id 100
 cargo run --bin ds_client -- fetch-app-message --base-url http://127.0.0.1:3000 --group-id group1 --message-id 123 --out /path/to/message.bin
+cargo run --bin ds_client -- create-add-proposal --group-state /path/to/group-state.bin --keypackage-file /path/to/new-member.kp --out /path/to/add.proposal.bin
+cargo run --bin ds_client -- create-update-proposal --group-state /path/to/group-state.bin --keypackage-file /path/to/new-self.kp --out /path/to/update.proposal.bin --target-leaf 1
+cargo run --bin ds_client -- create-remove-proposal --group-state /path/to/group-state.bin --remove-leaf 2 --out /path/to/remove.proposal.bin
 ```
-The client stores signing keys in `ds-client.json` by default. This is for development only.
+The client stores signing keys in `ds-client.json` by default and now can build metadata-enveloped proposals from `ClientGroupState` files. This is for development only.
 
-Last updated: 2026-02-09 20:31
+Last updated: 2026-02-09 21:06

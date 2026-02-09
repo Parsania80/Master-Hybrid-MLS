@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 use serde_urlencoded;
 use sha3::{Digest, Sha3_256};
 
+use hybrid_mls::client_state::ClientGroupState;
 use hybrid_mls::crypto::{HybridSignPrivKey, HybridSignature};
+use hybrid_mls::envelope::ProposalEnvelope;
+use hybrid_mls::tree::{KeyPackage, Node, Proposal, RatchetTree};
 
 #[derive(Parser, Debug)]
 #[command(name = "ds-client", version, about = "Hybrid MLS Delivery Service client")]
@@ -112,6 +115,38 @@ pub enum Commands {
         target: String,
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+    CreateAddProposal {
+        #[arg(long)]
+        group_state: PathBuf,
+        #[arg(long)]
+        keypackage_file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        sender_leaf: Option<usize>,
+    },
+    CreateUpdateProposal {
+        #[arg(long)]
+        group_state: PathBuf,
+        #[arg(long)]
+        keypackage_file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        sender_leaf: Option<usize>,
+        #[arg(long)]
+        target_leaf: Option<usize>,
+    },
+    CreateRemoveProposal {
+        #[arg(long)]
+        group_state: PathBuf,
+        #[arg(long)]
+        remove_leaf: usize,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        sender_leaf: Option<usize>,
     },
     ShowState,
 }
@@ -457,6 +492,105 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        Commands::CreateAddProposal {
+            group_state,
+            keypackage_file,
+            out,
+            sender_leaf,
+        } => {
+            let mut state = load_group_state(&group_state)?;
+            let sender_leaf = resolve_sender_leaf(sender_leaf, &state)?;
+            let keypackage = load_keypackage_from_file(&keypackage_file)?;
+            let proposal = Proposal::Add(keypackage);
+            let envelope = ProposalEnvelope {
+                group_id: state.group_id.clone(),
+                epoch: state.epoch,
+                sender_leaf,
+                proposal: proposal.clone(),
+            };
+
+            fs::write(&out, envelope.encode())?;
+            state.queue_proposal(&proposal);
+            save_group_state(&group_state, &state)?;
+
+            println!(
+                "created add proposal envelope at {} (group={}, epoch={}, sender_leaf={})",
+                out.display(),
+                state.group_id,
+                state.epoch,
+                sender_leaf
+            );
+        }
+        Commands::CreateUpdateProposal {
+            group_state,
+            keypackage_file,
+            out,
+            sender_leaf,
+            target_leaf,
+        } => {
+            let mut state = load_group_state(&group_state)?;
+            let sender_leaf = resolve_sender_leaf(sender_leaf, &state)?;
+            let target_leaf = target_leaf.unwrap_or(sender_leaf);
+            ensure_leaf_present(&state.ratchet_tree, target_leaf)?;
+
+            let keypackage = load_keypackage_from_file(&keypackage_file)?;
+            let proposal = Proposal::Update {
+                leaf_index: target_leaf,
+                key_package: keypackage,
+            };
+            let envelope = ProposalEnvelope {
+                group_id: state.group_id.clone(),
+                epoch: state.epoch,
+                sender_leaf,
+                proposal: proposal.clone(),
+            };
+
+            fs::write(&out, envelope.encode())?;
+            state.queue_proposal(&proposal);
+            save_group_state(&group_state, &state)?;
+
+            println!(
+                "created update proposal envelope at {} (group={}, epoch={}, sender_leaf={}, target_leaf={})",
+                out.display(),
+                state.group_id,
+                state.epoch,
+                sender_leaf,
+                target_leaf
+            );
+        }
+        Commands::CreateRemoveProposal {
+            group_state,
+            remove_leaf,
+            out,
+            sender_leaf,
+        } => {
+            let mut state = load_group_state(&group_state)?;
+            let sender_leaf = resolve_sender_leaf(sender_leaf, &state)?;
+            ensure_leaf_present(&state.ratchet_tree, remove_leaf)?;
+
+            let proposal = Proposal::Remove {
+                leaf_index: remove_leaf,
+            };
+            let envelope = ProposalEnvelope {
+                group_id: state.group_id.clone(),
+                epoch: state.epoch,
+                sender_leaf,
+                proposal: proposal.clone(),
+            };
+
+            fs::write(&out, envelope.encode())?;
+            state.queue_proposal(&proposal);
+            save_group_state(&group_state, &state)?;
+
+            println!(
+                "created remove proposal envelope at {} (group={}, epoch={}, sender_leaf={}, remove_leaf={})",
+                out.display(),
+                state.group_id,
+                state.epoch,
+                sender_leaf,
+                remove_leaf
+            );
+        }
         Commands::ShowState => {
             let state = load_state(&cli.state)?;
             let json = serde_json::to_string_pretty(&state)?;
@@ -477,6 +611,48 @@ fn save_state(path: &Path, state: &ClientState) -> Result<(), Box<dyn std::error
     let json = serde_json::to_string_pretty(state)?;
     fs::write(path, json.as_bytes())?;
     Ok(())
+}
+
+fn load_group_state(path: &Path) -> Result<ClientGroupState, Box<dyn std::error::Error>> {
+    Ok(ClientGroupState::load_from_file(path)?)
+}
+
+fn save_group_state(path: &Path, state: &ClientGroupState) -> Result<(), Box<dyn std::error::Error>> {
+    state.save_to_file(path)?;
+    Ok(())
+}
+
+fn resolve_sender_leaf(
+    explicit: Option<usize>,
+    state: &ClientGroupState,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let sender_leaf = explicit.unwrap_or(state.own_leaf_index);
+    ensure_leaf_present(&state.ratchet_tree, sender_leaf)?;
+    Ok(sender_leaf)
+}
+
+fn ensure_leaf_present(
+    tree: &RatchetTree,
+    leaf_index: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if leaf_index >= tree.leaf_count() {
+        return Err(format!("leaf index {leaf_index} is out of bounds").into());
+    }
+    let node_index = RatchetTree::leaf_to_node_index(leaf_index);
+    match tree.nodes.get(node_index) {
+        Some(Node::Leaf(_)) => Ok(()),
+        _ => Err(format!("leaf index {leaf_index} is blank").into()),
+    }
+}
+
+fn load_keypackage_from_file(path: &Path) -> Result<KeyPackage, Box<dyn std::error::Error>> {
+    let bytes = fs::read(path)?;
+    let keypackage =
+        KeyPackage::decode(&bytes).ok_or("invalid keypackage file: decode failed")?;
+    if !keypackage.verify() {
+        return Err("invalid keypackage file: signature verification failed".into());
+    }
+    Ok(keypackage)
 }
 
 fn resolve_username(candidate: Option<String>, state: &ClientState) -> Result<String, Box<dyn std::error::Error>> {
