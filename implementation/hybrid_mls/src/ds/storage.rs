@@ -288,6 +288,22 @@ impl Storage {
         Ok(Some(data))
     }
 
+    pub fn load_message_group(
+        &self,
+        id: i64,
+        group_id: &str,
+    ) -> Result<Option<(MessageKind, Vec<u8>)>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT kind, path FROM messages WHERE id = ?1 AND group_id = ?2",
+        )?;
+        let mut rows = stmt.query(params![id, group_id])?;
+        let Some(row) = rows.next()? else { return Ok(None) };
+        let kind_str: String = row.get(0)?;
+        let path: String = row.get(1)?;
+        let data = fs::read(path)?;
+        Ok(Some((MessageKind::from_str(&kind_str), data)))
+    }
+
     pub fn insert_user(
         &mut self,
         username: &str,

@@ -5,7 +5,7 @@
 - [x] Dependency Selection (x25519, ml-kem, ed25519, ml-dsa)
 - [x] **Part 1: Hybrid Primitives** (Encryption & Signatures)
 - [x] **Part 2: Tree Structures** (Nodes & KeyPackages, Parent Hashes, Resolution)
-- [ ] Part 3: The Engine (Proposals & Commits) — in progress (client-side proposal envelope builders added)
+- [ ] Part 3: The Engine (Proposals & Commits) — in progress (client-side proposal envelope builders + commit/path builder + receiver apply/join/sync commands added, including sync watch mode; keygen/keypackage export/bootstrap commands added; two-client commit/path integration test added)
 - [ ] Part 4: Path Updates (The Math) — in progress
 - [ ] Part 5: Security Properties
 - [ ] Part 6: Key Schedule
@@ -32,5 +32,6 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 - `src/envelope.rs`: Message envelope metadata for proposal/commit/path payloads (group_id, epoch, sender_leaf)
 - `src/ds/*`: Delivery Service storage (SQLite + disk spool) and HTTP skeleton; auth/UI pending
 - `src/bin/ds_server.rs`: Axum server entrypoint for DS APIs
-- `src/bin/ds_client.rs`: CLI for DS register/login/proposals/commits/keypackages/app-messages
+- `src/bin/ds_client.rs`: CLI for DS register/login/proposals/commits/keypackages/app-messages, plus KEM key generation (`keygen`), key package export (`keypackage-export`), local group bootstrap (`bootstrap-group-state`), joiner onboarding from commit/path (`join-from-commit`), DS sync apply loop (`fetch-and-apply-latest`), local proposal queueing (`create-*`), commit building (`create-commit`), and receiver-side commit/path apply (`apply-received-commit`) from `ClientGroupState`
 - `scripts/local-1ds-4clients-*.sh`: local orchestration scripts for 1 DS + 4 clients
+- `scripts/local-1ds-4clients-demo.sh`: full demo flow script (fresh reset, key package publish, A->B add, A key update, B->C add, A removes C, verbose logs)

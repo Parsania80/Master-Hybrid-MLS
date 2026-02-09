@@ -41,6 +41,11 @@ cargo check
 cargo test
 ```
 
+Receiver-side commit/path integration test (two client states):
+```bash
+cargo test --test commit_path_two_client_states
+```
+
 **Example Program**
 Run a minimal in-memory flow (group creation + Add commit + path update processing):
 ```bash
@@ -71,6 +76,7 @@ Optional environment variables:
 scripts/local-1ds-4clients-up.sh
 scripts/local-1ds-4clients-status.sh
 scripts/local-1ds-4clients-down.sh
+scripts/local-1ds-4clients-demo.sh
 ```
 
 Environment variables supported by the scripts:
@@ -78,6 +84,18 @@ Environment variables supported by the scripts:
 - `RUN_DIR`, `RESET`, `SKIP_BUILD`
 - `CLIENT_NAMES`, `CLIENT_PASSWORD`
 - `WAIT_SECONDS`, `CLEAN`
+
+Demo script details:
+- `scripts/local-1ds-4clients-demo.sh` runs a full local scenario with fresh reset and per-step logs.
+- Default run directory is visible (not hidden): `local-1ds-4clients-demo-run`.
+- It forces `DS_MIN_PROPOSALS_PER_COMMIT=1` for demo flow.
+- It uses its own fresh reset and calls `up.sh` with `RESET=0` to preserve demo artifact directories (`key-material`, `group`).
+- It executes:
+  1. A adds B
+  2. A key update
+  3. B adds C
+  4. A removes C
+- Logs are written under `RUN_DIR/logs` (`demo.log`, `demo-alice.log`, `demo-bob.log`, etc).
 
 **5 VM Example (1 Delivery Service + 4 Users)**
 Yes, that model is correct for MLS. The Delivery Service (DS) is **not** a group member. It only transports messages.
@@ -134,6 +152,12 @@ Example usage:
 ```bash
 cargo run --bin ds_client -- register --base-url http://127.0.0.1:3000 --username alice --password secret
 cargo run --bin ds_client -- login --base-url http://127.0.0.1:3000 --username alice --password secret
+cargo run --bin ds_client -- keygen --out /path/to/alice-kem.json
+cargo run --bin ds_client --state /path/to/alice-client.json -- keypackage-export --kem-file /path/to/alice-kem.json --keypackage-out /path/to/alice.kp --receiver-private-out /path/to/alice-recv.json
+cargo run --bin ds_client -- bootstrap-group-state --group-id group1 --member-keypackage /path/to/alice.kp --member-keypackage /path/to/bob.kp --own-leaf 0 --out /path/to/alice-group-state.bin
+cargo run --bin ds_client -- join-from-commit --base-member-keypackage /path/to/alice.kp --commit-file /path/to/commit.bin --path-update-file /path/to/path-update.bin --receiver-private-file /path/to/bob-recv.json --out /path/to/bob-group-state.bin
+cargo run --bin ds_client --state /path/to/alice-client.json -- fetch-and-apply-latest --group-state /path/to/alice-group-state.bin --receiver-private-file /path/to/alice-recv.json --limit 100
+cargo run --bin ds_client --state /path/to/alice-client.json -- fetch-and-apply-latest --group-state /path/to/alice-group-state.bin --receiver-private-file /path/to/alice-recv.json --watch --poll-interval-ms 2000
 cargo run --bin ds_client -- submit-proposal --base-url http://127.0.0.1:3000 --group-id group1 --proposal-file /path/to/proposal.bin
 cargo run --bin ds_client -- submit-commit --base-url http://127.0.0.1:3000 --group-id group1 --commit-file /path/to/commit.bin --path-update-file /path/to/path.bin
 cargo run --bin ds_client -- list-messages --base-url http://127.0.0.1:3000 --group-id group1 --limit 50 --kind commit
@@ -145,7 +169,50 @@ cargo run --bin ds_client -- fetch-app-message --base-url http://127.0.0.1:3000 
 cargo run --bin ds_client -- create-add-proposal --group-state /path/to/group-state.bin --keypackage-file /path/to/new-member.kp --out /path/to/add.proposal.bin
 cargo run --bin ds_client -- create-update-proposal --group-state /path/to/group-state.bin --keypackage-file /path/to/new-self.kp --out /path/to/update.proposal.bin --target-leaf 1
 cargo run --bin ds_client -- create-remove-proposal --group-state /path/to/group-state.bin --remove-leaf 2 --out /path/to/remove.proposal.bin
+cargo run --bin ds_client -- create-commit --group-state /path/to/group-state.bin --commit-out /path/to/commit.bin --path-update-out /path/to/path-update.bin
+cargo run --bin ds_client -- apply-received-commit --group-state /path/to/group-state.bin --commit-file /path/to/commit.bin --path-update-file /path/to/path-update.bin --receiver-private-file /path/to/receiver-private.json --derived-out /path/to/derived.json
 ```
-The client stores signing keys in `ds-client.json` by default and now can build metadata-enveloped proposals from `ClientGroupState` files. This is for development only.
+The client stores signing keys in `ds-client.json` by default and can now:
+- Generate KEM key material (`keygen`) for X25519 + ML-KEM.
+- Export a signed MLS `KeyPackage` plus receiver private material (`keypackage-export`) using client identity keys from `--state`.
+- Bootstrap initial local group state from ordered member key packages (`bootstrap-group-state`).
+- Join a group as a newly-added member from commit/path payloads (`join-from-commit`), with optional automatic leaf detection from receiver private key.
+- Sync and apply DS commits automatically (`fetch-and-apply-latest`) by listing commit/path update messages, fetching payload bytes, and applying in epoch order.
+- Build metadata-enveloped proposals from `ClientGroupState` files.
+- Build a commit + path update from queued pending proposals (`create-commit`), write commit/path envelopes to disk, apply the commit locally, clear pending proposals, and increment the local epoch.
+- Apply received commit/path envelopes on receivers (`apply-received-commit`) with metadata checks (`group_id`, `epoch`, `sender_leaf`) and optional path-secret derivation.
+This is for development only.
 
-Last updated: 2026-02-09 21:06
+KEM keygen file format (`keygen --out ...`):
+```json
+{
+  "classic_x25519_private_b64": "<base64-32-byte-x25519-private>",
+  "classic_x25519_public_b64": "<base64-32-byte-x25519-public>",
+  "pq_kem_seed_b64": "<base64-64-byte-ml-kem-seed>",
+  "pq_kem_public_b64": "<base64-ml-kem-public>"
+}
+```
+
+Receiver private file format for `apply-received-commit`:
+```json
+{
+  "classic_x25519_private_b64": "<base64-32-byte-x25519-private>",
+  "pq_kem_seed_b64": "<base64-64-byte-ml-kem-seed>"
+}
+```
+
+Group bootstrap notes:
+- `--member-keypackage` order defines initial leaf indices in the ratchet tree.
+- `--own-leaf` must point to your own entry in that ordered list.
+
+Joiner onboarding notes:
+- `join-from-commit` expects base pre-commit members via `--base-member-keypackage` (ordered by leaf index before the add commit).
+- If `--own-leaf` is omitted, the CLI tries to infer it by matching receiver private key to a leaf public key after commit apply.
+
+Sync notes:
+- `fetch-and-apply-latest` requires a DS account state in `--state` for request signing.
+- It applies only commits matching the local epoch sequence and stops on gaps.
+- If `--receiver-private-file` is provided, path updates are consumed and derived secrets can be exported via `--derived-out`.
+- `--watch` enables continuous polling; use `--poll-interval-ms` and optional `--max-polls` to control loop behavior.
+
+Last updated: 2026-02-09 22:20
