@@ -1,9 +1,14 @@
+use crate::key_schedule::{tree_snapshot_hash, EpochDerivedSecrets, KeyScheduleState};
 use crate::tree::{Proposal, RatchetTree};
 use std::fs;
 use std::path::Path;
 use thiserror::Error;
 
-const CLIENT_STATE_VERSION: u8 = 1;
+const CLIENT_STATE_VERSION_V1: u8 = 1;
+const CLIENT_STATE_VERSION_V2: u8 = 2;
+const CLIENT_STATE_VERSION_V3: u8 = 3;
+const CLIENT_STATE_VERSION: u8 = CLIENT_STATE_VERSION_V3;
+const MAX_RECENT_APPLIED_COMMITS: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClientGroupState {
@@ -12,6 +17,9 @@ pub struct ClientGroupState {
     pub own_leaf_index: usize,
     pub epoch: u64,
     pub pending_proposals: Vec<Vec<u8>>,
+    pub last_applied_commit_id: Option<i64>,
+    pub recent_applied_commit_ids: Vec<i64>,
+    pub key_schedule: KeyScheduleState,
 }
 
 #[derive(Debug, Error)]
@@ -24,12 +32,18 @@ pub enum ClientStateError {
 
 impl ClientGroupState {
     pub fn new(group_id: impl Into<String>, ratchet_tree: RatchetTree, own_leaf_index: usize) -> Self {
+        let group_id = group_id.into();
+        let tree_hash = current_tree_hash(&ratchet_tree);
+        let key_schedule = KeyScheduleState::new(&group_id, tree_hash);
         Self {
-            group_id: group_id.into(),
+            group_id,
             ratchet_tree,
             own_leaf_index,
             epoch: 0,
             pending_proposals: Vec::new(),
+            last_applied_commit_id: None,
+            recent_applied_commit_ids: Vec::new(),
+            key_schedule,
         }
     }
 
@@ -49,6 +63,56 @@ impl ClientGroupState {
         Some(out)
     }
 
+    pub fn has_applied_commit_id(&self, commit_id: i64) -> bool {
+        if self.recent_applied_commit_ids.contains(&commit_id) {
+            return true;
+        }
+        match self.last_applied_commit_id {
+            Some(last) => commit_id <= last,
+            None => false,
+        }
+    }
+
+    pub fn mark_applied_commit_id(&mut self, commit_id: i64) {
+        if self.recent_applied_commit_ids.contains(&commit_id) {
+            return;
+        }
+        self.recent_applied_commit_ids.push(commit_id);
+        if self.recent_applied_commit_ids.len() > MAX_RECENT_APPLIED_COMMITS {
+            let overflow = self.recent_applied_commit_ids.len() - MAX_RECENT_APPLIED_COMMITS;
+            self.recent_applied_commit_ids.drain(0..overflow);
+        }
+        self.last_applied_commit_id = Some(match self.last_applied_commit_id {
+            Some(last) => last.max(commit_id),
+            None => commit_id,
+        });
+    }
+
+    pub fn set_epoch(&mut self, epoch: u64) {
+        self.epoch = epoch;
+        self.sync_key_schedule_epoch(None);
+    }
+
+    pub fn advance_epoch_with_context(&mut self, commit_context: Option<&[u8]>) {
+        self.epoch = self.epoch.saturating_add(1);
+        self.sync_key_schedule_epoch(commit_context);
+    }
+
+    pub fn current_epoch_derived_secrets(&self) -> Option<EpochDerivedSecrets> {
+        self.key_schedule
+            .derive_current_epoch_secrets(&self.group_id)
+    }
+
+    pub fn ensure_key_schedule_consistency(&self) -> Result<(), &'static str> {
+        if !self.key_schedule.is_well_formed() {
+            return Err("malformed key schedule chain");
+        }
+        if !self.key_schedule.is_epoch_aligned(self.epoch) {
+            return Err("key schedule epoch does not match group epoch");
+        }
+        Ok(())
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         encode_u8(&mut out, CLIENT_STATE_VERSION);
@@ -60,12 +124,30 @@ impl ClientGroupState {
         for proposal in &self.pending_proposals {
             encode_bytes(&mut out, proposal);
         }
+        match self.last_applied_commit_id {
+            Some(value) => {
+                encode_u8(&mut out, 1);
+                encode_i64(&mut out, value);
+            }
+            None => {
+                encode_u8(&mut out, 0);
+            }
+        }
+        encode_u32(&mut out, self.recent_applied_commit_ids.len() as u32);
+        for id in &self.recent_applied_commit_ids {
+            encode_i64(&mut out, *id);
+        }
+        encode_bytes(&mut out, &self.key_schedule.encode());
         out
     }
 
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let mut decoder = Decoder::new(bytes);
-        if decoder.read_u8()? != CLIENT_STATE_VERSION {
+        let version = decoder.read_u8()?;
+        if version != CLIENT_STATE_VERSION_V1
+            && version != CLIENT_STATE_VERSION_V2
+            && version != CLIENT_STATE_VERSION_V3
+        {
             return None;
         }
 
@@ -81,17 +163,68 @@ impl ClientGroupState {
             pending_proposals.push(decoder.read_bytes()?);
         }
 
+        let (last_applied_commit_id, recent_applied_commit_ids, key_schedule) =
+            if version == CLIENT_STATE_VERSION_V3 {
+                let has_last = decoder.read_u8()?;
+                let last_applied_commit_id = match has_last {
+                    0 => None,
+                    1 => Some(decoder.read_i64()?),
+                    _ => return None,
+                };
+                let replay_count = decoder.read_u32()? as usize;
+                let mut recent = Vec::with_capacity(replay_count);
+                for _ in 0..replay_count {
+                    recent.push(decoder.read_i64()?);
+                }
+                let key_schedule_bytes = decoder.read_bytes()?;
+                let key_schedule = KeyScheduleState::decode(&key_schedule_bytes)?;
+                (last_applied_commit_id, recent, key_schedule)
+            } else if version == CLIENT_STATE_VERSION_V2 {
+                let has_last = decoder.read_u8()?;
+                let last_applied_commit_id = match has_last {
+                    0 => None,
+                    1 => Some(decoder.read_i64()?),
+                    _ => return None,
+                };
+                let replay_count = decoder.read_u32()? as usize;
+                let mut recent = Vec::with_capacity(replay_count);
+                for _ in 0..replay_count {
+                    recent.push(decoder.read_i64()?);
+                }
+                let key_schedule =
+                    KeyScheduleState::bootstrap_to_epoch(&group_id, epoch, current_tree_hash(&ratchet_tree));
+                (last_applied_commit_id, recent, key_schedule)
+            } else {
+                let key_schedule =
+                    KeyScheduleState::bootstrap_to_epoch(&group_id, epoch, current_tree_hash(&ratchet_tree));
+                (None, Vec::new(), key_schedule)
+            };
+
         if decoder.remaining() != 0 {
             return None;
         }
 
-        Some(Self {
+        let mut decoded = Self {
             group_id,
             ratchet_tree,
             own_leaf_index,
             epoch,
             pending_proposals,
-        })
+            last_applied_commit_id,
+            recent_applied_commit_ids,
+            key_schedule,
+        };
+        if version == CLIENT_STATE_VERSION_V3 {
+            if decoded.ensure_key_schedule_consistency().is_err() {
+                return None;
+            }
+        } else {
+            decoded.sync_key_schedule_epoch(None);
+        }
+        if decoded.ensure_key_schedule_consistency().is_err() {
+            return None;
+        }
+        Some(decoded)
     }
 
     pub fn save_to_file(&self, path: impl AsRef<Path>) -> Result<(), ClientStateError> {
@@ -107,6 +240,22 @@ impl ClientGroupState {
         let bytes = fs::read(path)?;
         Self::decode(&bytes).ok_or(ClientStateError::CorruptState)
     }
+
+    fn sync_key_schedule_epoch(&mut self, commit_context: Option<&[u8]>) {
+        let tree_hash = current_tree_hash(&self.ratchet_tree);
+        if self.key_schedule.current_epoch > self.epoch {
+            self.key_schedule =
+                KeyScheduleState::bootstrap_to_epoch(&self.group_id, self.epoch, tree_hash);
+        } else {
+            let _ = self
+                .key_schedule
+                .ensure_epoch(self.epoch, &self.group_id, tree_hash, commit_context);
+        }
+    }
+}
+
+fn current_tree_hash(tree: &RatchetTree) -> [u8; 32] {
+    tree_snapshot_hash(&tree.encode())
 }
 
 fn encode_u8(out: &mut Vec<u8>, value: u8) {
@@ -118,6 +267,10 @@ fn encode_u32(out: &mut Vec<u8>, value: u32) {
 }
 
 fn encode_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn encode_i64(out: &mut Vec<u8>, value: i64) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
@@ -167,6 +320,16 @@ impl<'a> Decoder<'a> {
         buf.copy_from_slice(&self.data[self.pos..self.pos + 8]);
         self.pos += 8;
         Some(u64::from_be_bytes(buf))
+    }
+
+    fn read_i64(&mut self) -> Option<i64> {
+        if self.remaining() < 8 {
+            return None;
+        }
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&self.data[self.pos..self.pos + 8]);
+        self.pos += 8;
+        Some(i64::from_be_bytes(buf))
     }
 
     fn read_bytes(&mut self) -> Option<Vec<u8>> {
@@ -245,13 +408,53 @@ mod tests {
         }
     }
 
+    fn encode_v1_state_for_test(state: &ClientGroupState) -> Vec<u8> {
+        let mut out = Vec::new();
+        encode_u8(&mut out, CLIENT_STATE_VERSION_V1);
+        encode_bytes(&mut out, state.group_id.as_bytes());
+        encode_u64(&mut out, state.epoch);
+        encode_u32(&mut out, state.own_leaf_index as u32);
+        encode_bytes(&mut out, &state.ratchet_tree.encode());
+        encode_u32(&mut out, state.pending_proposals.len() as u32);
+        for proposal in &state.pending_proposals {
+            encode_bytes(&mut out, proposal);
+        }
+        out
+    }
+
+    fn encode_v2_state_for_test(state: &ClientGroupState) -> Vec<u8> {
+        let mut out = Vec::new();
+        encode_u8(&mut out, CLIENT_STATE_VERSION_V2);
+        encode_bytes(&mut out, state.group_id.as_bytes());
+        encode_u64(&mut out, state.epoch);
+        encode_u32(&mut out, state.own_leaf_index as u32);
+        encode_bytes(&mut out, &state.ratchet_tree.encode());
+        encode_u32(&mut out, state.pending_proposals.len() as u32);
+        for proposal in &state.pending_proposals {
+            encode_bytes(&mut out, proposal);
+        }
+        match state.last_applied_commit_id {
+            Some(value) => {
+                encode_u8(&mut out, 1);
+                encode_i64(&mut out, value);
+            }
+            None => encode_u8(&mut out, 0),
+        }
+        encode_u32(&mut out, state.recent_applied_commit_ids.len() as u32);
+        for id in &state.recent_applied_commit_ids {
+            encode_i64(&mut out, *id);
+        }
+        out
+    }
+
     #[test]
     fn client_group_state_encode_decode_roundtrip() {
         let tree = RatchetTree::from_leaves(vec![make_leaf(1), make_leaf(2)]);
         let mut state = ClientGroupState::new("group-1", tree, 0);
-        state.epoch = 3;
+        state.set_epoch(3);
         let proposal = Proposal::Add(make_key_package(3));
         state.queue_proposal(&proposal);
+        state.mark_applied_commit_id(42);
 
         let encoded = state.encode();
         let decoded = ClientGroupState::decode(&encoded).expect("decode state");
@@ -266,7 +469,7 @@ mod tests {
     fn client_group_state_save_load_file() {
         let tree = RatchetTree::from_leaves(vec![make_leaf(10)]);
         let mut state = ClientGroupState::new("group-2", tree, 0);
-        state.epoch = 1;
+        state.set_epoch(1);
 
         let path = std::env::temp_dir().join(format!(
             "hybrid-mls-client-state-{}.bin",
@@ -284,5 +487,132 @@ mod tests {
         let mut bytes = vec![0u8; 16];
         StdRng::seed_from_u64(42).fill_bytes(&mut bytes);
         assert!(ClientGroupState::decode(&bytes).is_none());
+    }
+
+    #[test]
+    fn replay_markers_are_persisted_and_checked() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(9)]);
+        let mut state = ClientGroupState::new("group-r", tree, 0);
+        state.mark_applied_commit_id(10);
+        state.mark_applied_commit_id(14);
+
+        let encoded = state.encode();
+        let decoded = ClientGroupState::decode(&encoded).expect("decode replay state");
+
+        assert_eq!(decoded.last_applied_commit_id, Some(14));
+        assert!(decoded.has_applied_commit_id(10));
+        assert!(decoded.has_applied_commit_id(12));
+        assert!(!decoded.has_applied_commit_id(15));
+    }
+
+    #[test]
+    fn mark_applied_commit_id_dedups_and_keeps_bounded_window() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(7)]);
+        let mut state = ClientGroupState::new("group-w", tree, 0);
+
+        for id in 1..=(MAX_RECENT_APPLIED_COMMITS as i64 + 20) {
+            state.mark_applied_commit_id(id);
+        }
+        state.mark_applied_commit_id(MAX_RECENT_APPLIED_COMMITS as i64 + 20);
+
+        assert_eq!(state.recent_applied_commit_ids.len(), MAX_RECENT_APPLIED_COMMITS);
+        assert_eq!(
+            state.last_applied_commit_id,
+            Some(MAX_RECENT_APPLIED_COMMITS as i64 + 20)
+        );
+        assert!(state.has_applied_commit_id(5));
+        assert!(!state.recent_applied_commit_ids.windows(2).any(|w| w[0] == w[1]));
+    }
+
+    #[test]
+    fn decode_v1_state_defaults_replay_markers() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(4)]);
+        let mut state = ClientGroupState::new("group-v1", tree, 0);
+        state.set_epoch(2);
+
+        let bytes = encode_v1_state_for_test(&state);
+        let decoded = ClientGroupState::decode(&bytes).expect("decode v1 state");
+
+        assert_eq!(decoded.group_id, state.group_id);
+        assert_eq!(decoded.epoch, state.epoch);
+        assert_eq!(decoded.last_applied_commit_id, None);
+        assert!(decoded.recent_applied_commit_ids.is_empty());
+        assert_eq!(decoded.key_schedule.current_epoch, state.epoch);
+    }
+
+    #[test]
+    fn decode_v2_state_bootstraps_key_schedule() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(5)]);
+        let mut state = ClientGroupState::new("group-v2", tree, 0);
+        state.set_epoch(4);
+        state.mark_applied_commit_id(11);
+
+        let bytes = encode_v2_state_for_test(&state);
+        let decoded = ClientGroupState::decode(&bytes).expect("decode v2 state");
+
+        assert_eq!(decoded.epoch, 4);
+        assert_eq!(decoded.key_schedule.current_epoch, 4);
+        assert_eq!(decoded.last_applied_commit_id, Some(11));
+    }
+
+    #[test]
+    fn advance_epoch_updates_key_schedule() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(6)]);
+        let mut state = ClientGroupState::new("group-k", tree, 0);
+        let root0 = state
+            .key_schedule
+            .current_root_secret()
+            .expect("initial root secret");
+
+        state.advance_epoch_with_context(Some(b"commit-epoch-1"));
+        let root1 = state
+            .key_schedule
+            .current_root_secret()
+            .expect("root secret epoch 1");
+
+        assert_eq!(state.epoch, 1);
+        assert_eq!(state.key_schedule.current_epoch, 1);
+        assert_ne!(root0, root1);
+    }
+
+    #[test]
+    fn current_epoch_derived_secrets_rotate_across_epoch_advance() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(8)]);
+        let mut state = ClientGroupState::new("group-secrets", tree, 0);
+        let epoch0 = state
+            .current_epoch_derived_secrets()
+            .expect("epoch 0 derived secrets");
+
+        state.advance_epoch_with_context(Some(b"commit-secrets-1"));
+        let epoch1 = state
+            .current_epoch_derived_secrets()
+            .expect("epoch 1 derived secrets");
+
+        assert_eq!(epoch0.epoch, 0);
+        assert_eq!(epoch1.epoch, 1);
+        assert_ne!(epoch0.handshake_secret, epoch1.handshake_secret);
+        assert_ne!(epoch0.application_secret, epoch1.application_secret);
+        assert_ne!(epoch0.exporter_secret, epoch1.exporter_secret);
+    }
+
+    #[test]
+    fn decode_v3_rejects_key_schedule_epoch_mismatch() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(11)]);
+        let mut state = ClientGroupState::new("group-v3-mismatch", tree, 0);
+        state.set_epoch(2);
+        state.key_schedule.current_epoch = 1;
+
+        let bytes = state.encode();
+        assert!(ClientGroupState::decode(&bytes).is_none());
+    }
+
+    #[test]
+    fn ensure_key_schedule_consistency_rejects_malformed_chain() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(12)]);
+        let mut state = ClientGroupState::new("group-malformed-ks", tree, 0);
+        state.set_epoch(2);
+        state.key_schedule.epoch_secret_nodes[2].parent_epoch = Some(0);
+
+        assert!(state.ensure_key_schedule_consistency().is_err());
     }
 }

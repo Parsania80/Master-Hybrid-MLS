@@ -16,7 +16,7 @@ use sha3::{Digest, Sha3_256};
 use x25519_dalek::{PublicKey as X25519Pub, StaticSecret as X25519Priv};
 
 use hybrid_mls::client_state::ClientGroupState;
-use hybrid_mls::crypto::{HybridPrivateKey, HybridPublicKey, HybridSignPrivKey, HybridSignature, KyberPriv};
+use hybrid_mls::crypto::{HybridPrivateKey, HybridPublicKey, HybridSignPrivKey, KyberPriv};
 use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
 use hybrid_mls::tree::{Commit, KeyPackage, LeafNode, Node, ParentUpdate, PathUpdate, Proposal, RatchetTree};
 
@@ -74,6 +74,10 @@ pub enum Commands {
         username: Option<String>,
         #[arg(long)]
         password: String,
+    },
+    Logout {
+        #[arg(long)]
+        username: Option<String>,
     },
     SubmitProposal {
         #[arg(long)]
@@ -237,6 +241,16 @@ pub enum Commands {
         #[arg(long)]
         max_polls: Option<usize>,
     },
+    ShowDerivedSecrets {
+        #[arg(long)]
+        group_state: PathBuf,
+        #[arg(long)]
+        epoch: Option<u64>,
+        #[arg(long, default_value_t = false)]
+        include_root: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     ShowState,
 }
 
@@ -267,8 +281,16 @@ struct LoginRequest {
 }
 
 #[derive(Debug, Serialize)]
+struct LogoutRequest {
+    username: String,
+    session_id: String,
+    signature: String,
+}
+
+#[derive(Debug, Serialize)]
 struct SubmitProposalRequest {
     username: String,
+    session_id: String,
     proposal_bytes: String,
     signature: String,
 }
@@ -276,6 +298,7 @@ struct SubmitProposalRequest {
 #[derive(Debug, Serialize)]
 struct SubmitCommitRequest {
     username: String,
+    session_id: String,
     commit_bytes: String,
     path_update_bytes: Option<String>,
     signature: String,
@@ -284,6 +307,7 @@ struct SubmitCommitRequest {
 #[derive(Debug, Serialize)]
 struct SubmitAppMessageRequest {
     username: String,
+    session_id: String,
     message_bytes: String,
     signature: String,
 }
@@ -318,8 +342,29 @@ struct KemKeygenFile {
     pq_kem_public_b64: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    const CLI_MAIN_STACK_BYTES: usize = 64 * 1024 * 1024;
+    let handle = std::thread::Builder::new()
+        .name("ds-client-main".to_string())
+        .stack_size(CLI_MAIN_STACK_BYTES)
+        .spawn(|| run_cli().map_err(|err| err.to_string()))
+        .map_err(|err| format!("failed to spawn ds_client main worker: {err}"))?;
+
+    match handle.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(err)) => Err(err.into()),
+        Err(_) => Err("ds_client main worker panicked".into()),
+    }
+}
+
+fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let client = Client::new();
 
@@ -438,12 +483,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(format!("state file already exists: {} (use --force to overwrite)", cli.state.display()).into());
             }
 
-            let (state, sig_b64) = register_state(&username, &password)?;
+            let (mut state, sig_b64) = register_state(&username, &password)?;
             save_state(&cli.state, &state)?;
 
             let req = RegisterRequest {
                 username: username.clone(),
-                password,
+                password: password.clone(),
                 classic_pub_key: state.classic_pk_b64.clone(),
                 pq_pub_key: state.pq_pk_b64.clone(),
                 signature: sig_b64,
@@ -451,7 +496,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let url = format!("{}/v1/auth/register", cli.base_url);
             let resp = client.post(url).json(&req).send().await?;
-            print_response(resp).await?;
+            let status = resp.status();
+            let body = resp.text().await?;
+            println!("{status}\n{body}");
+            if !status.is_success() {
+                return Err(format!("register failed: {status} {body}").into());
+            }
+
+            let priv_key = signing_key_from_state(&state)?;
+            let sign_input = login_signing_input(&username, &password);
+            let signature = sign_message_b64(&priv_key, &sign_input)?;
+            let login_req = LoginRequest {
+                username: username.clone(),
+                password,
+                signature,
+            };
+
+            let login_url = format!("{}/v1/auth/login", cli.base_url);
+            let login_resp = client.post(login_url).json(&login_req).send().await?;
+            let login_status = login_resp.status();
+            let login_body = login_resp.text().await?;
+            println!("{login_status}\n{login_body}");
+            if !login_status.is_success() {
+                return Err(format!("auto-login failed after register: {login_status} {login_body}").into());
+            }
+
+            let json: serde_json::Value = serde_json::from_str(&login_body)?;
+            let Some(token) = json.get("session_id").and_then(|v| v.as_str()) else {
+                return Err("login response missing session_id".into());
+            };
+            state.session_id = Some(token.to_string());
+            save_state(&cli.state, &state)?;
         }
         Commands::Login { username, password } => {
             let mut state = load_state(&cli.state)?;
@@ -462,7 +537,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let priv_key = signing_key_from_state(&state)?;
             let sign_input = login_signing_input(&username, &password);
-            let signature = encode_signature(&priv_key.sign(&sign_input));
+            let signature = sign_message_b64(&priv_key, &sign_input)?;
 
             let req = LoginRequest {
                 username: username.clone(),
@@ -472,8 +547,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let url = format!("{}/v1/auth/login", cli.base_url);
             let resp = client.post(url).json(&req).send().await?;
+            let status = resp.status();
             let body = resp.text().await?;
-            println!("{body}");
+            println!("{status}\n{body}");
+            if !status.is_success() {
+                return Err(format!("login failed: {status} {body}").into());
+            }
 
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
                 if let Some(token) = json.get("session_id").and_then(|v| v.as_str()) {
@@ -482,6 +561,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        Commands::Logout { username } => {
+            let mut state = load_state(&cli.state)?;
+            let username = resolve_username(username, &state)?;
+            let session_id = require_session_id(&state)?;
+            let priv_key = signing_key_from_state(&state)?;
+            let sign_input = logout_signing_input(&username, &session_id);
+            let signature = sign_message_b64(&priv_key, &sign_input)?;
+            let req = LogoutRequest {
+                username,
+                session_id,
+                signature,
+            };
+
+            let url = format!("{}/v1/auth/logout", cli.base_url);
+            let resp = client.post(url).json(&req).send().await?;
+            print_response(resp).await?;
+            state.session_id = None;
+            save_state(&cli.state, &state)?;
+        }
         Commands::SubmitProposal {
             username,
             group_id,
@@ -489,15 +587,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let state = load_state(&cli.state)?;
             let username = resolve_username(username, &state)?;
+            let session_id = require_session_id(&state)?;
             let payload = fs::read(&proposal_file)?;
             let payload_b64 = STANDARD.encode(&payload);
 
             let priv_key = signing_key_from_state(&state)?;
             let sign_input = proposal_signing_input(&username, &group_id, &payload);
-            let signature = encode_signature(&priv_key.sign(&sign_input));
+            let signature = sign_message_b64(&priv_key, &sign_input)?;
 
             let req = SubmitProposalRequest {
                 username,
+                session_id,
                 proposal_bytes: payload_b64,
                 signature,
             };
@@ -514,6 +614,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let state = load_state(&cli.state)?;
             let username = resolve_username(username, &state)?;
+            let session_id = require_session_id(&state)?;
             let commit_payload = fs::read(&commit_file)?;
             let commit_b64 = STANDARD.encode(&commit_payload);
             let path_update_payload = match path_update_file {
@@ -529,10 +630,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &commit_payload,
                 path_update_payload.as_deref(),
             );
-            let signature = encode_signature(&priv_key.sign(&sign_input));
+            let signature = sign_message_b64(&priv_key, &sign_input)?;
 
             let req = SubmitCommitRequest {
                 username,
+                session_id,
                 commit_bytes: commit_b64,
                 path_update_bytes: path_update_b64,
                 signature,
@@ -551,15 +653,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let state = load_state(&cli.state)?;
             let username = resolve_username(username, &state)?;
+            let session_id = require_session_id(&state)?;
             let priv_key = signing_key_from_state(&state)?;
             let kind_label = kind.to_lowercase();
             let sign_input =
                 list_signing_input(&username, &group_id, limit, &kind_label, before_id);
-            let signature = encode_signature(&priv_key.sign(&sign_input));
+            let signature = sign_message_b64(&priv_key, &sign_input)?;
 
             let limit_string = limit.to_string();
             let mut params = vec![
                 ("username", username.as_str()),
+                ("session_id", session_id.as_str()),
                 ("signature", signature.as_str()),
                 ("limit", limit_string.as_str()),
                 ("kind", kind_label.as_str()),
@@ -581,15 +685,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let state = load_state(&cli.state)?;
             let username = resolve_username(username, &state)?;
+            let session_id = require_session_id(&state)?;
             let payload = fs::read(&message_file)?;
             let payload_b64 = STANDARD.encode(&payload);
 
             let priv_key = signing_key_from_state(&state)?;
             let sign_input = app_publish_signing_input(&username, &group_id, &payload);
-            let signature = encode_signature(&priv_key.sign(&sign_input));
+            let signature = sign_message_b64(&priv_key, &sign_input)?;
 
             let req = SubmitAppMessageRequest {
                 username,
+                session_id,
                 message_bytes: payload_b64,
                 signature,
             };
@@ -606,12 +712,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let state = load_state(&cli.state)?;
             let username = resolve_username(username, &state)?;
+            let session_id = require_session_id(&state)?;
             let priv_key = signing_key_from_state(&state)?;
             let sign_input = app_list_signing_input(&username, &group_id, limit, before_id);
-            let signature = encode_signature(&priv_key.sign(&sign_input));
+            let signature = sign_message_b64(&priv_key, &sign_input)?;
             let limit_string = limit.to_string();
             let mut params = vec![
                 ("username", username.as_str()),
+                ("session_id", session_id.as_str()),
                 ("signature", signature.as_str()),
                 ("limit", limit_string.as_str()),
             ];
@@ -634,11 +742,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let state = load_state(&cli.state)?;
             let username = resolve_username(username, &state)?;
+            let session_id = require_session_id(&state)?;
             let priv_key = signing_key_from_state(&state)?;
             let sign_input = app_fetch_signing_input(&username, &group_id, &message_id);
-            let signature = encode_signature(&priv_key.sign(&sign_input));
+            let signature = sign_message_b64(&priv_key, &sign_input)?;
             let query = serde_urlencoded::to_string([
                 ("username", username.as_str()),
+                ("session_id", session_id.as_str()),
                 ("signature", signature.as_str()),
             ])?;
 
@@ -650,6 +760,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let status = resp.status();
             let body = resp.text().await?;
             println!("{status}\n{body}");
+            if !status.is_success() {
+                return Err(format!("fetch app message failed: {status} {body}").into());
+            }
 
             if let Some(path) = out {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -666,15 +779,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let state = load_state(&cli.state)?;
             let username = resolve_username(username, &state)?;
+            let session_id = require_session_id(&state)?;
             let payload = fs::read(&keypackage_file)?;
             let payload_b64 = STANDARD.encode(&payload);
 
             let priv_key = signing_key_from_state(&state)?;
             let sign_input = keypackage_publish_signing_input(&username, &payload);
-            let signature = encode_signature(&priv_key.sign(&sign_input));
+            let signature = sign_message_b64(&priv_key, &sign_input)?;
 
             let req = serde_json::json!({
                 "username": username,
+                "session_id": session_id,
                 "keypackage_bytes": payload_b64,
                 "signature": signature,
             });
@@ -690,15 +805,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let state = load_state(&cli.state)?;
             let username = resolve_username(username, &state)?;
+            let session_id = require_session_id(&state)?;
             let priv_key = signing_key_from_state(&state)?;
             let sign_input = keypackage_fetch_signing_input(&username, &target);
-            let signature = encode_signature(&priv_key.sign(&sign_input));
+            let signature = sign_message_b64(&priv_key, &sign_input)?;
 
             let url = format!("{}/v1/keypackages/{}", cli.base_url, target);
             let resp = client
                 .get(url)
                 .query(&[
                     ("username", username.as_str()),
+                    ("session_id", session_id.as_str()),
                     ("signature", signature.as_str()),
                 ])
                 .send()
@@ -706,6 +823,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let status = resp.status();
             let body = resp.text().await?;
             println!("{status}\n{body}");
+            if !status.is_success() {
+                return Err(format!("fetch keypackage failed: {status} {body}").into());
+            }
 
             if let Some(path) = out {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -841,12 +961,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             fs::write(&commit_out, commit_envelope.encode())?;
             fs::write(&path_update_out, path_update_envelope.encode())?;
 
+            let commit_context = commit.encode();
             state
                 .ratchet_tree
                 .apply_commit(&commit)
                 .ok_or("failed to apply generated commit to local state")?;
             state.clear_pending_proposals();
-            state.epoch = state.epoch.saturating_add(1);
+            state.advance_epoch_with_context(Some(&commit_context));
+            ensure_group_state_consistency(&state, "create-commit apply")?;
             save_group_state(&group_state, &state)?;
 
             println!(
@@ -878,39 +1000,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None => None,
             };
 
+            if path_update_envelope.is_some() && receiver_private_file.is_none() {
+                return Err(
+                    "--receiver-private-file is required when --path-update-file is provided"
+                        .into(),
+                );
+            }
+            if path_update_envelope.is_none() && receiver_private_file.is_some() {
+                return Err(
+                    "--path-update-file is required when --receiver-private-file is provided"
+                        .into(),
+                );
+            }
+
             let derived = if let Some(path_update_envelope) = path_update_envelope {
-                if let Some(receiver_private_file) = receiver_private_file.as_ref() {
-                    let receiver_private = load_receiver_private_from_file(receiver_private_file)?;
-                    let derived = state
-                        .ratchet_tree
-                        .apply_commit_with_path_update(
-                            &commit_envelope.commit,
-                            &path_update_envelope.path_update,
-                            state.own_leaf_index,
-                            &receiver_private,
-                        )
-                        .ok_or("failed to apply commit + path update as receiver")?;
-                    Some(derived)
-                } else {
-                    state
-                        .ratchet_tree
-                        .apply_commit(&commit_envelope.commit)
-                        .ok_or("failed to apply commit without path-update decapsulation")?;
-                    println!(
-                        "note: path update file provided but --receiver-private-file is missing; applied commit only"
-                    );
-                    None
-                }
+                let receiver_private = load_receiver_private_from_file(
+                    receiver_private_file
+                        .as_ref()
+                        .expect("receiver_private_file checked above"),
+                )?;
+                let derived = state
+                    .ratchet_tree
+                    .apply_commit_with_path_update(
+                        &commit_envelope.commit,
+                        &path_update_envelope.path_update,
+                        state.own_leaf_index,
+                        &receiver_private,
+                    )
+                    .ok_or("failed to apply commit + path update as receiver")?;
+                Some(derived)
             } else {
                 state
                     .ratchet_tree
                     .apply_commit(&commit_envelope.commit)
                     .ok_or("failed to apply commit")?;
-                if receiver_private_file.is_some() {
-                    println!(
-                        "note: --receiver-private-file was provided without --path-update-file; ignored"
-                    );
-                }
                 None
             };
 
@@ -920,7 +1043,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             state.clear_pending_proposals();
-            state.epoch = state.epoch.saturating_add(1);
+            let commit_context = commit_envelope.commit.encode();
+            state.advance_epoch_with_context(Some(&commit_context));
+            ensure_group_state_consistency(&state, "apply-received-commit apply")?;
             save_group_state(&group_state, &state)?;
 
             println!(
@@ -967,7 +1092,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let tree = RatchetTree::from_leaves(leaves);
             let mut state = ClientGroupState::new(commit_envelope.group_id.clone(), tree, 0);
-            state.epoch = commit_envelope.epoch;
+            state.set_epoch(commit_envelope.epoch);
 
             state
                 .ratchet_tree
@@ -1003,7 +1128,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             state.clear_pending_proposals();
-            state.epoch = state.epoch.saturating_add(1);
+            let commit_context = commit_envelope.commit.encode();
+            state.advance_epoch_with_context(Some(&commit_context));
+            ensure_group_state_consistency(&state, "join-from-commit apply")?;
             save_group_state(&out, &state)?;
 
             println!(
@@ -1027,6 +1154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let auth_state = load_state(&cli.state)?;
             let username = resolve_username(username, &auth_state)?;
+            let session_id = require_session_id(&auth_state)?;
             let signing_key = signing_key_from_state(&auth_state)?;
             let mut state = load_group_state(&group_state)?;
             let receiver_private = match receiver_private_file {
@@ -1044,6 +1172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &client,
                     &cli.base_url,
                     &username,
+                    &session_id,
                     &signing_key,
                     &mut state,
                     receiver_private.as_ref(),
@@ -1090,6 +1219,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let json = serde_json::to_string_pretty(&state)?;
             println!("{json}");
         }
+        Commands::ShowDerivedSecrets {
+            group_state,
+            epoch,
+            include_root,
+            out,
+        } => {
+            let state = load_group_state(&group_state)?;
+            let target_epoch = epoch.unwrap_or(state.epoch);
+            if target_epoch > state.epoch {
+                return Err(format!(
+                    "requested epoch {} is ahead of local group state epoch {}",
+                    target_epoch, state.epoch
+                )
+                .into());
+            }
+
+            let json = epoch_derived_secrets_json(&state, target_epoch, include_root)?;
+            if let Some(path) = out {
+                fs::write(&path, serde_json::to_vec_pretty(&json)?)?;
+                println!(
+                    "wrote derived secrets to {} (group={}, epoch={})",
+                    path.display(),
+                    state.group_id,
+                    target_epoch
+                );
+            } else {
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            }
+        }
     }
 
     Ok(())
@@ -1108,12 +1266,28 @@ fn save_state(path: &Path, state: &ClientState) -> Result<(), Box<dyn std::error
 }
 
 fn load_group_state(path: &Path) -> Result<ClientGroupState, Box<dyn std::error::Error>> {
-    Ok(ClientGroupState::load_from_file(path)?)
+    let state = ClientGroupState::load_from_file(path)?;
+    state
+        .ensure_key_schedule_consistency()
+        .map_err(|err| format!("group state consistency check failed: {}", err))?;
+    Ok(state)
 }
 
 fn save_group_state(path: &Path, state: &ClientGroupState) -> Result<(), Box<dyn std::error::Error>> {
+    state
+        .ensure_key_schedule_consistency()
+        .map_err(|err| format!("refusing to save inconsistent group state: {}", err))?;
     state.save_to_file(path)?;
     Ok(())
+}
+
+fn ensure_group_state_consistency(
+    state: &ClientGroupState,
+    context: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    state
+        .ensure_key_schedule_consistency()
+        .map_err(|err| format!("key schedule consistency violation after {}: {}", context, err).into())
 }
 
 fn resolve_sender_leaf(
@@ -1141,12 +1315,14 @@ fn ensure_leaf_present(
 
 fn load_keypackage_from_file(path: &Path) -> Result<KeyPackage, Box<dyn std::error::Error>> {
     let bytes = fs::read(path)?;
-    let keypackage =
-        KeyPackage::decode(&bytes).ok_or("invalid keypackage file: decode failed")?;
-    if !keypackage.verify() {
-        return Err("invalid keypackage file: signature verification failed".into());
-    }
-    Ok(keypackage)
+    run_with_large_stack("hybrid-keypackage-verify", move || {
+        let keypackage =
+            KeyPackage::decode(&bytes).ok_or_else(|| "invalid keypackage file: decode failed".to_string())?;
+        if !keypackage.verify() {
+            return Err("invalid keypackage file: signature verification failed".to_string());
+        }
+        Ok(keypackage)
+    })
 }
 
 fn leaf_from_keypackage(key_package: &KeyPackage) -> LeafNode {
@@ -1375,6 +1551,37 @@ fn serialize_derived_path_secrets(derived: &Option<Vec<Option<[u8; 32]>>>) -> se
     serde_json::json!({ "derived_path_secrets_b64": list })
 }
 
+fn epoch_derived_secrets_json(
+    state: &ClientGroupState,
+    epoch: u64,
+    include_root: bool,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let derived = state
+        .key_schedule
+        .derive_secrets_for_epoch(&state.group_id, epoch)
+        .ok_or_else(|| format!("no key-schedule material available for epoch {}", epoch))?;
+
+    let root_secret_b64 = if include_root {
+        let root = state
+            .key_schedule
+            .root_secret_for_epoch(epoch)
+            .ok_or_else(|| format!("missing root secret for epoch {}", epoch))?;
+        Some(STANDARD.encode(root))
+    } else {
+        None
+    };
+
+    Ok(serde_json::json!({
+        "group_id": state.group_id,
+        "epoch": derived.epoch,
+        "handshake_secret_b64": STANDARD.encode(derived.handshake_secret),
+        "application_secret_b64": STANDARD.encode(derived.application_secret),
+        "exporter_secret_b64": STANDARD.encode(derived.exporter_secret),
+        "root_secret_b64": root_secret_b64,
+        "warning": "debug-only output; do not expose in production"
+    }))
+}
+
 fn build_commit_from_pending(
     state: &ClientGroupState,
     sender_leaf: usize,
@@ -1576,39 +1783,83 @@ fn resolve_username(candidate: Option<String>, state: &ClientState) -> Result<St
     Ok(candidate.unwrap_or_else(|| state.username.clone()))
 }
 
+const CRYPTO_WORKER_STACK_BYTES: usize = 32 * 1024 * 1024;
+
+fn run_with_large_stack<T, F>(
+    worker_name: &'static str,
+    f: F,
+) -> Result<T, Box<dyn std::error::Error>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(worker_name.to_string())
+        .stack_size(CRYPTO_WORKER_STACK_BYTES)
+        .spawn(f)
+        .map_err(|err| format!("failed to spawn {worker_name}: {err}"))?;
+    let result = handle
+        .join()
+        .map_err(|_| format!("{worker_name} panicked"))?;
+    result.map_err(|err| err.into())
+}
+
+fn sign_message_b64(
+    priv_key: &HybridSignPrivKey,
+    message: &[u8],
+) -> Result<String, Box<dyn std::error::Error>> {
+    let signer = priv_key.clone();
+    let payload = message.to_vec();
+    run_with_large_stack("hybrid-sign", move || {
+        let sig = signer.sign(&payload);
+        Ok(STANDARD.encode(sig.to_bytes()))
+    })
+}
+
+fn require_session_id(state: &ClientState) -> Result<String, Box<dyn std::error::Error>> {
+    state
+        .session_id
+        .clone()
+        .ok_or_else(|| "missing session_id in state; run login first".into())
+}
+
 fn register_state(username: &str, password: &str) -> Result<(ClientState, String), Box<dyn std::error::Error>> {
-    let mut rng = OsRng;
+    let username = username.to_string();
+    let password = password.to_string();
+    run_with_large_stack("hybrid-register-state", move || {
+        let mut rng = OsRng;
 
-    let mut classic_secret: EdSecretKey = [0u8; 32];
-    rng.fill_bytes(&mut classic_secret);
-    let classic_sk = EdSigningKey::from_bytes(&classic_secret);
-    let classic_pk = classic_sk.verifying_key();
+        let mut classic_secret: EdSecretKey = [0u8; 32];
+        rng.fill_bytes(&mut classic_secret);
+        let classic_sk = EdSigningKey::from_bytes(&classic_secret);
+        let classic_pk = classic_sk.verifying_key();
 
-    let kp = MlDsa65::key_gen(&mut rng);
-    let pq_sk = kp.signing_key().clone();
-    let pq_pk = kp.verifying_key().clone();
+        let kp = MlDsa65::key_gen(&mut rng);
+        let pq_sk = kp.signing_key().clone();
+        let pq_pk = kp.verifying_key().clone();
 
-    let classic_pk_b64 = STANDARD.encode(classic_pk.as_bytes());
-    let pq_pk_b64 = STANDARD.encode(pq_pk.encode());
+        let classic_pk_b64 = STANDARD.encode(classic_pk.as_bytes());
+        let pq_pk_b64 = STANDARD.encode(pq_pk.encode());
 
-    let priv_key = HybridSignPrivKey {
-        classic: classic_sk.clone(),
-        pq: pq_sk.clone(),
-    };
+        let priv_key = HybridSignPrivKey {
+            classic: classic_sk.clone(),
+            pq: pq_sk.clone(),
+        };
 
-    let sign_input = register_signing_input(username, password, &classic_pk_b64, &pq_pk_b64);
-    let signature = encode_signature(&priv_key.sign(&sign_input));
+        let sign_input = register_signing_input(&username, &password, &classic_pk_b64, &pq_pk_b64);
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
 
-    let state = ClientState {
-        username: username.to_string(),
-        classic_sk_b64: STANDARD.encode(classic_sk.to_bytes()),
-        pq_sk_b64: STANDARD.encode(pq_sk.encode()),
-        classic_pk_b64,
-        pq_pk_b64,
-        session_id: None,
-    };
+        let state = ClientState {
+            username: username.to_string(),
+            classic_sk_b64: STANDARD.encode(classic_sk.to_bytes()),
+            pq_sk_b64: STANDARD.encode(pq_sk.encode()),
+            classic_pk_b64,
+            pq_pk_b64,
+            session_id: None,
+        };
 
-    Ok((state, signature))
+        Ok((state, signature))
+    })
 }
 
 fn signing_key_from_state(state: &ClientState) -> Result<HybridSignPrivKey, Box<dyn std::error::Error>> {
@@ -1627,14 +1878,13 @@ fn signing_key_from_state(state: &ClientState) -> Result<HybridSignPrivKey, Box<
     Ok(HybridSignPrivKey { classic: classic_sk, pq: pq_sk })
 }
 
-fn encode_signature(sig: &HybridSignature) -> String {
-    STANDARD.encode(sig.to_bytes())
-}
-
 async fn print_response(resp: reqwest::Response) -> Result<(), Box<dyn std::error::Error>> {
     let status = resp.status();
     let body = resp.text().await?;
     println!("{status}\n{body}");
+    if !status.is_success() {
+        return Err(format!("request failed: {status} {body}").into());
+    }
     Ok(())
 }
 
@@ -1648,6 +1898,7 @@ async fn fetch_and_apply_latest_once(
     client: &Client,
     base_url: &str,
     username: &str,
+    session_id: &str,
     signing_key: &HybridSignPrivKey,
     state: &mut ClientGroupState,
     receiver_private: Option<&HybridPrivateKey>,
@@ -1657,6 +1908,7 @@ async fn fetch_and_apply_latest_once(
         client,
         base_url,
         username,
+        session_id,
         signing_key,
         &state.group_id,
         limit,
@@ -1668,6 +1920,7 @@ async fn fetch_and_apply_latest_once(
         client,
         base_url,
         username,
+        session_id,
         signing_key,
         &state.group_id,
         limit,
@@ -1676,12 +1929,7 @@ async fn fetch_and_apply_latest_once(
     )
     .await?;
 
-    let mut commit_ids = Vec::new();
-    for item in commit_summaries.messages {
-        if let Ok(id) = item.id.parse::<i64>() {
-            commit_ids.push(id);
-        }
-    }
+    let commit_ids = extract_sorted_unique_message_ids(&commit_summaries.messages);
     if commit_ids.is_empty() {
         return Ok(SyncOutcome {
             applied: 0,
@@ -1689,26 +1937,24 @@ async fn fetch_and_apply_latest_once(
             derived_records: Vec::new(),
         });
     }
-    commit_ids.sort_unstable();
-
-    let mut path_ids = Vec::new();
-    for item in path_summaries.messages {
-        if let Ok(id) = item.id.parse::<i64>() {
-            path_ids.push(id);
-        }
-    }
-    path_ids.sort_unstable();
+    let path_ids = extract_sorted_unique_message_ids(&path_summaries.messages);
 
     let mut applied = 0usize;
     let mut skipped = 0usize;
     let mut derived_records = Vec::new();
 
     for (idx, commit_id) in commit_ids.iter().enumerate() {
+        if state.has_applied_commit_id(*commit_id) {
+            skipped += 1;
+            continue;
+        }
+
         let next_commit = commit_ids.get(idx + 1).copied();
         let fetched_commit = ds_fetch_group_message(
             client,
             base_url,
             username,
+            session_id,
             signing_key,
             &state.group_id,
             *commit_id,
@@ -1731,10 +1977,6 @@ async fn fetch_and_apply_latest_once(
             skipped += 1;
             continue;
         }
-        if commit_env.epoch < state.epoch {
-            skipped += 1;
-            continue;
-        }
         if commit_env.epoch > state.epoch {
             println!(
                 "stopping sync at commit_id={} due to epoch gap (local_epoch={}, commit_epoch={})",
@@ -1742,45 +1984,65 @@ async fn fetch_and_apply_latest_once(
             );
             break;
         }
-
-        let maybe_path_id = find_matching_path_update_id(*commit_id, next_commit, &path_ids);
+        if let Err(err) = validate_commit_envelope_metadata(state, &commit_env) {
+            println!(
+                "skipping commit_id={} due to metadata error: {}",
+                commit_id, err
+            );
+            skipped += 1;
+            continue;
+        }
         let mut derived_for_commit: Option<Vec<Option<[u8; 32]>>> = None;
 
-        if let (Some(path_id), Some(receiver_private)) = (maybe_path_id, receiver_private) {
-            let fetched_path = ds_fetch_group_message(
-                client,
-                base_url,
-                username,
-                signing_key,
-                &state.group_id,
-                path_id,
-            )
-            .await?;
-            if fetched_path.kind == "path_update" {
-                let path_bytes = STANDARD.decode(&fetched_path.message_bytes)?;
-                if let Some(path_env) = PathUpdateEnvelope::decode(&path_bytes) {
-                    validate_path_update_envelope_metadata(&commit_env, &path_env)?;
-                    let derived = state
-                        .ratchet_tree
-                        .apply_commit_with_path_update(
-                            &commit_env.commit,
-                            &path_env.path_update,
-                            state.own_leaf_index,
-                            receiver_private,
-                        )
-                        .ok_or("failed to apply commit+path update during sync")?;
-                    derived_for_commit = Some(derived);
-                } else {
-                    state
-                        .ratchet_tree
-                        .apply_commit(&commit_env.commit)
-                        .ok_or("failed to apply commit during sync")?;
+        if let Some(receiver_private) = receiver_private {
+            let mut matched_path_update: Option<(i64, PathUpdateEnvelope)> = None;
+            let candidate_path_ids = candidate_path_update_ids(*commit_id, next_commit, &path_ids);
+
+            for path_id in candidate_path_ids {
+                let fetched_path = ds_fetch_group_message(
+                    client,
+                    base_url,
+                    username,
+                    session_id,
+                    signing_key,
+                    &state.group_id,
+                    path_id,
+                )
+                .await?;
+                if fetched_path.kind != "path_update" {
+                    continue;
                 }
-            } else {
-                state
+                let path_bytes = STANDARD.decode(&fetched_path.message_bytes)?;
+                let Some(path_env) = PathUpdateEnvelope::decode(&path_bytes) else {
+                    continue;
+                };
+                if validate_path_update_envelope_metadata(&commit_env, &path_env).is_ok() {
+                    matched_path_update = Some((path_id, path_env));
+                    break;
+                }
+            }
+
+            if let Some((path_id, path_env)) = matched_path_update {
+                let derived = state
                     .ratchet_tree
-                    .apply_commit(&commit_env.commit)
-                    .ok_or("failed to apply commit during sync")?;
+                    .apply_commit_with_path_update(
+                        &commit_env.commit,
+                        &path_env.path_update,
+                        state.own_leaf_index,
+                        receiver_private,
+                    )
+                    .ok_or("failed to apply commit+path update during sync")?;
+                derived_for_commit = Some(derived);
+                println!(
+                    "applied commit_id={} with matched path_update_id={}",
+                    commit_id, path_id
+                );
+            } else {
+                return Err(format!(
+                    "strict receiver policy: missing or mismatched path_update for commit_id={} (group={}, epoch={}, sender_leaf={})",
+                    commit_id, commit_env.group_id, commit_env.epoch, commit_env.sender_leaf
+                )
+                .into());
             }
         } else {
             state
@@ -1790,7 +2052,9 @@ async fn fetch_and_apply_latest_once(
         }
 
         state.clear_pending_proposals();
-        state.epoch = state.epoch.saturating_add(1);
+        state.advance_epoch_with_context(Some(&commit_bytes));
+        ensure_group_state_consistency(state, "fetch-and-apply-latest commit apply")?;
+        state.mark_applied_commit_id(*commit_id);
         applied += 1;
 
         if let Some(derived) = derived_for_commit {
@@ -1815,6 +2079,7 @@ async fn ds_list_messages(
     client: &Client,
     base_url: &str,
     username: &str,
+    session_id: &str,
     signing_key: &HybridSignPrivKey,
     group_id: &str,
     limit: usize,
@@ -1822,10 +2087,11 @@ async fn ds_list_messages(
     before_id: Option<i64>,
 ) -> Result<DsListMessagesResponse, Box<dyn std::error::Error>> {
     let sign_input = list_signing_input(username, group_id, limit, kind, before_id);
-    let signature = encode_signature(&signing_key.sign(&sign_input));
+    let signature = sign_message_b64(signing_key, &sign_input)?;
     let limit_string = limit.to_string();
     let mut params = vec![
         ("username", username.to_string()),
+        ("session_id", session_id.to_string()),
         ("signature", signature),
         ("limit", limit_string),
         ("kind", kind.to_string()),
@@ -1848,14 +2114,16 @@ async fn ds_fetch_group_message(
     client: &Client,
     base_url: &str,
     username: &str,
+    session_id: &str,
     signing_key: &HybridSignPrivKey,
     group_id: &str,
     message_id: i64,
 ) -> Result<DsFetchGroupMessageResponse, Box<dyn std::error::Error>> {
     let sign_input = fetch_message_signing_input(username, group_id, message_id);
-    let signature = encode_signature(&signing_key.sign(&sign_input));
+    let signature = sign_message_b64(signing_key, &sign_input)?;
     let query = serde_urlencoded::to_string([
         ("username", username.to_string()),
+        ("session_id", session_id.to_string()),
         ("signature", signature),
     ])?;
     let url = format!(
@@ -1871,11 +2139,24 @@ async fn ds_fetch_group_message(
     Ok(serde_json::from_str(&body)?)
 }
 
-fn find_matching_path_update_id(
+fn extract_sorted_unique_message_ids(messages: &[DsMessageSummary]) -> Vec<i64> {
+    let mut ids = Vec::with_capacity(messages.len());
+    for item in messages {
+        if let Ok(id) = item.id.parse::<i64>() {
+            ids.push(id);
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+fn candidate_path_update_ids(
     commit_id: i64,
     next_commit_id: Option<i64>,
     path_ids: &[i64],
-) -> Option<i64> {
+) -> Vec<i64> {
+    let mut out = Vec::new();
     for id in path_ids {
         if *id <= commit_id {
             continue;
@@ -1885,9 +2166,9 @@ fn find_matching_path_update_id(
                 break;
             }
         }
-        return Some(*id);
+        out.push(*id);
     }
-    None
+    out
 }
 
 fn proposal_signing_input(username: &str, group_id: &str, proposal: &[u8]) -> Vec<u8> {
@@ -1972,6 +2253,15 @@ fn login_signing_input(username: &str, password: &str) -> Vec<u8> {
     out
 }
 
+fn logout_signing_input(username: &str, session_id: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"logout|");
+    out.extend_from_slice(username.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(session_id.as_bytes());
+    out
+}
+
 fn app_publish_signing_input(username: &str, group_id: &str, message: &[u8]) -> Vec<u8> {
     let hash = hash_payload(message);
     let mut out = Vec::new();
@@ -2051,4 +2341,171 @@ fn hash_payload(bytes: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&digest);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hybrid_mls::tree::RatchetTree;
+
+    #[test]
+    fn extract_sorted_unique_message_ids_sorts_dedups_and_skips_invalid() {
+        let messages = vec![
+            DsMessageSummary {
+                id: "10".to_string(),
+            },
+            DsMessageSummary {
+                id: "3".to_string(),
+            },
+            DsMessageSummary {
+                id: "10".to_string(),
+            },
+            DsMessageSummary {
+                id: "oops".to_string(),
+            },
+            DsMessageSummary {
+                id: "7".to_string(),
+            },
+        ];
+
+        let ids = extract_sorted_unique_message_ids(&messages);
+        assert_eq!(ids, vec![3, 7, 10]);
+    }
+
+    #[test]
+    fn candidate_path_update_ids_respects_commit_boundaries() {
+        let paths = vec![1, 2, 3, 5, 8, 13, 21];
+        let selected = candidate_path_update_ids(5, Some(13), &paths);
+        assert_eq!(selected, vec![8]);
+
+        let selected_to_end = candidate_path_update_ids(13, None, &paths);
+        assert_eq!(selected_to_end, vec![21]);
+    }
+
+    #[test]
+    fn validate_commit_envelope_metadata_rejects_sender_mismatch() {
+        let mut state = ClientGroupState::new("group-a", RatchetTree::new(1), 0);
+        state.set_epoch(4);
+
+        let envelope = CommitEnvelope {
+            group_id: "group-a".to_string(),
+            epoch: 4,
+            sender_leaf: 0,
+            commit: Commit {
+                sender: 1,
+                proposals: Vec::new(),
+                path: Vec::new(),
+            },
+        };
+
+        assert!(validate_commit_envelope_metadata(&state, &envelope).is_err());
+    }
+
+    #[test]
+    fn validate_path_update_envelope_metadata_rejects_epoch_mismatch() {
+        let commit = CommitEnvelope {
+            group_id: "group-a".to_string(),
+            epoch: 5,
+            sender_leaf: 0,
+            commit: Commit {
+                sender: 0,
+                proposals: Vec::new(),
+                path: Vec::new(),
+            },
+        };
+        let path = PathUpdateEnvelope {
+            group_id: "group-a".to_string(),
+            epoch: 6,
+            sender_leaf: 0,
+            path_update: PathUpdate {
+                path_secrets: Vec::new(),
+                ciphertexts: Vec::new(),
+            },
+        };
+
+        assert!(validate_path_update_envelope_metadata(&commit, &path).is_err());
+    }
+
+    #[test]
+    fn validate_path_update_envelope_metadata_rejects_group_mismatch() {
+        let commit = CommitEnvelope {
+            group_id: "group-a".to_string(),
+            epoch: 5,
+            sender_leaf: 0,
+            commit: Commit {
+                sender: 0,
+                proposals: Vec::new(),
+                path: Vec::new(),
+            },
+        };
+        let path = PathUpdateEnvelope {
+            group_id: "group-b".to_string(),
+            epoch: 5,
+            sender_leaf: 0,
+            path_update: PathUpdate {
+                path_secrets: Vec::new(),
+                ciphertexts: Vec::new(),
+            },
+        };
+
+        assert!(validate_path_update_envelope_metadata(&commit, &path).is_err());
+    }
+
+    #[test]
+    fn validate_path_update_envelope_metadata_rejects_sender_mismatch() {
+        let commit = CommitEnvelope {
+            group_id: "group-a".to_string(),
+            epoch: 5,
+            sender_leaf: 1,
+            commit: Commit {
+                sender: 1,
+                proposals: Vec::new(),
+                path: Vec::new(),
+            },
+        };
+        let path = PathUpdateEnvelope {
+            group_id: "group-a".to_string(),
+            epoch: 5,
+            sender_leaf: 0,
+            path_update: PathUpdate {
+                path_secrets: Vec::new(),
+                ciphertexts: Vec::new(),
+            },
+        };
+
+        assert!(validate_path_update_envelope_metadata(&commit, &path).is_err());
+    }
+
+    #[test]
+    fn epoch_derived_secrets_json_includes_expected_fields() {
+        let state = ClientGroupState::new("group-debug", RatchetTree::new(1), 0);
+        let json =
+            epoch_derived_secrets_json(&state, 0, true).expect("derive json for epoch 0");
+
+        assert_eq!(json["group_id"].as_str(), Some("group-debug"));
+        assert_eq!(json["epoch"].as_u64(), Some(0));
+        assert!(json["handshake_secret_b64"].as_str().is_some());
+        assert!(json["application_secret_b64"].as_str().is_some());
+        assert!(json["exporter_secret_b64"].as_str().is_some());
+        assert!(json["root_secret_b64"].as_str().is_some());
+    }
+
+    #[test]
+    fn epoch_derived_secrets_json_hides_root_when_not_requested() {
+        let state = ClientGroupState::new("group-debug", RatchetTree::new(1), 0);
+        let json =
+            epoch_derived_secrets_json(&state, 0, false).expect("derive json without root");
+
+        assert!(json["root_secret_b64"].is_null());
+    }
+
+    #[test]
+    fn ensure_group_state_consistency_rejects_epoch_mismatch() {
+        let mut state = ClientGroupState::new("group-check", RatchetTree::new(1), 0);
+        state.set_epoch(2);
+        state.key_schedule.current_epoch = 1;
+
+        let result = ensure_group_state_consistency(&state, "unit test");
+        assert!(result.is_err());
+    }
 }

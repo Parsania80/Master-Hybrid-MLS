@@ -53,7 +53,7 @@ pub struct RegisterResponse {
     pub user_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
@@ -65,9 +65,22 @@ pub struct LoginResponse {
     pub session_id: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct LogoutRequest {
+    pub username: String,
+    pub session_id: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LogoutResponse {
+    pub logged_out: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SubmitProposalRequest {
     pub username: String,
+    pub session_id: String,
     pub proposal_bytes: String,
     pub signature: String,
 }
@@ -82,6 +95,7 @@ pub struct SubmitProposalResponse {
 #[derive(Debug, Deserialize)]
 pub struct SubmitCommitRequest {
     pub username: String,
+    pub session_id: String,
     pub commit_bytes: String,
     pub path_update_bytes: Option<String>,
     pub signature: String,
@@ -96,6 +110,7 @@ pub struct SubmitCommitResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SubmitAppMessageRequest {
     pub username: String,
+    pub session_id: String,
     pub message_bytes: String,
     pub signature: String,
 }
@@ -109,6 +124,7 @@ pub struct SubmitAppMessageResponse {
 #[derive(Debug, Deserialize)]
 pub struct ListMessagesQuery {
     pub username: Option<String>,
+    pub session_id: Option<String>,
     pub signature: Option<String>,
     pub limit: Option<usize>,
     pub kind: Option<String>,
@@ -118,6 +134,7 @@ pub struct ListMessagesQuery {
 #[derive(Debug, Deserialize)]
 pub struct FetchMessageQuery {
     pub username: String,
+    pub session_id: String,
     pub signature: String,
 }
 
@@ -152,6 +169,7 @@ pub struct FetchGroupMessageResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PublishKeyPackageRequest {
     pub username: String,
+    pub session_id: String,
     pub keypackage_bytes: String,
     pub signature: String,
 }
@@ -174,6 +192,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/healthz", get(health))
         .route("/v1/auth/register", post(register))
         .route("/v1/auth/login", post(login))
+        .route("/v1/auth/logout", post(logout))
         .route("/v1/keypackages", post(publish_keypackage))
         .route("/v1/keypackages/:target", get(fetch_keypackage))
         .route("/v1/groups/:group_id/app-messages", post(submit_app_message))
@@ -274,6 +293,7 @@ async fn login(
 
     let token = generate_token();
     let now = now_unix();
+    let _ = storage.purge_expired_sessions(now);
     let expires_at = now + 60 * 60 * 24;
     if let Err(err) = storage.insert_session(&token, &req.username, now, expires_at) {
         return storage_error(err);
@@ -296,6 +316,36 @@ async fn login(
         .into_response()
 }
 
+async fn logout(
+    State(state): State<ApiState>,
+    Json(req): Json<LogoutRequest>,
+) -> impl IntoResponse {
+    let sign_input = logout_signing_input(&req.username, &req.session_id);
+    if let Err(resp) = verify_authenticated_request(
+        &state,
+        &req.username,
+        &req.session_id,
+        sign_input,
+        &req.signature,
+    ) {
+        return resp;
+    }
+
+    let mut storage = match open_storage(&state) {
+        Ok(s) => s,
+        Err(err) => return storage_error(err),
+    };
+    if let Err(err) = storage.delete_session(&req.session_id) {
+        return storage_error(err);
+    }
+
+    (
+        StatusCode::OK,
+        Json(LogoutResponse { logged_out: true }),
+    )
+        .into_response()
+}
+
 async fn submit_proposal(
     State(state): State<ApiState>,
     Path(group_id): Path<String>,
@@ -308,6 +358,7 @@ async fn submit_proposal(
     if let Err(resp) = verify_request_signature(
         &state,
         &req.username,
+        &req.session_id,
         proposal_signing_input(&req.username, &group_id, &payload),
         &req.signature,
     ) {
@@ -360,6 +411,7 @@ async fn submit_commit(
     if let Err(resp) = verify_request_signature(
         &state,
         &req.username,
+        &req.session_id,
         commit_signing_input(&req.username, &group_id, &commit_payload, path_update_payload.as_deref()),
         &req.signature,
     ) {
@@ -417,12 +469,15 @@ async fn list_messages(
     Path(group_id): Path<String>,
     Query(query): Query<ListMessagesQuery>,
 ) -> impl IntoResponse {
-    if let (Some(username), Some(signature)) = (&query.username, &query.signature) {
+    if let (Some(username), Some(session_id), Some(signature)) =
+        (&query.username, &query.session_id, &query.signature)
+    {
         let kind_label = query.kind.as_deref().unwrap_or("any");
         let before_id = query.before_id;
         if let Err(resp) = verify_request_signature(
             &state,
             username,
+            session_id,
             list_signing_input(
                 username,
                 &group_id,
@@ -435,7 +490,7 @@ async fn list_messages(
             return resp;
         }
     } else {
-        return auth_error("missing_signature");
+        return auth_error("missing_session");
     }
     let limit = query.limit.unwrap_or(50);
     let storage = match open_storage(&state) {
@@ -492,6 +547,7 @@ async fn submit_app_message(
     if let Err(resp) = verify_request_signature(
         &state,
         &req.username,
+        &req.session_id,
         app_publish_signing_input(&req.username, &group_id, &payload),
         &req.signature,
     ) {
@@ -522,14 +578,17 @@ async fn list_app_messages(
     Path(group_id): Path<String>,
     Query(query): Query<ListMessagesQuery>,
 ) -> impl IntoResponse {
-    let (Some(username), Some(signature)) = (&query.username, &query.signature) else {
-        return auth_error("missing_signature");
+    let (Some(username), Some(session_id), Some(signature)) =
+        (&query.username, &query.session_id, &query.signature)
+    else {
+        return auth_error("missing_session");
     };
     let limit = query.limit.unwrap_or(50);
     let before_id = query.before_id;
     if let Err(resp) = verify_request_signature(
         &state,
         username,
+        session_id,
         app_list_signing_input(username, &group_id, limit, before_id),
         signature,
     ) {
@@ -571,6 +630,7 @@ async fn fetch_app_message(
     if let Err(resp) = verify_request_signature(
         &state,
         &query.username,
+        &query.session_id,
         app_fetch_signing_input(&query.username, &group_id, message_id),
         &query.signature,
     ) {
@@ -619,6 +679,7 @@ async fn fetch_group_message(
     if let Err(resp) = verify_request_signature(
         &state,
         &query.username,
+        &query.session_id,
         fetch_message_signing_input(&query.username, &group_id, message_id),
         &query.signature,
     ) {
@@ -689,6 +750,10 @@ async fn publish_keypackage(
         return auth_error("invalid_signature");
     }
 
+    if let Err(resp) = verify_session_only(&state, &req.username, &req.session_id) {
+        return resp;
+    }
+
     let identity_bytes = keypackage.identity.to_bytes();
     if identity_bytes.len() < 32 {
         return auth_error("invalid_keypackage_identity");
@@ -723,14 +788,17 @@ async fn fetch_keypackage(
     Query(query): Query<ListMessagesQuery>,
 ) -> impl IntoResponse {
     let Some(username) = query.username.as_ref() else {
-        return auth_error("missing_signature");
+        return auth_error("missing_session");
+    };
+    let Some(session_id) = query.session_id.as_ref() else {
+        return auth_error("missing_session");
     };
     let Some(signature) = query.signature.as_ref() else {
         return auth_error("missing_signature");
     };
 
     let sign_input = keypackage_fetch_signing_input(username, &target);
-    if let Err(resp) = verify_request_signature(&state, username, sign_input, signature) {
+    if let Err(resp) = verify_request_signature(&state, username, session_id, sign_input, signature) {
         return resp;
     }
 
@@ -820,10 +888,42 @@ fn auth_error(code: &str) -> Response {
 fn verify_request_signature(
     state: &ApiState,
     username: &str,
+    session_id: &str,
     message: Vec<u8>,
     signature_b64: &str,
 ) -> Result<(), Response> {
-    let storage = open_storage(state).map_err(storage_error)?;
+    verify_authenticated_request(
+        state,
+        username,
+        session_id,
+        message,
+        signature_b64,
+    )
+}
+
+fn verify_authenticated_request(
+    state: &ApiState,
+    username: &str,
+    session_id: &str,
+    message: Vec<u8>,
+    signature_b64: &str,
+) -> Result<(), Response> {
+    let mut storage = open_storage(state).map_err(storage_error)?;
+    let now = now_unix();
+
+    let Some((session_username, expires_at)) =
+        storage.get_session(session_id).map_err(storage_error)?
+    else {
+        return Err(auth_error("invalid_session"));
+    };
+    if session_username != username {
+        return Err(auth_error("invalid_session"));
+    }
+    if expires_at <= now {
+        let _ = storage.delete_session(session_id);
+        return Err(auth_error("session_expired"));
+    }
+
     let Some((classic_pub, pq_pub)) = storage.get_user_keys(username).map_err(storage_error)? else {
         return Err(auth_error("unknown_user"));
     };
@@ -833,6 +933,28 @@ fn verify_request_signature(
     } else {
         Err(auth_error("invalid_signature"))
     }
+}
+
+fn verify_session_only(
+    state: &ApiState,
+    username: &str,
+    session_id: &str,
+) -> Result<(), Response> {
+    let mut storage = open_storage(state).map_err(storage_error)?;
+    let now = now_unix();
+    let Some((session_username, expires_at)) =
+        storage.get_session(session_id).map_err(storage_error)?
+    else {
+        return Err(auth_error("invalid_session"));
+    };
+    if session_username != username {
+        return Err(auth_error("invalid_session"));
+    }
+    if expires_at <= now {
+        let _ = storage.delete_session(session_id);
+        return Err(auth_error("session_expired"));
+    }
+    Ok(())
 }
 
 fn verify_with_keys(
@@ -1004,6 +1126,15 @@ fn login_signing_input(username: &str, password: &str) -> Vec<u8> {
     out
 }
 
+fn logout_signing_input(username: &str, session_id: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"logout|");
+    out.extend_from_slice(username.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(session_id.as_bytes());
+    out
+}
+
 fn keypackage_publish_signing_input(username: &str, keypackage: &[u8]) -> Vec<u8> {
     let hash = hash_payload(keypackage);
     let mut out = Vec::new();
@@ -1157,24 +1288,21 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn keypackage_publish_and_fetch_roundtrip() {
-        let (state, base) = temp_state("kp-roundtrip");
-        let app = router(state.clone());
-
-        let mut rng = OsRng;
-        let (priv_key, pub_key, classic_b64, pq_b64) = make_signing_keys(&mut rng);
-
-        let username = "alice";
-        let password = "secret";
-        let sign_input = register_signing_input(username, password, &classic_b64, &pq_b64);
+    async fn register_and_login(
+        app: &axum::Router,
+        username: &str,
+        password: &str,
+        classic_b64: &str,
+        pq_b64: &str,
+        priv_key: &HybridSignPrivKey,
+    ) -> String {
+        let sign_input = register_signing_input(username, password, classic_b64, pq_b64);
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
-
         let register = RegisterRequest {
             username: username.to_string(),
             password: password.to_string(),
-            classic_pub_key: classic_b64.clone(),
-            pq_pub_key: pq_b64.clone(),
+            classic_pub_key: classic_b64.to_string(),
+            pq_pub_key: pq_b64.to_string(),
             signature,
         };
 
@@ -1192,12 +1320,59 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
+        let sign_input = login_signing_input(username, password);
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
+        let login = LoginRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+            signature,
+        };
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&login).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        json["session_id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn keypackage_publish_and_fetch_roundtrip() {
+        let (state, base) = temp_state("kp-roundtrip");
+        let app = router(state.clone());
+
+        let mut rng = OsRng;
+        let (priv_key, pub_key, classic_b64, pq_b64) = make_signing_keys(&mut rng);
+
+        let username = "alice";
+        let password = "secret";
+        let session_id = register_and_login(
+            &app,
+            username,
+            password,
+            &classic_b64,
+            &pq_b64,
+            &priv_key,
+        )
+        .await;
+
         let keypackage = make_keypackage(7, pub_key.clone(), &priv_key);
         let kp_bytes = keypackage.encode();
         let sign_input = keypackage_publish_signing_input(username, &kp_bytes);
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let publish = PublishKeyPackageRequest {
             username: username.to_string(),
+            session_id: session_id.clone(),
             keypackage_bytes: STANDARD.encode(&kp_bytes),
             signature,
         };
@@ -1220,6 +1395,7 @@ mod tests {
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let query = serde_urlencoded::to_string([
             ("username", username),
+            ("session_id", session_id.as_str()),
             ("signature", signature.as_str()),
         ])
         .unwrap();
@@ -1254,29 +1430,15 @@ mod tests {
 
         let username = "bob";
         let password = "secret";
-        let sign_input = register_signing_input(username, password, &classic_b64, &pq_b64);
-        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
-        let register = RegisterRequest {
-            username: username.to_string(),
-            password: password.to_string(),
-            classic_pub_key: classic_b64.clone(),
-            pq_pub_key: pq_b64.clone(),
-            signature,
-        };
-
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/auth/register")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&register).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        let session_id = register_and_login(
+            &app,
+            username,
+            password,
+            &classic_b64,
+            &pq_b64,
+            &priv_key,
+        )
+        .await;
 
         let (other_priv, other_pub, _classic_b64, _pq_b64) = make_signing_keys(&mut rng);
         let keypackage = make_keypackage(9, other_pub.clone(), &other_priv);
@@ -1285,6 +1447,7 @@ mod tests {
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let publish = PublishKeyPackageRequest {
             username: username.to_string(),
+            session_id,
             keypackage_bytes: STANDARD.encode(&kp_bytes),
             signature,
         };
@@ -1314,29 +1477,15 @@ mod tests {
         let (priv_key, _pub_key, classic_b64, pq_b64) = make_signing_keys(&mut rng);
         let username = "carol";
         let password = "secret";
-        let sign_input = register_signing_input(username, password, &classic_b64, &pq_b64);
-        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
-        let register = RegisterRequest {
-            username: username.to_string(),
-            password: password.to_string(),
-            classic_pub_key: classic_b64.clone(),
-            pq_pub_key: pq_b64.clone(),
-            signature,
-        };
-
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/auth/register")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&register).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        let session_id = register_and_login(
+            &app,
+            username,
+            password,
+            &classic_b64,
+            &pq_b64,
+            &priv_key,
+        )
+        .await;
 
         let group_id = "group-app";
         let payload = b"hello-app";
@@ -1344,6 +1493,7 @@ mod tests {
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let submit = SubmitAppMessageRequest {
             username: username.to_string(),
+            session_id: session_id.clone(),
             message_bytes: STANDARD.encode(payload),
             signature,
         };
@@ -1366,6 +1516,7 @@ mod tests {
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let query = serde_urlencoded::to_string([
             ("username", username),
+            ("session_id", session_id.as_str()),
             ("signature", signature.as_str()),
             ("limit", "10"),
         ])
@@ -1391,6 +1542,7 @@ mod tests {
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let query = serde_urlencoded::to_string([
             ("username", username),
+            ("session_id", session_id.as_str()),
             ("signature", signature.as_str()),
         ])
         .unwrap();
@@ -1427,29 +1579,15 @@ mod tests {
         let (priv_key, _pub_key, classic_b64, pq_b64) = make_signing_keys(&mut rng);
         let username = "diana";
         let password = "secret";
-        let sign_input = register_signing_input(username, password, &classic_b64, &pq_b64);
-        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
-        let register = RegisterRequest {
-            username: username.to_string(),
-            password: password.to_string(),
-            classic_pub_key: classic_b64.clone(),
-            pq_pub_key: pq_b64.clone(),
-            signature,
-        };
-
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/auth/register")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&register).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        let session_id = register_and_login(
+            &app,
+            username,
+            password,
+            &classic_b64,
+            &pq_b64,
+            &priv_key,
+        )
+        .await;
 
         let group_id = "group-fetch";
 
@@ -1458,6 +1596,7 @@ mod tests {
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let proposal_req = serde_json::json!({
             "username": username,
+            "session_id": session_id.clone(),
             "proposal_bytes": STANDARD.encode(proposal_payload),
             "signature": signature,
         });
@@ -1481,6 +1620,7 @@ mod tests {
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let commit_req = serde_json::json!({
             "username": username,
+            "session_id": session_id.clone(),
             "commit_bytes": STANDARD.encode(commit_payload),
             "path_update_bytes": STANDARD.encode(path_payload),
             "signature": signature,
@@ -1503,6 +1643,7 @@ mod tests {
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let query = serde_urlencoded::to_string([
             ("username", username),
+            ("session_id", session_id.as_str()),
             ("signature", signature.as_str()),
             ("limit", "10"),
             ("kind", "commit"),
@@ -1528,6 +1669,7 @@ mod tests {
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let query = serde_urlencoded::to_string([
             ("username", username),
+            ("session_id", session_id.as_str()),
             ("signature", signature.as_str()),
         ])
         .unwrap();
@@ -1553,6 +1695,7 @@ mod tests {
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let query = serde_urlencoded::to_string([
             ("username", username),
+            ("session_id", session_id.as_str()),
             ("signature", signature.as_str()),
             ("limit", "10"),
             ("kind", "path_update"),
@@ -1578,6 +1721,7 @@ mod tests {
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let query = serde_urlencoded::to_string([
             ("username", username),
+            ("session_id", session_id.as_str()),
             ("signature", signature.as_str()),
         ])
         .unwrap();

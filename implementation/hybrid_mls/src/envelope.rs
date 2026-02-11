@@ -239,4 +239,51 @@ mod tests {
         encoded.push(0xFF);
         assert!(ProposalEnvelope::decode(&encoded).is_none());
     }
+
+    #[test]
+    fn commit_envelope_rejects_truncated_and_trailing_bytes() {
+        let envelope = CommitEnvelope {
+            group_id: "group-c".to_string(),
+            epoch: 3,
+            sender_leaf: 1,
+            commit: Commit {
+                sender: 1,
+                proposals: vec![Proposal::Remove { leaf_index: 0 }],
+                path: Vec::new(),
+            },
+        };
+        let encoded = envelope.encode();
+        assert!(CommitEnvelope::decode(&encoded).is_some());
+
+        let mut truncated = encoded.clone();
+        let _ = truncated.pop();
+        assert!(CommitEnvelope::decode(&truncated).is_none());
+
+        let mut trailing = encoded;
+        trailing.push(0xAA);
+        assert!(CommitEnvelope::decode(&trailing).is_none());
+    }
+
+    #[test]
+    fn path_update_envelope_rejects_truncated_and_trailing_bytes() {
+        let envelope = PathUpdateEnvelope {
+            group_id: "group-p".to_string(),
+            epoch: 4,
+            sender_leaf: 2,
+            path_update: PathUpdate {
+                path_secrets: Vec::new(),
+                ciphertexts: Vec::new(),
+            },
+        };
+        let encoded = envelope.encode();
+        assert!(PathUpdateEnvelope::decode(&encoded).is_some());
+
+        let mut truncated = encoded.clone();
+        let _ = truncated.pop();
+        assert!(PathUpdateEnvelope::decode(&truncated).is_none());
+
+        let mut trailing = encoded;
+        trailing.push(0xBB);
+        assert!(PathUpdateEnvelope::decode(&trailing).is_none());
+    }
 }

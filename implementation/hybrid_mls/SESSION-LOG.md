@@ -65,3 +65,112 @@
 [2026-02-09 22:20] [OPERATOR] Requested visible log folder name for demo outputs.
 [2026-02-09 22:20] [AGENT] Changed demo script default `RUN_DIR` to `local-1ds-4clients-demo-run` and updated README to document visible log path.
 [2026-02-09 22:20] [AGENT] Migrated existing hidden `.local-demo` run artifacts to `local-1ds-4clients-demo-run` for immediate log visibility.
+[2026-02-11 12:10] [OPERATOR] Requested execution of Part 3 / Task 5 (multi-client sync hardening).
+[2026-02-11 12:10] [AGENT] Hardened ds_client sync path: strict commit-envelope metadata validation during polling, sorted+deduplicated DS message IDs, and metadata-based path-update matching.
+[2026-02-11 12:10] [AGENT] Added ds_client unit tests for sync helper behavior and metadata rejection cases; verified with `cargo test --bin ds_client`.
+[2026-02-11 12:13] [OPERATOR] Requested continuation of Part 3 / Task 5 with persisted replay-protection state in client group state.
+[2026-02-11 12:13] [AGENT] Extended `ClientGroupState` persistence format (v2) with replay markers: `last_applied_commit_id` and bounded `recent_applied_commit_ids`, with backward-compatible decode for v1 states.
+[2026-02-11 12:13] [AGENT] Wired ds_client sync loop to skip already applied commit IDs and mark commit IDs after successful apply; verified with `cargo test --lib` and `cargo test --bin ds_client`.
+[2026-02-11 12:15] [AGENT] Added v1-state compatibility test for new replay marker format and updated README sync notes with replay persistence and monotonic-ID assumption.
+[2026-02-11 12:19] [OPERATOR] Requested Task 5 continuation with integration tests for replay/out-of-order/noisy DS commit streams.
+[2026-02-11 12:19] [AGENT] Restored explicit stop-on-future-epoch-gap behavior in ds_client sync loop while keeping replay/noise skip logic.
+[2026-02-11 12:19] [AGENT] Added integration test file `tests/sync_stream_hardening.rs` covering replay persistence, out-of-order/noisy stream handling, and epoch-gap stop semantics.
+[2026-02-11 12:19] [AGENT] Verified with `cargo test --test sync_stream_hardening` and `cargo test --lib --bin ds_client`.
+[2026-02-11 12:26] [OPERATOR] Requested DS-backed end-to-end integration test using real HTTP router + `fetch-and-apply-latest`.
+[2026-02-11 12:26] [AGENT] Added `tests/ds_fetch_apply_e2e.rs` which starts the DS router on a random port and executes real `ds_client` commands for register/keypackage/proposal/commit/fetch-and-apply/replay verification.
+[2026-02-11 12:26] [AGENT] Verified DS-backed test with elevated listener permissions via `cargo test --test ds_fetch_apply_e2e`; also re-verified `cargo test --test sync_stream_hardening` and `cargo test --lib --bin ds_client`.
+[2026-02-11 12:31] [OPERATOR] Requested Task 5 continuation with strict receiver policy when path update is missing/mismatched.
+[2026-02-11 12:31] [AGENT] Enforced strict receiver policy in ds_client sync: in receiver mode, missing/mismatched path update now aborts `fetch-and-apply-latest` instead of applying commit without path decapsulation.
+[2026-02-11 12:31] [AGENT] Enforced strict argument pairing in `apply-received-commit`: `--path-update-file` and `--receiver-private-file` must be provided together.
+[2026-02-11 12:31] [AGENT] Added DS-backed e2e negative test `strict_receiver_policy_rejects_missing_path_update` and verified with `cargo test --test ds_fetch_apply_e2e` (elevated), plus `cargo test --bin ds_client` and `cargo test --lib`.
+[2026-02-11 12:36] [OPERATOR] Requested DS-backed negative test for mismatched (not missing) path-update metadata under Task 5.
+[2026-02-11 12:36] [AGENT] Added DS-backed e2e test `strict_receiver_policy_rejects_mismatched_path_update_metadata` by mutating `PathUpdateEnvelope.sender_leaf` before submit.
+[2026-02-11 12:36] [AGENT] Verified with `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions), plus `cargo test --bin ds_client` and `cargo test --lib`.
+[2026-02-11 12:41] [OPERATOR] Requested start of Part 3 / Task 6 for full 3-member cryptographic commit-chain sync integration.
+[2026-02-11 12:41] [AGENT] Added DS-backed e2e test `three_member_commit_chain_sync_converges_with_path_updates` covering `A update -> B/C sync -> B update -> A/C sync` with receiver path decapsulation and final tree convergence at epoch 2.
+[2026-02-11 12:41] [AGENT] Verified with `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions), `cargo test --test sync_stream_hardening`, `cargo test --bin ds_client`, and `cargo test --lib`.
+[2026-02-11 12:47] [OPERATOR] Requested Task 6 continuation with DS-backed 3-member Add -> Update -> Remove chain coverage.
+[2026-02-11 12:47] [AGENT] Added DS-backed e2e test `three_member_add_update_remove_chain_converges_after_membership_change` covering `A adds C -> B updates -> A removes C`, with join-from-commit onboarding and final A/B tree convergence after membership removal.
+[2026-02-11 12:47] [AGENT] Verified with `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions), `cargo test --bin ds_client`, and `cargo test --lib`.
+[2026-02-11 12:52] [OPERATOR] Requested start of Part 4 / Task 3 for RFC-style derivation labels/context alignment.
+[2026-02-11 12:52] [AGENT] Aligned derivation inputs to MLS 1.0-style labeled framing in `src/crypto.rs` (hybrid KEM shared-secret KDF + HPKE key/nonce derivation) and `src/tree.rs` (path secret derivation + path encryption context).
+[2026-02-11 12:52] [AGENT] Added context-binding unit tests in `src/crypto.rs` and `src/tree.rs` and verified with `cargo test --lib`, `cargo test --bin ds_client`, `cargo test --test commit_path_two_client_states`, and `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions).
+[2026-02-11 12:55] [OPERATOR] Requested pause on coding and a short RFC 9420 mapping note in README.
+[2026-02-11 12:55] [AGENT] Added a concise RFC 9420 mapping note in `README.md` describing current labeled context/derivation behavior versus RFC terms and clarifying prototype-vs-full-RFC status.
+[2026-02-11 12:58] [OPERATOR] Requested continuation of Part 4 / Task 3 with compact mapping of current labels to target RFC labels/sections.
+[2026-02-11 12:58] [AGENT] Added compact RFC 9420 label mapping table in `README.md` that maps each current derivation/context label to target RFC label/term and section, including prototype-vs-RFC gap notes.
+[2026-02-11 13:00] [OPERATOR] Requested start of Part 4 / Task 4 (tampered path ciphertext/metadata negative tests).
+[2026-02-11 13:00] [AGENT] Added path-update tamper negatives in `src/tree.rs` for payload corruption, KEM ciphertext corruption, and resolution/ciphertext-count mismatch; each case now fails receiver apply.
+[2026-02-11 13:00] [AGENT] Added metadata-negative tests in `src/bin/ds_client.rs` for path-update envelope group and sender mismatches (epoch mismatch coverage already existed).
+[2026-02-11 13:00] [AGENT] Verified with `cargo test --lib` and `cargo test --bin ds_client`.
+[2026-02-11 13:03] [OPERATOR] Requested Task 4 continuation with malformed envelope decode tests for commit/path payloads.
+[2026-02-11 13:03] [AGENT] Added malformed decode negatives in `src/envelope.rs` (`CommitEnvelope`/`PathUpdateEnvelope`) and `src/tree.rs` (`Commit::decode`, `Commit::decode_with_path_update`, `PathUpdate::decode`) for truncated and trailing-byte inputs.
+[2026-02-11 13:03] [AGENT] Verified with `cargo test --lib` (47 passing tests, including new malformed decode cases).
+[2026-02-11 13:05] [OPERATOR] Requested Task 4 continuation with malformed `PathSecretCiphertext` field-level tests (classic length, PQ length, level counts).
+[2026-02-11 13:05] [AGENT] Added `src/tree.rs` field-level decode negatives for wrong classic length, wrong PQ ciphertext length, and corrupted `PathUpdate` level-count structures.
+[2026-02-11 13:05] [AGENT] Verified with `cargo test --lib` (50 passing tests, including new field-level malformed decode cases).
+[2026-02-11 13:09] [OPERATOR] Requested Task 4 continuation with DS-backed malformed payload submission tests (corrupt commit/path bytes over HTTP, assert receiver rejection).
+[2026-02-11 13:09] [AGENT] Added DS-backed e2e tests in `tests/ds_fetch_apply_e2e.rs`: malformed commit payload is skipped without state advance, and malformed path payload triggers strict receiver rejection.
+[2026-02-11 13:09] [AGENT] Verified with `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions), all 7 tests passing.
+[2026-02-11 13:13] [OPERATOR] Requested Task 4 continuation with DS-backed malformed proposal payload tests and sync-side impact assertions.
+[2026-02-11 13:13] [AGENT] Added DS-backed e2e tests in `tests/ds_fetch_apply_e2e.rs` for malformed proposal behavior: no-commit sync no-op and valid-commit sync unaffected despite malformed proposal traffic.
+[2026-02-11 13:13] [AGENT] Fixed local proposal-queue precondition in the new commit-path scenario and re-verified with `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions), all 9 tests passing.
+[2026-02-11 13:19] [OPERATOR] Requested Task 4 completion and start of Part 5 / Task 1 (forward secrecy behavior tests).
+[2026-02-11 13:19] [AGENT] Added forward-secrecy behavior tests in `src/tree.rs`: stale receiver private key fails after receiver key update, and removed member cannot decrypt future path updates.
+[2026-02-11 13:19] [AGENT] Updated roadmap status in `PROJECT.md`: Part 4 / Task 4 marked done; Part 5 / Task 1 marked current.
+[2026-02-11 13:19] [AGENT] Verified with `cargo test forward_secrecy_ -- --nocapture` and `cargo test tree::tests:: -- --nocapture`.
+[2026-02-11 13:25] [OPERATOR] Requested continuation of Part 5 / Task 1 with DS-backed forward-secrecy integration tests over real HTTP sync.
+[2026-02-11 13:25] [AGENT] Added DS-backed integration test `forward_secrecy_ds_sync_stale_receiver_private_fails_after_rotation` in `tests/ds_fetch_apply_e2e.rs` covering Bob key rotation followed by Alice commit, with stale-vs-rotated receiver-private sync outcomes.
+[2026-02-11 13:25] [AGENT] Verified with `cargo test --test ds_fetch_apply_e2e forward_secrecy_ds_sync_stale_receiver_private_fails_after_rotation -- --nocapture` and full suite `cargo test --test ds_fetch_apply_e2e` (both with elevated listener permissions).
+[2026-02-11 13:32] [OPERATOR] Requested continuation of Part 5 / Task 1 with a second DS-backed forward-secrecy test for removed-member sync attempts.
+[2026-02-11 13:32] [AGENT] Added DS-backed integration test `forward_secrecy_ds_sync_removed_member_cannot_apply_future_commits` in `tests/ds_fetch_apply_e2e.rs`, covering `A removes C -> B updates -> C sync fails` with strict receiver apply failure.
+[2026-02-11 13:32] [AGENT] Verified with `cargo test --test ds_fetch_apply_e2e forward_secrecy_ds_sync_removed_member_cannot_apply_future_commits -- --nocapture` and full suite `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions).
+[2026-02-11 13:37] [OPERATOR] Requested start of Part 5 / Task 2 (PCS): compromise simulation + recovery commit-chain tests.
+[2026-02-11 13:37] [AGENT] Added DS-backed PCS integration test `pcs_ds_sync_recovers_after_compromised_member_self_update` in `tests/ds_fetch_apply_e2e.rs` covering `A update -> B self-update (recovery) -> A update` with split Bob states (compromised old receiver key fails, recovered key succeeds).
+[2026-02-11 13:37] [AGENT] Updated roadmap status in `PROJECT.md`: Part 5 / Task 1 marked done and Part 5 / Task 2 marked current.
+[2026-02-11 13:37] [AGENT] Verified with `cargo test --test ds_fetch_apply_e2e pcs_ds_sync_recovers_after_compromised_member_self_update -- --nocapture` and full suite `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions).
+[2026-02-11 13:49] [OPERATOR] Requested Task 2 continuation with 3-member PCS chain (`A adds C -> C compromised -> C self-update -> next commit recovers`).
+[2026-02-11 13:49] [AGENT] Added DS-backed integration test `pcs_three_member_add_compromise_self_update_then_recover` in `tests/ds_fetch_apply_e2e.rs`, validating compromised-vs-recovered C receiver-key outcomes after C self-update and a subsequent A commit.
+[2026-02-11 13:49] [AGENT] Verified with `cargo test --test ds_fetch_apply_e2e pcs_three_member_add_compromise_self_update_then_recover -- --nocapture` and full suite `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions).
+[2026-02-11 13:54] [OPERATOR] Requested start of Part 5 / Task 3 misuse matrix (bad signatures, malformed commits with valid metadata, replay permutations).
+[2026-02-11 13:54] [AGENT] Added DS-backed misuse tests in `tests/ds_fetch_apply_e2e.rs`: `misuse_bad_signature_is_rejected_by_ds_endpoints`, `misuse_malformed_commit_with_valid_metadata_is_skipped_without_blocking_valid_commit`, and `misuse_replay_permutation_duplicate_old_commit_is_skipped_while_new_epoch_applies`.
+[2026-02-11 13:54] [AGENT] Updated roadmap status in `PROJECT.md`: Part 5 / Task 2 marked done and Part 5 / Task 3 marked current.
+[2026-02-11 13:54] [AGENT] Verified with `cargo test --test ds_fetch_apply_e2e misuse_ -- --nocapture` and full suite `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions).
+[2026-02-11 13:57] [OPERATOR] Requested Task 3 continuation with DS-backed bad-signature coverage for submit-commit, list-messages, and fetch-group-message.
+[2026-02-11 13:57] [AGENT] Extended `misuse_bad_signature_is_rejected_by_ds_endpoints` in `tests/ds_fetch_apply_e2e.rs` to assert `invalid_signature` rejection for `submit-commit`, `list-messages`, and direct HTTP `fetch-group-message` (in addition to submit-proposal).
+[2026-02-11 13:57] [AGENT] Verified with `cargo test --test ds_fetch_apply_e2e misuse_bad_signature_is_rejected_by_ds_endpoints -- --nocapture` and full suite `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions).
+[2026-02-11 14:18] [OPERATOR] Requested Task 3 continuation with malformed `path_update` misuse cases that preserve envelope metadata and assert strict receiver rejection.
+[2026-02-11 14:18] [AGENT] Added/kept DS-backed malformed `path_update` misuse coverage in `tests/ds_fetch_apply_e2e.rs`: (a) malformed inner `path_update` bytes wrapped in valid metadata envelope and (b) tampered ciphertext payload with valid metadata; both enforce strict receiver rejection without state advance.
+[2026-02-11 14:18] [AGENT] Fixed malformed test payload to bounded decode-failure bytes (preventing allocator blow-up), then verified with `cargo test --test ds_fetch_apply_e2e malformed_path_payload_triggers_strict_receiver_rejection -- --nocapture`, `cargo test --test ds_fetch_apply_e2e tampered_path_update_payload_with_valid_metadata_triggers_strict_receiver_rejection -- --nocapture`, and full `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions).
+[2026-02-11 14:33] [OPERATOR] Requested start of Part 6 / Task 1 (epoch secret tree + key schedule state structure).
+[2026-02-11 14:33] [AGENT] Added `src/key_schedule.rs` with `KeyScheduleState` and `EpochSecretNode` (persisted epoch-secret chain with `epoch`, `parent_epoch`, `root_secret`), deterministic MLS-labeled root-secret derivation, and binary encode/decode.
+[2026-02-11 14:33] [AGENT] Integrated key schedule into `ClientGroupState` (v3 format), added backward-compatible v1/v2 bootstrap on decode, and added explicit `set_epoch` / `advance_epoch_with_context` helpers to keep epoch and key-schedule state synchronized.
+[2026-02-11 14:33] [AGENT] Wired ds_client commit-application paths (`create-commit`, `apply-received-commit`, `join-from-commit`, `fetch-and-apply-latest`) to advance key-schedule state with commit-context bytes.
+[2026-02-11 14:33] [AGENT] Verified with `cargo test --lib --bin ds_client` and `cargo test --test commit_path_two_client_states`.
+[2026-02-11 14:38] [OPERATOR] Requested start of Part 6 / Task 2 (derive handshake/application/exporter secrets from epoch root secret) and re-check of `agent.md` rules.
+[2026-02-11 14:38] [AGENT] Added `EpochDerivedSecrets` in `src/key_schedule.rs` and implemented labeled per-epoch derivation APIs: `derive_secrets_for_epoch` and `derive_current_epoch_secrets`.
+[2026-02-11 14:38] [AGENT] Added `ClientGroupState::current_epoch_derived_secrets` in `src/client_state.rs` to expose schedule-derived secrets from local group state.
+[2026-02-11 14:38] [AGENT] Added unit tests for domain separation, cross-epoch secret rotation, and missing-epoch handling in key schedule and client state modules.
+[2026-02-11 14:38] [AGENT] Verified with `cargo test --lib --bin ds_client` and `cargo test --test commit_path_two_client_states`.
+[2026-02-11 14:41] [OPERATOR] Requested continuation of Part 6 / Task 2 by exposing derived secrets in a `ds_client` debug command for demo/inspection.
+[2026-02-11 14:41] [AGENT] Added `ShowDerivedSecrets` command in `src/bin/ds_client.rs` (`show-derived-secrets`) with `--group-state`, optional `--epoch`, optional `--include-root`, and optional `--out`.
+[2026-02-11 14:41] [AGENT] Added JSON formatting helper for epoch-derived secrets and unit tests for field presence and root-secret hiding behavior.
+[2026-02-11 14:41] [AGENT] Verified with `cargo test --bin ds_client` and `cargo test --lib`.
+[2026-02-11 14:44] [OPERATOR] Requested start of Part 6 / Task 3 hardening: strict consistency checks that key-schedule epoch always matches group epoch after every commit-apply path.
+[2026-02-11 14:44] [AGENT] Added key-schedule consistency invariants (`is_well_formed`, `is_epoch_aligned`) in `src/key_schedule.rs`, plus `ClientGroupState::ensure_key_schedule_consistency` and strict v3 decode mismatch rejection in `src/client_state.rs`.
+[2026-02-11 14:44] [AGENT] Enforced consistency checks in `ds_client` load/save and after all commit-apply paths (`create-commit`, `apply-received-commit`, `join-from-commit`, `fetch-and-apply-latest`) via `ensure_group_state_consistency`.
+[2026-02-11 14:44] [AGENT] Added regression tests for epoch mismatch and malformed epoch-chain detection in key schedule/client state/ds_client units.
+[2026-02-11 14:44] [AGENT] Verified with `cargo test --bin ds_client` and `cargo test --lib`.
+[2026-02-11 14:51] [OPERATOR] Requested continuation of Part 6 / Task 3 with DS-backed integration tests for tampered inconsistent state transitions and client rejection.
+[2026-02-11 14:51] [AGENT] Added DS-backed tests in `tests/ds_fetch_apply_e2e.rs`: `misuse_tampered_group_state_epoch_mismatch_rejects_ds_sync` and `misuse_tampered_group_state_parent_link_rejects_second_sync_transition`.
+[2026-02-11 14:51] [AGENT] Added test helpers for tampering persisted `ClientGroupState` key-schedule fields (epoch mismatch and parent-link corruption) prior to sync attempts.
+[2026-02-11 14:51] [AGENT] Verified with targeted tests and full suite: `cargo test --test ds_fetch_apply_e2e misuse_tampered_group_state_epoch_mismatch_rejects_ds_sync -- --nocapture`, `cargo test --test ds_fetch_apply_e2e misuse_tampered_group_state_parent_link_rejects_second_sync_transition -- --nocapture`, and `cargo test --test ds_fetch_apply_e2e -- --nocapture`.
+[2026-02-11 14:56] [OPERATOR] Requested move to Part 6 / Task 4 with deterministic schedule test vectors (fixed inputs/expected secrets).
+[2026-02-11 14:56] [AGENT] Added deterministic key-schedule vector tests in `src/key_schedule.rs` with hardcoded expected outputs for two fixtures: `deterministic_vector_alpha_matches_expected` (multi-epoch with commit contexts) and `deterministic_vector_beta_matches_expected` (bootstrap-to-epoch path).
+[2026-02-11 14:56] [AGENT] Removed temporary vector dump helper and replaced it with strict assertion-based vectors for `init_secret`, `root_secret`, and derived `handshake/application/exporter` secrets.
+[2026-02-11 14:56] [AGENT] Verified with `cargo test --lib key_schedule::tests::deterministic_vector_alpha_matches_expected -- --nocapture`, `cargo test --lib key_schedule::tests::deterministic_vector_beta_matches_expected -- --nocapture`, and `cargo test --lib --bin ds_client`.
+[2026-02-11 15:28] [OPERATOR] Requested continuation toward Part 7 / Task 4 (DS session lifecycle/policy hardening) while keeping roadmap/docs aligned.
+[2026-02-11 15:28] [AGENT] Completed DS session-policy wiring in `src/ds/http.rs` and `src/ds/storage.rs`: session-bound auth validation across signed endpoints, logout route, and expired-session purge path.
+[2026-02-11 15:28] [AGENT] Updated CLI auth/session behavior in `src/bin/ds_client.rs`: persisted `session_id` usage across authenticated commands, explicit logout flow, and stable large-stack worker execution for PQ-heavy keygen/sign/commit paths.
+[2026-02-11 15:28] [AGENT] Updated DS HTTP/unit and integration expectations (`src/ds/http.rs`, `tests/ds_fetch_apply_e2e.rs`, `tests/sync_stream_hardening.rs`) for strict session checks, replay/state consistency behavior, and current error-text semantics.
+[2026-02-11 15:28] [AGENT] Verification run: `cargo test --lib --bin ds_client`, `cargo test --test sync_stream_hardening`, and `cargo test --test ds_fetch_apply_e2e` (DS-backed suite executed with elevated listener permissions), all passing.

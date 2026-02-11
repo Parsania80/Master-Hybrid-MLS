@@ -13,6 +13,7 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 **Architecture**
 - `src/crypto.rs` implements hybrid KEM, hybrid signatures, serialization helpers, and HPKE-style path secret encryption.
 - `src/tree.rs` implements the ratchet tree, parent hashes, node resolution, proposals/commits, and path update logic.
+- `src/key_schedule.rs` implements persisted epoch-secret tree state used to track per-epoch root secrets and derive epoch-level handshake/application/exporter secrets.
 
 **Hybrid Cryptography Stack**
 
@@ -26,6 +27,7 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 2. For each copath resolution node, the sender performs hybrid KEM.
 3. The KEM shared secret is used to encrypt the path secret with an AEAD.
 4. Receivers decapsulate and decrypt to recover the path secret, then derive higher secrets.
+5. Derivation inputs now use `MLS 1.0`-style labeled framing (label + structured context) for path/KEM/AEAD key schedule inputs.
 
 Path update payloads are now serializable via `PathUpdate::encode()` and can be attached to commits with `Commit::encode_with_path_update(...)`.
 Receivers can apply a commit and consume a path update in one step via `RatchetTree::apply_commit_with_path_update(...)`.
@@ -34,6 +36,29 @@ Receivers can apply a commit and consume a path update in one step via `RatchetT
 Unit tests now cover commit encode/decode round-trips with and without path update payloads.
 
 Unit tests now cover `apply_commit_with_path_update` for both success and wrong-leaf failure cases.
+Negative tests now cover tampered path payload bytes, tampered KEM ciphertext bytes, and malformed path level ciphertext counts.
+Malformed decode tests now cover truncated and trailing bytes for `CommitEnvelope`, `PathUpdateEnvelope`, `Commit::decode`, `Commit::decode_with_path_update`, and `PathUpdate::decode`.
+Field-level malformed tests now cover `PathSecretCiphertext::decode` rejection for wrong classic-key length, wrong PQ ciphertext length, and corrupted `PathUpdate` level-count structures.
+
+**RFC 9420 Mapping (Short Note)**
+- RFC concept: `KDF.Extract` / `KDF.ExpandWithLabel` with `MLS 1.0` label framing.
+- Current implementation: uses SHA3-based derivation, but now applies `MLS 1.0`-style labeled input framing so label/context separation follows the RFC spirit.
+- RFC concept: direct-path `path_secret` evolution and node-secret derivation across epochs.
+- Current implementation: `derive_path_secret` now uses labeled context framing keyed by parent index and level to model direct-path secret evolution.
+- RFC concept: HPKE context binding for path secret encryption.
+- Current implementation: per-recipient path encryption context is labeled and structured by sender leaf, parent node, and recipient node before hybrid KEM + AEAD.
+- Important: this is a compatibility-oriented mapping note, not full wire-level RFC equivalence yet (the backend remains prototype hash-based, not full RFC ciphersuite HKDF schedule).
+
+**RFC 9420 Label Mapping (Compact)**
+
+| Current Implementation Label | Where Used | Target RFC Label/Term | RFC 9420 Section | Notes |
+| --- | --- | --- | --- | --- |
+| `hybrid kem shared secret` | Hybrid combiner KDF in `src/crypto.rs` | `KDF.Extract` + `ExpandWithLabel` pipeline (no single fixed label) | Section 8 | Hybrid combiner is project-specific; aligns to RFC key-schedule role, not an exact RFC label. |
+| `hpke key` | AEAD key derivation for path-secret payload encryption | `EncryptWithLabel(..., "UpdatePathNode", group_context, ...)` key schedule role | Sections 5.1.3, 7.6 | Internal label approximates HPKE context separation; target on-wire label is `"UpdatePathNode"`. |
+| `hpke nonce` | AEAD nonce derivation for path-secret payload encryption | `EncryptWithLabel(..., "UpdatePathNode", group_context, ...)` nonce schedule role | Sections 5.1.3, 7.6 | Internal label approximates HPKE context separation; target on-wire label is `"UpdatePathNode"`. |
+| `derive path secret` | `derive_path_secret` hash label in `src/tree.rs` | `DeriveSecret(path_secret[n-1], "path")` and `DeriveSecret(path_secret[n], "node")` chain | Sections 7.6, 8 | Current prototype collapses path/node derivation into one helper; RFC distinguishes `"path"` and `"node"` labels. |
+| `path secret derivation` | Context label for direct-path secret evolution | Generation/position context for tree derivation | Section 9.1 | Current context uses `(parent_index, level)`; RFC tree-ratchet context is generation-based (`uint32`, big-endian). |
+| `path secret encryption` | Context label for per-recipient path ciphertext KEM+AEAD | `EncryptWithLabel` context = provisional `GroupContext` | Section 7.6 | Current context is structural tuple `(sender,parent,recipient)`; RFC target is full provisional `GroupContext`. |
 
 **Build and Test**
 ```bash
@@ -45,6 +70,22 @@ Receiver-side commit/path integration test (two client states):
 ```bash
 cargo test --test commit_path_two_client_states
 ```
+
+DS-backed end-to-end sync integration test (`fetch-and-apply-latest`):
+```bash
+cargo test --test ds_fetch_apply_e2e
+```
+This suite now includes replay safety, strict-path negative cases, and a DS-backed 3-member cryptographic commit-chain sync test.
+It now also includes a DS-backed membership-change chain (`A adds C -> B update -> A removes C`) with final convergence checks for surviving members.
+It now also includes DS-backed malformed payload submission coverage: malformed commit bytes are skipped without state advance, and malformed path-update bytes trigger strict receiver rejection.
+It also includes malformed proposal payload sync-impact coverage: malformed proposals alone do not advance sync state, and malformed proposal traffic does not block valid commit synchronization.
+
+Deterministic key-schedule vectors (fixed inputs/expected outputs):
+```bash
+cargo test --lib deterministic_vector_alpha_matches_expected
+cargo test --lib deterministic_vector_beta_matches_expected
+```
+These lock `init_secret`, `root_secret`, and derived `handshake/application/exporter` values to catch accidental derivation drift.
 
 **Example Program**
 Run a minimal in-memory flow (group creation + Add commit + path update processing):
@@ -143,10 +184,19 @@ Conceptual steps:
 - Login/session endpoints exist (SQLite-backed) but need client wiring and UI.
 - Unit tests now cover DS storage/auth and signature verification helpers.
 
+**Delivery Service Session Hardening (Current)**
+- DS endpoints now enforce session-aware auth (`session_id` + signature + username binding).
+- Expired sessions are rejected and cleaned up; login purges stale sessions; logout endpoint is available.
+- Signed-request checks are applied across proposal/commit submit, message list/fetch, app-message flows, and keypackage publish/fetch.
+- `ds_client` now persists `session_id`, sends it on authenticated requests, and supports `logout`.
+- DS-backed integration coverage (`tests/ds_fetch_apply_e2e.rs`) passes for session/misuse/replay/strict-receiver scenarios.
+
 **Delivery Service Client CLI (New)**
 The CLI is a prototype tool to register users, submit proposals/commits, and fetch messages from the DS.
 Client-side `ClientGroupState` persistence is now available in `src/client_state.rs` (group id, ratchet tree, epoch, own leaf index, pending proposals).
 Wire-format metadata envelopes are now available in `src/envelope.rs` for proposal/commit/path payloads (`group_id`, `epoch`, `sender_leaf`).
+Client group persistence now includes `KeyScheduleState` (epoch-secret nodes + current epoch root secret) and upgrades automatically from older state formats.
+`KeyScheduleState` now derives `EpochDerivedSecrets` (`handshake_secret`, `application_secret`, `exporter_secret`) per epoch with label-separated MLS-style inputs.
 
 Example usage:
 ```bash
@@ -171,6 +221,7 @@ cargo run --bin ds_client -- create-update-proposal --group-state /path/to/group
 cargo run --bin ds_client -- create-remove-proposal --group-state /path/to/group-state.bin --remove-leaf 2 --out /path/to/remove.proposal.bin
 cargo run --bin ds_client -- create-commit --group-state /path/to/group-state.bin --commit-out /path/to/commit.bin --path-update-out /path/to/path-update.bin
 cargo run --bin ds_client -- apply-received-commit --group-state /path/to/group-state.bin --commit-file /path/to/commit.bin --path-update-file /path/to/path-update.bin --receiver-private-file /path/to/receiver-private.json --derived-out /path/to/derived.json
+cargo run --bin ds_client -- show-derived-secrets --group-state /path/to/group-state.bin --epoch 2 --include-root --out /path/to/epoch2-secrets.json
 ```
 The client stores signing keys in `ds-client.json` by default and can now:
 - Generate KEM key material (`keygen`) for X25519 + ML-KEM.
@@ -181,6 +232,8 @@ The client stores signing keys in `ds-client.json` by default and can now:
 - Build metadata-enveloped proposals from `ClientGroupState` files.
 - Build a commit + path update from queued pending proposals (`create-commit`), write commit/path envelopes to disk, apply the commit locally, clear pending proposals, and increment the local epoch.
 - Apply received commit/path envelopes on receivers (`apply-received-commit`) with metadata checks (`group_id`, `epoch`, `sender_leaf`) and optional path-secret derivation.
+- Inspect epoch key-schedule outputs for demos with `show-derived-secrets` (handshake/application/exporter and optional root secret).
+- Epoch transitions now also advance persisted key-schedule state (`KeyScheduleState`) using commit-context inputs.
 This is for development only.
 
 KEM keygen file format (`keygen --out ...`):
@@ -212,7 +265,31 @@ Joiner onboarding notes:
 Sync notes:
 - `fetch-and-apply-latest` requires a DS account state in `--state` for request signing.
 - It applies only commits matching the local epoch sequence and stops on gaps.
+- Sync now validates commit envelope metadata strictly (`group_id`, `epoch`, `sender_leaf`) before apply and skips malformed/non-matching records.
+- DS commit/path message IDs are sorted, deduplicated, and sanitized before processing.
+- Path updates are selected by metadata match to the commit (not only by neighboring message ID).
+- Replay protection markers are now persisted in `ClientGroupState` (`last_applied_commit_id` + bounded recent commit ID window), so already-applied/older DS commits are skipped across restarts.
+- Replay-skip behavior assumes DS message IDs are monotonic for a given deployment.
+- Sync stops the current poll pass when it encounters a future-epoch commit (gap), preventing out-of-order epoch application.
+- Strict key-schedule consistency is now enforced on load/save and after each commit-apply path: local state is rejected if key-schedule epoch diverges from group epoch or if the epoch-chain structure is malformed.
+- DS-backed sync integration now includes tampered local-state rejection cases: epoch-mismatch tamper before sync and malformed parent-link tamper between commits both fail closed at client load/apply.
+- Strict receiver policy: when `--receiver-private-file` is provided to `fetch-and-apply-latest`, a matching path update is required for each commit; missing/mismatched path update aborts sync.
+- DS-backed integration coverage now includes strict receiver rejection for both missing path updates and mismatched path-update metadata.
+- DS-backed integration coverage now includes malformed payload handling over HTTP: malformed commit payloads are skipped, malformed path-update payloads are rejected under strict receiver policy.
+- DS-backed integration coverage now includes malformed proposal payload sync-impact assertions (no-commit no-op and valid-commit sync unaffected).
+- DS-backed integration coverage now includes a 3-member commit chain (`A update -> B/C sync -> B update -> A/C sync`) with convergence checks across all members.
+- DS-backed integration coverage now includes a 3-member Add/Update/Remove chain (`A adds C -> B updates -> A removes C`) with final convergence checks for remaining members.
+- Unit tests now cover derivation context binding for hybrid path secret encryption and tree path-secret derivation labels.
+- Unit tests now cover path-update metadata rejection for all mismatch types (`group_id`, `epoch`, `sender_leaf`) in CLI validation helpers.
+- Unit tests now cover malformed envelope/payload decode rejection for commit/path structures (truncated + extra trailing bytes).
+- Unit tests now cover malformed `PathSecretCiphertext` fields (wrong classic length, wrong PQ length, corrupted level counts).
+- Forward-secrecy baseline tests now cover stale receiver-key failure after key rotation and removed-member rejection for future path updates.
+- DS-backed forward-secrecy integration now verifies over real HTTP sync that (a) a stale receiver private key fails to apply a later commit while the rotated receiver private key succeeds, and (b) a removed member cannot apply the post-removal commit stream.
+- DS-backed PCS recovery-chain integration now verifies compromise recovery behavior for both 2-member and 3-member flows, including `A adds C -> C self-update -> A next commit`, where old compromised C key fails and recovered C key succeeds.
+- DS-backed misuse matrix baseline now covers invalid-signature rejection on `submit-proposal`, `submit-commit`, `list-messages`, and `fetch-group-message`, malformed commit bytes with valid envelope metadata (skipped without blocking a subsequent valid commit), replay permutations where duplicated old commits are skipped while newer epochs apply, and malformed `path_update` misuse cases that preserve envelope metadata and still trigger strict receiver rejection.
+- Strict receiver policy in `apply-received-commit`: `--path-update-file` and `--receiver-private-file` must be provided together.
 - If `--receiver-private-file` is provided, path updates are consumed and derived secrets can be exported via `--derived-out`.
 - `--watch` enables continuous polling; use `--poll-interval-ms` and optional `--max-polls` to control loop behavior.
+- `show-derived-secrets` is debug-only and intentionally exposes secret material; use only in local test/demo environments.
 
-Last updated: 2026-02-09 22:20
+Last updated: 2026-02-11 14:56
