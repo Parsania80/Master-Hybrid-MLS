@@ -141,35 +141,38 @@ pub fn decrypt_path_secret(
 }
 
 fn hybrid_kdf(classic: &[u8], pq: &[u8], context: &[u8]) -> [u8; 32] {
+    mls_labeled_hash(b"hybrid kem shared secret", context, &[classic, pq])
+}
+
+fn derive_aead_key_nonce(shared_secret: &[u8], context: &[u8]) -> ([u8; 32], [u8; 12]) {
+    let key = mls_labeled_hash(b"hpke key", context, &[shared_secret]);
+    let nonce_digest = mls_labeled_hash(b"hpke nonce", context, &[shared_secret]);
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&nonce_digest[..12]);
+
+    (key, nonce)
+}
+
+fn mls_labeled_hash(label: &[u8], context: &[u8], ikm_parts: &[&[u8]]) -> [u8; 32] {
+    let mut input = Vec::new();
+    encode_u32_prefixed(&mut input, b"MLS 1.0");
+    encode_u32_prefixed(&mut input, label);
+    encode_u32_prefixed(&mut input, context);
+    for part in ikm_parts {
+        encode_u32_prefixed(&mut input, part);
+    }
+
     let mut hasher = Sha3_256::new();
-    hasher.update(b"MLS-HYBRID-KEM");
-    hasher.update(classic);
-    hasher.update(pq);
-    hasher.update(context);
+    hasher.update(&input);
     let digest = hasher.finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&digest);
     out
 }
 
-fn derive_aead_key_nonce(shared_secret: &[u8], context: &[u8]) -> ([u8; 32], [u8; 12]) {
-    let mut key_hasher = Sha3_256::new();
-    key_hasher.update(b"MLS-HPKE-KEY");
-    key_hasher.update(shared_secret);
-    key_hasher.update(context);
-    let key_digest = key_hasher.finalize();
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&key_digest);
-
-    let mut nonce_hasher = Sha3_256::new();
-    nonce_hasher.update(b"MLS-HPKE-NONCE");
-    nonce_hasher.update(shared_secret);
-    nonce_hasher.update(context);
-    let nonce_digest = nonce_hasher.finalize();
-    let mut nonce = [0u8; 12];
-    nonce.copy_from_slice(&nonce_digest[..12]);
-
-    (key, nonce)
+fn encode_u32_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(bytes);
 }
 
 // --- HYBRID SIGNATURES (Authentication) ---
@@ -320,5 +323,35 @@ mod tests {
 
         assert_eq!(shared_enc, shared_dec);
         assert_eq!(decrypted, path_secret);
+    }
+
+    #[test]
+    fn path_secret_context_mismatch_is_rejected() {
+        let mut rng = TestRng(0xabababababababab);
+
+        let classic_priv = X25519Priv::from([3u8; 32]);
+        let classic_pub = X25519Pub::from(&classic_priv);
+        let kyber_priv = KyberPriv::from_seed(Seed::from([4u8; 64]));
+        let kyber_pub = kyber_priv.encapsulation_key().clone();
+
+        let public_key = HybridPublicKey {
+            classic: classic_pub,
+            pq: kyber_pub,
+        };
+        let private_key = HybridPrivateKey {
+            classic: classic_priv,
+            pq: kyber_priv,
+        };
+
+        let path_secret = [0x33u8; 32];
+        let ctx_ok = b"path-update-ok";
+        let ctx_bad = b"path-update-bad";
+
+        let (ct, shared_enc) = hybrid_kem_encapsulate(&mut rng, &public_key, ctx_ok);
+        let payload = encrypt_path_secret(&shared_enc, ctx_ok, &path_secret);
+
+        let shared_bad = hybrid_kem_decapsulate(&private_key, &ct, ctx_bad);
+        assert_ne!(shared_enc, shared_bad);
+        assert!(decrypt_path_secret(&shared_bad, ctx_bad, &payload).is_none());
     }
 }

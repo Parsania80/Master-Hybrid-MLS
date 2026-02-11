@@ -383,6 +383,13 @@ impl Storage {
         Ok(())
     }
 
+    pub fn purge_expired_sessions(&mut self, now: i64) -> Result<u64, StorageError> {
+        let deleted = self
+            .conn
+            .execute("DELETE FROM sessions WHERE expires_at <= ?1", params![now])?;
+        Ok(deleted as u64)
+    }
+
     pub fn upsert_key_package(
         &mut self,
         username: &str,
@@ -629,6 +636,17 @@ mod tests {
         storage.delete_session("token1").expect("delete session");
         let missing = storage.get_session("token1").expect("get session");
         assert!(missing.is_none());
+
+        storage
+            .insert_session("token2", username, 1, 2)
+            .expect("insert session2");
+        storage
+            .insert_session("token3", username, 1, 30)
+            .expect("insert session3");
+        let purged = storage.purge_expired_sessions(3).expect("purge expired");
+        assert_eq!(purged, 1);
+        assert!(storage.get_session("token2").expect("token2").is_none());
+        assert!(storage.get_session("token3").expect("token3").is_some());
 
         let _ = std::fs::remove_dir_all(base);
     }

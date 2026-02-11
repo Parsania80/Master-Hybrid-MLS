@@ -94,20 +94,62 @@ Output:
 
 ## Documentation and File Governance Rules
 
-### 7. PROJECT.md — Technical Roadmap
-- Every project directory must contain `PROJECT.md`.
-- It represents:
-  - Project Goal: One sentence summary.
-  - Tech Stack Lock: Explicit list of allowed libraries/languages (prevents drift).
-  - Architecture: Directory structure and data flow.
-  - Roadmap: Checklist of features (ToDo / In Progress / Done).
+## 7. PROJECT.md — Technical Roadmap
 
-#### Update PROJECT.md when:
-- Architecture or direction changes
-- Milestones are completed or added
-- Major technical decisions are made
-- When operator asks you to update
-Do not update for small refactors or bug fixes.
+**Critical Rule:** Every project directory **must** contain a `PROJECT.md` file. It serves as the single source of truth for the project's technical state and progress.
+
+### Required Structure
+
+**1. Tech Stack Lock**
+*   Provide an explicit list of allowed languages, frameworks, and libraries.
+*   **Goal:** Prevent dependency drift. No new libraries can be added without updating this section first.
+
+**2. Architecture**
+*   Outline the high-level directory structure.
+*   Describe the data flow or key architectural patterns.
+
+**3. Phased Roadmap**
+*   The project **must** be broken down into logical **Phases** or **Parts** (e.g., MVP, Backend, Frontend).
+*   Each Phase must have its own Markdown table with the following columns: `| # | Task | Status | Notes |`.
+*   **Status Indicators:**
+    *   ✅ `Done`
+    *   🔄 `Current` (Strictly **one** task active at a time)
+    *   ⬜ `Todo`
+*   **Context Pointers:** At the very bottom of the file (outside the tables), you must explicitly state the **Current** and **Next** task for quick context parsing.
+
+### Template Definition
+
+Use the following Markdown structure exactly for `PROJECT.md`:
+
+# Project Name
+
+## Tech Stack
+- [Language]
+- [Framework]
+- [Database]
+
+## Architecture
+- /src: Main application code
+- /tests: Unit and integration tests
+
+## Roadmap
+
+### Part 1: [Phase Name]
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 1 | Task Name | ✅ Done | |
+| 2 | Task Name | ✅ Done | |
+
+### Part 2: [Phase Name]
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 3 | Task Name | 🔄 Current | |
+| 4 | Task Name | ⬜ Todo | |
+
+### Part 3: [Phase Name]
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 5 | Task Name | ⬜ Todo | |
 
 ---
 
@@ -174,7 +216,7 @@ After each major step, the Agent must present:
 ---
 
 ### 14. “Three Strikes” Rule
-If an attempt to fix an error fails 5 times:
+If an attempt to fix an error fails 3 times:
 
 STOP execution.
 Review the strategy.
