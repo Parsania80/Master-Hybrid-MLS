@@ -174,3 +174,43 @@
 [2026-02-11 15:28] [AGENT] Updated CLI auth/session behavior in `src/bin/ds_client.rs`: persisted `session_id` usage across authenticated commands, explicit logout flow, and stable large-stack worker execution for PQ-heavy keygen/sign/commit paths.
 [2026-02-11 15:28] [AGENT] Updated DS HTTP/unit and integration expectations (`src/ds/http.rs`, `tests/ds_fetch_apply_e2e.rs`, `tests/sync_stream_hardening.rs`) for strict session checks, replay/state consistency behavior, and current error-text semantics.
 [2026-02-11 15:28] [AGENT] Verification run: `cargo test --lib --bin ds_client`, `cargo test --test sync_stream_hardening`, and `cargo test --test ds_fetch_apply_e2e` (DS-backed suite executed with elevated listener permissions), all passing.
+[2026-02-14 19:18] [OPERATOR] Requested Part 7 / Task 4 continuation: configurable session TTL/rotation limits and tests.
+[2026-02-14 19:18] [AGENT] Added session TTL and per-user session rotation limits in DS config/state (`DS_SESSION_TTL_SECS`, `DS_SESSION_MAX_PER_USER`) and enforced them in login flow.
+[2026-02-14 19:18] [AGENT] Added storage helpers/tests for session trimming and session meta lookup, plus DS HTTP test to verify TTL and rotation behavior.
+[2026-02-14 19:18] [AGENT] Updated docs (`PROJECT.md`, `README.md`) and verified with `cargo test --lib --bin ds_client` and DS-backed `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions).
+[2026-02-14 19:19] [AGENT] Implemented configurable session TTL and per-user rotation limits (config/env + enforcement) with storage trim/delete helpers and HTTP-level TTL/rotation test.
+[2026-02-14 19:19] [AGENT] Verified: `cargo test --lib --bin ds_client` and `cargo test --test ds_fetch_apply_e2e` (elevated listener permissions), all passing.
+[2026-02-14 19:23] [OPERATOR] Requested start of Part 7 / Task 5 UI skeleton (login + group list/actions).
+[2026-02-14 19:23] [AGENT] Added UI skeleton routes in `src/ds/http.rs` (`/ui/login`, `/ui/groups`, `/ui/groups/:group_id`) with inline HTML/CSS and placeholder actions; wired routes into DS router.
+[2026-02-14 19:23] [AGENT] Updated docs (`PROJECT.md`, `README.md`) and verified compile with `cargo check`.
+[2026-02-14 19:31] [AGENT] Cleaned up UI gateway HTML template artifacts and removed unused imports.
+[2026-02-14 19:31] [AGENT] Documented the signed UI gateway flow and environment variables in README and updated PROJECT task notes.
+[2026-02-14 19:32] [AGENT] Fixed ds_ui_gateway format string escaping by switching to placeholder replacement and corrected HTML template braces.
+[2026-02-14 19:32] [AGENT] Added explicit SocketAddr parse for UI gateway bind and verified with `cargo check --bin ds_ui_gateway`.
+[2026-02-14 19:36] [AGENT] Added UI gateway message list and fetch views with per-kind filters and DS-signed fetch wiring.
+[2026-02-14 19:36] [AGENT] Verified UI gateway build with `cargo check --bin ds_ui_gateway`.
+[2026-02-14 19:40] [AGENT] Added UI gateway app-message list and fetch panels with signed DS list/fetch wiring.
+[2026-02-14 19:40] [AGENT] Verified UI gateway build with `cargo check --bin ds_ui_gateway`.
+[2026-02-14 19:42] [AGENT] Answered UI testing question and recorded it in QUESTIONS.md; updated README with quick UI test steps.
+[2026-02-14 19:53] [AGENT] Answered keypackage publish question and recorded it in QUESTIONS.md; added a README note that keypackage publish does not require group membership.
+[2026-02-14 20:06] [AGENT] Answered key storage question and recorded it in QUESTIONS.md; added README note about local file-based private keys.
+[2026-02-14 20:11] [AGENT] Added logout on all UI pages, root redirect to login, and a KeyPackage publish panel on the groups page; verified with `cargo check --bin ds_ui_gateway`.
+[2026-02-14 20:18] [AGENT] Moved logout to a fixed top-left button on all UI pages, added one-click keypackage generation/publish, and wired local receiver-private storage.
+[2026-02-14 20:20] [AGENT] Added one-click keypackage generation/publish in UI gateway, stored receiver private locally, and moved logout to fixed top-left across pages; verified with `cargo check --bin ds_ui_gateway`.
+[2026-02-14 20:44] [AGENT] Added Part 8 UI and Admin Demo roadmap tasks to PROJECT.md and noted the roadmap in README.
+
+[2026-02-14 20:52] [AGENT] Completed Part 8 Tasks 1-3 (login UX polish, keypackage library selection/share), added keypackage persistence/list API to UI gateway, and updated roadmap/README.
+[2026-02-14 20:52] [AGENT] Ran `cargo check --bin ds_ui_gateway`; fixed keypackage record cloning/borrow errors and verified build (warning: unused not_implemented).
+[2026-02-14 20:57] [AGENT] Completed Part 8 Task 4 group list UX: add refresh/filter/forget, auto-track group on open, and updated roadmap/README.
+[2026-02-14 21:06] [AGENT] Completed Part 8 Task 5: added group Actions menu (Add/Remove/Update), local group-state status endpoint, and proposal creation + submission flows in UI gateway; updated README/PROJECT.
+[2026-02-14 21:09] [AGENT] Completed Part 8 Task 6: added tree structure UI panel, group tree API, and local ratchet tree rendering in UI gateway; updated README/PROJECT.
+[2026-02-14 21:14] [AGENT] Improved UI responsiveness and control sizing, and added clearer group-state missing error for tree view. Built ds_ui_gateway (warning: unused not_implemented).
+[2026-02-14 21:19] [AGENT] Refined UI card/button/input sizing and shadows for responsive consistency; updated README.
+[2026-02-14 21:26] [AGENT] Normalized sizing/shadows for List Messages, Send App Message, and Submit Proposal UI panels; updated README.
+[2026-02-14 21:30] [AGENT] Set uniform control height via CSS variable for all inputs/selects/textareas/buttons; updated README.
+[2026-02-14 21:32] [AGENT] Added shared spacing tokens for UI layout consistency; updated README.
+[2026-02-14 21:36] [AGENT] Set card-sub inner spacing to --space-md for consistent element spacing; updated README.
+[2026-02-14 21:38] [AGENT] Prevented stretched gaps inside card panels by setting align-content:start and grid-auto-rows:min-content; updated README.
+[2026-02-14 21:43] [AGENT] Added KeyPackage preview + toggle to avoid oversized base64 fields; updated README.
+[2026-02-14 21:47] [AGENT] Added width constraints and min-width:0 to prevent keypackage fetch from stretching UI; updated README.
+[2026-02-14 22:12] [AGENT] Added UI auto-bootstrap of one-member group state on Add Group, with backend endpoint and local state persistence; updated README.

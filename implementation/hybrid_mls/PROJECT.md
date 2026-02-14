@@ -79,10 +79,26 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 1 | Implement DS storage and eviction policy | ✅ Done | SQLite metadata + disk spool + max-byte eviction implemented. |
 | 2 | Implement signed HTTP endpoints for auth/proposals/commits/messages | ✅ Done | Core endpoints and signature checks implemented in `src/ds/http.rs`. |
 | 3 | Implement keypackage publish/fetch and app-message transport | ✅ Done | Endpoints + CLI wiring implemented. |
-| 4 | Finalize DS session lifecycle and policy enforcement | 🔄 Current | Session-aware auth policy is now enforced across DS endpoints (`session_id` required, session ownership/expiry validation, login-time purge, logout endpoint). CLI now carries `session_id` across signed requests and supports explicit logout; DS-backed e2e suite is green after session-policy and misuse assertion updates. Remaining hardening can focus on policy knobs (TTL/rotation/rate limits). |
-| 5 | Build operator/user web UI for sign-in and group actions | ⬜ Todo | UI not implemented yet. |
+| 4 | Finalize DS session lifecycle and policy enforcement | ✅ Done | Session-aware auth policy is now enforced across DS endpoints (`session_id` required, session ownership/expiry validation, login-time purge, logout endpoint). CLI now carries `session_id` across signed requests and supports explicit logout; DS-backed e2e suite is green after session-policy and misuse assertion updates. Configurable session TTL and per-user session rotation limits are now implemented and tested. |
+| 5 | Build operator/user web UI for sign-in and group actions | ✅ Done | Added DS UI skeleton routes (`/ui/login`, `/ui/groups`, `/ui/groups/:group_id`) plus a local `ds_ui_gateway` binary that serves signed UI flows and forwards requests to the DS. |
 | 6 | Add multi-VM deployment/test guide and automation | ⬜ Todo | Convert local demo into repeatable 5-VM procedure. |
 
+### Part 8: UI and Admin Demo
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 1 | User login + logout UX | ✅ Done | Logout on all pages, `/ui/login` default, and local session status shown. |
+| 2 | KeyPackage UX (simple flow) | ✅ Done | One-click generate + publish, optional manual publish with clear feedback, and stored receiver private file path. |
+| 3 | KeyPackage selection/share UX | ✅ Done | Local keypackage library with list/copy/use/publish actions. |
+| 4 | Group list + membership UX | ✅ Done | Groups list now supports add, refresh, filter/search, forget, and auto-track on group open. |
+| 5 | Group page action menu | ✅ Done | Actions menu now creates Add/Remove/Update proposals using local group state and submits to DS. |
+| 6 | Tree structure view | ✅ Done | Group UI now renders local ratchet tree nodes (leaf/parent/blank) with short key fingerprints and metadata. |
+| 7 | Admin account bootstrap | 🔄 Current | Ensure `admin/admin@123` exists in DB on startup; admin sees all users and groups. |
+| 8 | Admin demo index | ⬜ Todo | Admin “Demo” menu lists demos, allows create/open; demos stored under `ui-state/demo/<id>`. |
+| 9 | Admin demo UI layout | ⬜ Todo | Two-column layout: right tree view; left split into actions (top) and logs (bottom). |
+| 10 | Admin demo actions | ⬜ Todo | Add/Remove/Update actions with inputs (adder, added; remover; updater) and deterministic flow. |
+| 11 | Admin demo logging | ⬜ Todo | Timestamped MLS-style step logs with separators; logs persisted in `ui-state/demo/<id>`. |
+| 12 | Admin demo persistence | ⬜ Todo | Demo state reload on open; “new demo” initializes A-only tree and clean logs. |
+
 ---
-Current: `Part 7 / Task 4 - Finalize DS session lifecycle and policy enforcement`
-Next: `Part 7 / Task 5 - Build operator/user web UI for sign-in and group actions`
+Current: `Part 8 / Task 7 - Admin account bootstrap`
+Next: `Part 8 / Task 8 - Admin demo index`

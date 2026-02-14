@@ -378,9 +378,31 @@ impl Storage {
         Ok(Some((username, expires_at)))
     }
 
+    pub fn get_session_meta(
+        &self,
+        token: &str,
+    ) -> Result<Option<(String, i64, i64)>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT username, created_at, expires_at FROM sessions WHERE token = ?1",
+        )?;
+        let mut rows = stmt.query(params![token])?;
+        let Some(row) = rows.next()? else { return Ok(None) };
+        let username: String = row.get(0)?;
+        let created_at: i64 = row.get(1)?;
+        let expires_at: i64 = row.get(2)?;
+        Ok(Some((username, created_at, expires_at)))
+    }
+
     pub fn delete_session(&mut self, token: &str) -> Result<(), StorageError> {
         self.conn.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
         Ok(())
+    }
+
+    pub fn delete_sessions_for_user(&mut self, username: &str) -> Result<u64, StorageError> {
+        let deleted = self
+            .conn
+            .execute("DELETE FROM sessions WHERE username = ?1", params![username])?;
+        Ok(deleted as u64)
     }
 
     pub fn purge_expired_sessions(&mut self, now: i64) -> Result<u64, StorageError> {
@@ -388,6 +410,35 @@ impl Storage {
             .conn
             .execute("DELETE FROM sessions WHERE expires_at <= ?1", params![now])?;
         Ok(deleted as u64)
+    }
+
+    pub fn trim_sessions_for_user(
+        &mut self,
+        username: &str,
+        max_sessions: usize,
+    ) -> Result<u64, StorageError> {
+        if max_sessions == 0 {
+            return Ok(0);
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT token FROM sessions WHERE username = ?1
+             ORDER BY created_at DESC, token DESC",
+        )?;
+        let rows = stmt.query_map(params![username], |row| row.get::<_, String>(0))?;
+        let mut tokens = Vec::new();
+        for row in rows {
+            tokens.push(row?);
+        }
+
+        let mut deleted = 0u64;
+        for (index, token) in tokens.into_iter().enumerate() {
+            if index >= max_sessions {
+                self.conn
+                    .execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
     }
 
     pub fn upsert_key_package(
@@ -646,6 +697,33 @@ mod tests {
         let purged = storage.purge_expired_sessions(3).expect("purge expired");
         assert_eq!(purged, 1);
         assert!(storage.get_session("token2").expect("token2").is_none());
+        assert!(storage.get_session("token3").expect("token3").is_some());
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn session_trim_enforces_limit() {
+        let (config, base) = temp_config("session-trim", 1024);
+        let mut storage = Storage::open(config).expect("open storage");
+
+        let username = "alice";
+        storage
+            .insert_session("token1", username, 1, 10)
+            .expect("insert session1");
+        storage
+            .insert_session("token2", username, 2, 10)
+            .expect("insert session2");
+        storage
+            .insert_session("token3", username, 3, 10)
+            .expect("insert session3");
+
+        let deleted = storage
+            .trim_sessions_for_user(username, 2)
+            .expect("trim sessions");
+        assert_eq!(deleted, 1);
+        assert!(storage.get_session("token1").expect("token1").is_none());
+        assert!(storage.get_session("token2").expect("token2").is_some());
         assert!(storage.get_session("token3").expect("token3").is_some());
 
         let _ = std::fs::remove_dir_all(base);

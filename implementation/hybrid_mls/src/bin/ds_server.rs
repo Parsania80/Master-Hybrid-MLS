@@ -14,6 +14,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = env::var("DS_DB_PATH").unwrap_or_else(|_| format!("{data_dir}/ds.sqlite"));
     let max_bytes = parse_env_u64("DS_MAX_BYTES")?;
     let min_proposals = parse_env_usize("DS_MIN_PROPOSALS_PER_COMMIT")?;
+    let session_ttl_secs = parse_env_u64("DS_SESSION_TTL_SECS")?;
+    let session_max_per_user = parse_env_usize("DS_SESSION_MAX_PER_USER")?;
 
     let mut state = ApiState::default();
     state.storage = StorageConfig::new(PathBuf::from(data_dir), PathBuf::from(db_path));
@@ -22,6 +24,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(value) = min_proposals {
         state.min_proposals_per_commit = value;
+    }
+    if let Some(value) = session_ttl_secs {
+        state.session_ttl_secs = value;
+    }
+    if let Some(value) = session_max_per_user {
+        state.session_max_per_user = value;
     }
 
     let app = http::router(state);
