@@ -7,6 +7,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
+use std::thread;
 
 use crate::ds::auth::{decode_hybrid_signature_b64, decode_hybrid_sign_pub_key_bytes};
 use crate::ds::config::{
@@ -21,6 +22,8 @@ use crate::tree::KeyPackage;
 use sha3::{Digest, Sha3_256};
 use rand::rngs::OsRng;
 use rand::RngCore;
+
+const DS_CRYPTO_WORKER_STACK_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct ApiState {
@@ -1027,7 +1030,7 @@ async fn publish_keypackage(
             .into_response();
     };
 
-    if !keypackage.verify() {
+    if !verify_keypackage_signature_with_large_stack(&payload) {
         return auth_error("invalid_keypackage_signature");
     }
 
@@ -1253,13 +1256,46 @@ fn verify_with_keys(
     signature_b64: &str,
     message: &[u8],
 ) -> bool {
-    let Some(pub_key) = decode_hybrid_sign_pub_key_bytes(classic_pub, pq_pub) else {
-        return false;
-    };
-    let Some(sig) = decode_hybrid_signature_b64(signature_b64) else {
-        return false;
-    };
-    sig.verify(&pub_key, message)
+    let classic = classic_pub.to_vec();
+    let pq = pq_pub.to_vec();
+    let sig = signature_b64.to_string();
+    let msg = message.to_vec();
+    let result = run_ds_crypto_with_large_stack("ds-verify-signature", move || {
+        let Some(pub_key) = decode_hybrid_sign_pub_key_bytes(&classic, &pq) else {
+            return Ok(false);
+        };
+        let Some(signature) = decode_hybrid_signature_b64(&sig) else {
+            return Ok(false);
+        };
+        Ok(signature.verify(&pub_key, &msg))
+    })
+    .unwrap_or(false);
+    result
+}
+
+fn verify_keypackage_signature_with_large_stack(payload: &[u8]) -> bool {
+    let encoded = payload.to_vec();
+    run_ds_crypto_with_large_stack("ds-verify-keypackage", move || {
+        let Some(keypackage) = KeyPackage::decode(&encoded) else {
+            return Ok(false);
+        };
+        Ok(keypackage.verify())
+    })
+    .unwrap_or(false)
+}
+
+fn run_ds_crypto_with_large_stack<F>(worker_name: &'static str, f: F) -> Result<bool, String>
+where
+    F: FnOnce() -> Result<bool, String> + Send + 'static,
+{
+    let handle = thread::Builder::new()
+        .name(worker_name.to_string())
+        .stack_size(DS_CRYPTO_WORKER_STACK_BYTES)
+        .spawn(f)
+        .map_err(|err| format!("failed to spawn {worker_name}: {err}"))?;
+    handle
+        .join()
+        .map_err(|_| format!("{worker_name} panicked"))?
 }
 
 fn fetch_user_keys(state: &ApiState, username: &str) -> Result<(Vec<u8>, Vec<u8>), Response> {

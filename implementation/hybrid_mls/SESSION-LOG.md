@@ -214,3 +214,26 @@
 [2026-02-14 21:43] [AGENT] Added KeyPackage preview + toggle to avoid oversized base64 fields; updated README.
 [2026-02-14 21:47] [AGENT] Added width constraints and min-width:0 to prevent keypackage fetch from stretching UI; updated README.
 [2026-02-14 22:12] [AGENT] Added UI auto-bootstrap of one-member group state on Add Group, with backend endpoint and local state persistence; updated README.
+[2026-02-14 22:27] [AGENT] Added UI back buttons and SVG binary-tree visualization with node circles/edges; added local leaf username labeling map and updated README. Verified with cargo check --bin ds_ui_gateway.
+[2026-02-14 22:32] [AGENT] Logged Q-entry for add-vs-commit membership semantics and updated README with MLS add/commit note.
+[2026-02-14 22:49] [OPERATOR] Requested MLS-aligned UI commit creation and receiver sync/apply actions so added users can see group membership after commit.
+[2026-02-14 22:49] [AGENT] Implemented UI gateway endpoints for Create+Submit Commit from pending proposals and Sync+Apply Latest commits/path-updates, wired new group-page buttons, added strict metadata/path matching in sync flow, and verified build with cargo check --bin ds_ui_gateway.
+[2026-02-14 22:59] [OPERATOR] Reported stack overflow after UI Sync+Apply Latest and asked whether proposals are DS-backed or only local.
+[2026-02-14 22:59] [AGENT] Hardened DS hybrid signature/keypackage verification to run in a dedicated large-stack worker thread, validated with cargo check (ds_server/ds_ui_gateway) and focused test verify_with_keys_accepts_valid_signature, and documented proposal dual-tracking semantics in QUESTIONS/README/PROJECT.
+[2026-02-14 23:25] [OPERATOR] Reported stack overflow during UI Add proposal and requested an integrated backend+frontend flow test for A adds B and B group visibility after refresh/relogin.
+[2026-02-14 23:25] [AGENT] Fixed proposal-path stack overflows by moving UI keypackage verify, group-state load/save, signing-key decode, and signing into large-stack workers; additionally hardened DS verify workers and added e2e UI+DS test  covering register/bootstrap/keypackage/add/commit/sync/relogin visibility; validated with cargo test and cargo check.
+[2026-02-14 23:26] [AGENT] Correction: e2e UI+DS test name is ui_add_member_flow_keeps_group_visible_after_relogin (src/bin/ds_ui_gateway.rs).
+[2026-02-14 23:33] [OPERATOR] Asked how an added member (Peyman) can detect/see group membership in MLS flow.
+[2026-02-14 23:33] [AGENT] Clarified commit-driven MLS membership visibility (Add -> Commit -> receiver sync/apply) and documented in QUESTIONS.md and README.md.
+[2026-02-14 23:36] [OPERATOR] Requested Sync + Apply Latest near logout and automatic sync after login/refresh.
+[2026-02-14 23:36] [AGENT] Added top-bar Sync + Apply Latest on groups/group pages, implemented auto-sync-on-load for logged-in users (tracked groups on groups page, current group on detail page), and verified with cargo check --bin ds_ui_gateway.
+[2026-02-14 23:42] [OPERATOR] Asked why Peyman cannot see group parsania-test after Add+Commit and Sync+Apply Latest.
+[2026-02-14 23:42] [AGENT] Inspected local state and found no Peyman tracked-group file and no Peyman group-state file for parsania-test; documented troubleshooting note in README about local tracking/baseline requirement and current lack of auto-discovery join from DS history.
+[2026-02-14 23:53] [AGENT] Added MLS-safe UI joiner onboarding (`/ui/api/groups/:group_id/join-from-latest` + group-page button), auto-published bootstrap creator keypackage for DS discoverability, and updated UI+DS e2e test to onboard joiner without synthetic pre-state; verified with `cargo test --bin ds_ui_gateway ui_add_member_flow_keeps_group_visible_after_relogin -- --nocapture` and `cargo check`.
+[2026-02-14 23:56] [AGENT] Answered Q about RFC Welcome status: Welcome not implemented; current join/sync uses commit/path-update onboarding. Logged in QUESTIONS.md and added explicit README note.
+[2026-02-15 00:01] [OPERATOR] Requested Welcome-message implementation planning first (RFC 9420 hybrid) before returning to UI work.
+[2026-02-15 00:01] [AGENT] Evaluated current codebase against RFC Welcome requirements; added Part 9 Welcome roadmap in PROJECT.md, switched Current/Next to Part 9 tasks, added Welcome-first execution priority section in agent.md, and updated README status note.
+[2026-02-15 00:06] [OPERATOR] Asked whether any RFC 9420 implementation gaps remain beyond Welcome in the hybrid project.
+[2026-02-15 00:06] [AGENT] Performed RFC-gap audit across tree/envelope/key-schedule/DS paths; answered that multiple RFC areas remain beyond Welcome and recorded the Q/A in QUESTIONS.md plus README compliance note.
+[2026-02-15 00:15] [OPERATOR] Requested adding Part 10 roadmap for non-Welcome RFC 9420 gaps with careful task breakdown.
+[2026-02-15 00:15] [AGENT] Added Part 10 (15 tasks) to PROJECT.md covering wire model, authenticated content, transcript/confirmation/membership tags, proposal-family expansion, RFC key schedule, application message semantics, DS state-machine guards, multi-Add policy, and conformance vectors; kept Part 9 as Current and updated README status note.

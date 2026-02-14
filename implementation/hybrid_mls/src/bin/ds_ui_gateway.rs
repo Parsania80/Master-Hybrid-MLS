@@ -1,4 +1,6 @@
+use std::convert::Infallible;
 use std::fs;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,15 +17,16 @@ use ml_dsa::{EncodedSigningKey, EncodedVerifyingKey, KeyGen, MlDsa65};
 use ml_kem::Seed;
 use rand::rngs::OsRng;
 use rand::RngCore;
+use rand_core::{TryCryptoRng, TryRng};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 use x25519_dalek::{PublicKey as X25519Pub, StaticSecret as X25519Priv};
 
 use hybrid_mls::client_state::ClientGroupState;
-use hybrid_mls::crypto::{HybridPublicKey, HybridSignPrivKey, HybridSignPubKey, KyberPriv};
-use hybrid_mls::envelope::ProposalEnvelope;
-use hybrid_mls::tree::{KeyPackage, LeafNode, Proposal, RatchetTree};
+use hybrid_mls::crypto::{HybridPrivateKey, HybridPublicKey, HybridSignPrivKey, HybridSignPubKey, KyberPriv};
+use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
+use hybrid_mls::tree::{Commit, KeyPackage, LeafNode, Node, ParentUpdate, PathUpdate, Proposal, RatchetTree};
 
 #[derive(Clone)]
 struct UiState {
@@ -73,6 +76,7 @@ struct GroupRemovePayload {
 #[derive(Debug, Deserialize)]
 struct ActionAddPayload {
     username: String,
+    target_username: Option<String>,
     keypackage_b64: String,
     submit: Option<bool>,
     sender_leaf: Option<usize>,
@@ -112,6 +116,27 @@ struct CommitPayload {
     username: String,
     commit_b64: String,
     path_update_b64: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommitFromPendingPayload {
+    username: String,
+    sender_leaf: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SyncApplyPayload {
+    username: String,
+    limit: Option<usize>,
+    receiver_private_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JoinFromLatestPayload {
+    username: String,
+    base_member_usernames: Option<Vec<String>>,
+    limit: Option<usize>,
+    receiver_private_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -182,7 +207,16 @@ struct TreeNodeView {
     node_index: usize,
     node_type: String,
     leaf_index: Option<usize>,
+    label: String,
     summary: String,
+    x: Option<f32>,
+    y: Option<f32>,
+}
+
+#[derive(Debug, Serialize)]
+struct TreeEdgeView {
+    from: usize,
+    to: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -190,7 +224,10 @@ struct TreeView {
     group_id: String,
     epoch: u64,
     leaf_count: usize,
+    own_leaf_index: usize,
+    username: String,
     root_index: Option<usize>,
+    edges: Vec<TreeEdgeView>,
     nodes: Vec<TreeNodeView>,
 }
 
@@ -200,6 +237,56 @@ struct ActionProposalResponse {
     submitted: bool,
     pending_proposals: usize,
     state_path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CommitFromPendingResponse {
+    commit_b64: String,
+    path_update_b64: String,
+    submitted: bool,
+    sender_leaf: usize,
+    epoch: u64,
+    pending_proposals: usize,
+    state_path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SyncApplyResponse {
+    applied: usize,
+    skipped: usize,
+    local_epoch: u64,
+    used_receiver_private: bool,
+    receiver_private_path: Option<String>,
+    state_path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct JoinFromLatestResponse {
+    joined: bool,
+    commit_id: i64,
+    own_leaf_index: usize,
+    local_epoch: u64,
+    applied_after_join: usize,
+    skipped_after_join: usize,
+    receiver_private_path: String,
+    state_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DsMessageSummary {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DsListMessagesResponse {
+    messages: Vec<DsMessageSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DsFetchGroupMessageResponse {
+    id: String,
+    kind: String,
+    message_bytes: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -222,6 +309,11 @@ struct ReceiverPrivateFile {
     pq_kem_seed_b64: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct GroupMemberLabels {
+    items: HashMap<String, String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind = std::env::var("DS_UI_BIND").unwrap_or_else(|_| "127.0.0.1:4000".to_string());
@@ -237,7 +329,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         client: Client::new(),
     };
 
-    let app = Router::new()
+    let app = build_ui_router(ui_state);
+
+    let addr: SocketAddr = bind.parse()?;
+    println!("UI gateway listening on http://{addr}");
+    axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
+    Ok(())
+}
+
+fn build_ui_router(ui_state: UiState) -> Router {
+    Router::new()
         .route("/", get(ui_index))
         .route("/ui", get(ui_index))
         .route("/ui/login", get(ui_login))
@@ -270,6 +371,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .route("/ui/api/groups/:group_id/proposals", post(api_submit_proposal))
         .route("/ui/api/groups/:group_id/commits", post(api_submit_commit))
+        .route(
+            "/ui/api/groups/:group_id/commit-from-pending",
+            post(api_commit_from_pending),
+        )
+        .route(
+            "/ui/api/groups/:group_id/sync-apply-latest",
+            post(api_sync_apply_latest),
+        )
+        .route(
+            "/ui/api/groups/:group_id/join-from-latest",
+            post(api_join_from_latest),
+        )
         .route("/ui/api/groups/:group_id/actions/add", post(api_action_add))
         .route(
             "/ui/api/groups/:group_id/actions/remove",
@@ -285,12 +398,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(api_list_keypackages).post(api_publish_keypackage),
         )
         .route("/ui/api/keypackages/:target", get(api_fetch_keypackage))
-        .with_state(ui_state);
-
-    let addr: SocketAddr = bind.parse()?;
-    println!("UI gateway listening on http://{addr}");
-    axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
-    Ok(())
+        .with_state(ui_state)
 }
 
 async fn ui_index() -> impl IntoResponse {
@@ -302,6 +410,7 @@ async fn ui_login() -> impl IntoResponse {
         "DS Login",
         r#"
         <div class="top-left">
+            <button class="ghost" type="button" onclick="uiBack('/ui/login')">Back</button>
             <button class="ghost" type="button" onclick="uiLogout()">Logout</button>
         </div>
         <main class="panel">
@@ -385,6 +494,13 @@ async fn ui_login() -> impl IntoResponse {
           localStorage.removeItem('ui_username');
           window.location.href = '/ui/login';
         }
+        function uiBack(fallbackPath) {
+          if (window.history.length > 1) {
+            window.history.back();
+            return;
+          }
+          window.location.href = fallbackPath;
+        }
         function uiContinue() {
           const username = localStorage.getItem('ui_username');
           if (username) {
@@ -421,6 +537,8 @@ async fn ui_groups() -> impl IntoResponse {
         "Groups",
         r#"
         <div class="top-left">
+            <button class="ghost" type="button" onclick="uiBack('/ui/login')">Back</button>
+            <button class="ghost" type="button" onclick="uiSyncTrackedGroups(false)">Sync + Apply Latest</button>
             <button class="ghost" type="button" onclick="uiLogout()">Logout</button>
         </div>
         <main class="panel">
@@ -463,6 +581,7 @@ async fn ui_groups() -> impl IntoResponse {
         </main>
         <script>
         let _groups = [];
+        let _didAutoSync = false;
         async function loadGroups() {
           const username = localStorage.getItem('ui_username');
           const list = document.getElementById('group-list');
@@ -479,6 +598,10 @@ async fn ui_groups() -> impl IntoResponse {
           }
           _groups = data.data.groups || [];
           renderGroups();
+          if (!_didAutoSync) {
+            _didAutoSync = true;
+            await uiSyncTrackedGroups(true);
+          }
         }
         function renderGroups() {
           const list = document.getElementById('group-list');
@@ -541,6 +664,53 @@ async fn ui_groups() -> impl IntoResponse {
           }
           localStorage.removeItem('ui_username');
           window.location.href = '/ui/login';
+        }
+        function uiBack(fallbackPath) {
+          if (window.history.length > 1) {
+            window.history.back();
+            return;
+          }
+          window.location.href = fallbackPath;
+        }
+        async function uiSyncTrackedGroups(silent) {
+          const username = localStorage.getItem('ui_username');
+          if (!username) {
+            window.location.href = '/ui/login';
+            return;
+          }
+          const status = document.getElementById('keypackage-status');
+          if (!_groups || _groups.length === 0) {
+            if (!silent && status) {
+              status.textContent = 'No tracked groups to sync.';
+            }
+            return;
+          }
+          if (status) {
+            status.textContent = `Syncing ${_groups.length} tracked group(s)...`;
+          }
+          let appliedTotal = 0;
+          let skippedTotal = 0;
+          let failed = 0;
+          for (const groupId of _groups) {
+            const resp = await fetch(`/ui/api/groups/${encodeURIComponent(groupId)}/sync-apply-latest`, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({username, limit: 50})
+            });
+            const data = await resp.json();
+            if (data.ok && data.data) {
+              appliedTotal += Number(data.data.applied || 0);
+              skippedTotal += Number(data.data.skipped || 0);
+            } else {
+              failed += 1;
+            }
+          }
+          if (status) {
+            status.textContent = `Sync finished: applied ${appliedTotal}, skipped ${skippedTotal}, failed groups ${failed}.`;
+          }
+          if (!silent) {
+            loadGroups();
+          }
         }
         async function uiPublishKeyPackage() {
           const username = localStorage.getItem('ui_username');
@@ -663,8 +833,10 @@ async fn ui_groups() -> impl IntoResponse {
 }
 
 async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoResponse {
-    let body_template = r#"
+    let body_template = r##"
         <div class="top-left">
+            <button class="ghost" type="button" onclick="uiBack('/ui/groups')">Back</button>
+            <button class="ghost" type="button" onclick="uiSyncApplyLatest(false)">Sync + Apply Latest</button>
             <button class="ghost" type="button" onclick="uiLogout()">Logout</button>
         </div>
         <main class="panel">
@@ -736,6 +908,30 @@ async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoRespo
                           </label>
                           <div class="row">
                             <button class="primary" type="button" onclick="uiActionUpdate()">Create + Submit Update</button>
+                          </div>
+                        </details>
+                        <details class="action-block" open>
+                          <summary class="muted">Commit + Sync</summary>
+                          <label>Commit sender leaf (optional)
+                            <input id="commit-sender" type="number" placeholder="defaults to own leaf" />
+                          </label>
+                          <div class="row">
+                            <button class="primary" type="button" onclick="uiCreateCommitFromPending()">Create + Submit Commit</button>
+                          </div>
+                          <label>Sync limit
+                            <input id="sync-limit" type="number" value="50" />
+                          </label>
+                          <label>Receiver private path (optional)
+                            <input id="sync-receiver-path" type="text" placeholder="auto: latest local receiver file" />
+                          </label>
+                          <div class="row">
+                            <button class="ghost" type="button" onclick="uiSyncApplyLatest()">Sync + Apply Latest</button>
+                          </div>
+                          <label>Onboarding base members (comma usernames in pre-commit leaf order)
+                            <input id="join-base-members" type="text" placeholder="parsania" />
+                          </label>
+                          <div class="row">
+                            <button class="ghost" type="button" onclick="uiJoinFromLatest()">Join from latest Add commit</button>
                           </div>
                         </details>
                         <div id="action-status" class="note"></div>
@@ -832,7 +1028,10 @@ async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoRespo
                     <div class="row">
                       <button class="ghost" type="button" onclick="uiLoadTree()">Refresh</button>
                     </div>
-                    <div id="tree-list" class="list"></div>
+                    <div class="tree-view-grid">
+                      <div id="tree-graph" class="tree-graph"></div>
+                      <div id="tree-list" class="list"></div>
+                    </div>
                 </div>
                 <div class="divider"></div>
                 <pre id="output" class="output"></pre>
@@ -918,6 +1117,13 @@ async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoRespo
           }
           localStorage.removeItem('ui_username');
           window.location.href = '/ui/login';
+        }
+        function uiBack(fallbackPath) {
+          if (window.history.length > 1) {
+            window.history.back();
+            return;
+          }
+          window.location.href = fallbackPath;
         }
         async function uiListMessages() {
           const user = ensureUser();
@@ -1075,6 +1281,7 @@ async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoRespo
         async function uiActionAdd() {
           const user = ensureUser();
           const status = document.getElementById('action-status');
+          const targetUsername = document.getElementById('add-target').value.trim();
           const keypackage_b64 = document.getElementById('add-keypackage').value.trim();
           const sender = document.getElementById('add-sender').value.trim();
           if (!user || !keypackage_b64) return;
@@ -1084,6 +1291,7 @@ async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoRespo
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
               username: user,
+              target_username: targetUsername || null,
               keypackage_b64,
               sender_leaf: sender ? Number(sender) : null,
               submit: true
@@ -1140,6 +1348,91 @@ async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoRespo
           writeOutput(data);
           await loadGroupState();
         }
+        async function uiCreateCommitFromPending() {
+          const user = ensureUser();
+          const status = document.getElementById('action-status');
+          const sender = document.getElementById('commit-sender').value.trim();
+          if (!user || !status) return;
+          status.textContent = 'Creating and submitting commit from pending proposals...';
+          const resp = await fetch(`/ui/api/groups/${groupId}/commit-from-pending`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              username: user,
+              sender_leaf: sender ? Number(sender) : null
+            })
+          });
+          const data = await resp.json();
+          status.textContent = data.ok
+            ? `Commit submitted. Local epoch is now ${data.data.epoch}.`
+            : (data.error || 'Create+submit commit failed.');
+          writeOutput(data);
+          await loadGroupState();
+          await uiLoadTree();
+          await uiListMessages();
+        }
+        async function uiSyncApplyLatest(silent) {
+          const user = ensureUser();
+          const status = document.getElementById('action-status');
+          const limit = document.getElementById('sync-limit').value.trim();
+          const receiverPath = document.getElementById('sync-receiver-path').value.trim();
+          if (!user || !status) return;
+          status.textContent = 'Syncing and applying latest commits...';
+          const resp = await fetch(`/ui/api/groups/${groupId}/sync-apply-latest`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              username: user,
+              limit: limit ? Number(limit) : null,
+              receiver_private_path: receiverPath || null
+            })
+          });
+          const data = await resp.json();
+          if (data.ok && data.data) {
+            const usedPath = data.data.receiver_private_path ? ` receiver=${data.data.receiver_private_path}` : '';
+            status.textContent = `Sync done. Applied ${data.data.applied}, skipped ${data.data.skipped}, local epoch ${data.data.local_epoch}.${usedPath}`;
+          } else {
+            status.textContent = data.error || 'Sync/apply failed.';
+          }
+          if (!silent) {
+            writeOutput(data);
+          }
+          await loadGroupState();
+          await uiLoadTree();
+          await uiListMessages();
+        }
+        async function uiJoinFromLatest() {
+          const user = ensureUser();
+          const status = document.getElementById('action-status');
+          const limit = document.getElementById('sync-limit').value.trim();
+          const receiverPath = document.getElementById('sync-receiver-path').value.trim();
+          const baseMembersRaw = document.getElementById('join-base-members').value.trim();
+          if (!user || !status) return;
+          const baseMemberUsernames = baseMembersRaw
+            ? baseMembersRaw.split(',').map(v => v.trim()).filter(Boolean)
+            : [];
+          status.textContent = 'Running joiner onboarding from latest Add commit...';
+          const resp = await fetch(`/ui/api/groups/${groupId}/join-from-latest`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              username: user,
+              base_member_usernames: baseMemberUsernames,
+              limit: limit ? Number(limit) : null,
+              receiver_private_path: receiverPath || null
+            })
+          });
+          const data = await resp.json();
+          if (data.ok && data.data) {
+            status.textContent = `Joined at commit ${data.data.commit_id}. Own leaf ${data.data.own_leaf_index}, local epoch ${data.data.local_epoch}, catch-up applied ${data.data.applied_after_join}.`;
+          } else {
+            status.textContent = data.error || 'Joiner onboarding failed.';
+          }
+          writeOutput(data);
+          await loadGroupState();
+          await uiLoadTree();
+          await uiListMessages();
+        }
         async function loadGroupState() {
           const user = ensureUser();
           const status = document.getElementById('group-state-status');
@@ -1161,6 +1454,7 @@ async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoRespo
           const header = `root ${tree.root_index ?? 'n/a'} • leaves ${tree.leaf_count} • epoch ${tree.epoch}`;
           if (!tree.nodes || tree.nodes.length === 0) {
             list.innerHTML = `<div class="note">No tree nodes found. ${header}</div>`;
+            renderTreeGraph(null);
             return;
           }
           list.innerHTML = `
@@ -1168,12 +1462,82 @@ async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoRespo
             ${tree.nodes.map(node => `
               <div class="list-item">
                 <div>
-                  <div class="title">#${node.node_index} ${node.node_type}</div>
+                  <div class="title">#${node.node_index} ${node.node_type} (${node.label})</div>
                   <div class="muted">${node.summary}</div>
                 </div>
               </div>
             `).join('')}
           `;
+          renderTreeGraph(tree);
+        }
+        function escapeHtml(value) {
+          return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        }
+        function renderTreeGraph(tree) {
+          const host = document.getElementById('tree-graph');
+          if (!host) return;
+          if (!tree || !tree.nodes || tree.nodes.length === 0) {
+            host.innerHTML = '<div class="note">No tree graph available.</div>';
+            return;
+          }
+          const visibleNodes = tree.nodes.filter(n => n.node_type !== 'blank' && n.x !== null && n.y !== null);
+          if (visibleNodes.length === 0) {
+            host.innerHTML = '<div class="note">No visible nodes to render.</div>';
+            return;
+          }
+          const nodeMap = {};
+          visibleNodes.forEach(n => { nodeMap[n.node_index] = n; });
+          const maxDepth = Math.max(...visibleNodes.map(n => n.y || 0), 0);
+          const width = Math.max(host.clientWidth || 420, 320);
+          const height = 320;
+          const padX = 26;
+          const padY = 34;
+          const usableW = Math.max(width - padX * 2, 120);
+          const usableH = Math.max(height - padY * 2, 120);
+          const xPx = (x) => padX + (x * usableW);
+          const yPx = (y) => {
+            if (maxDepth <= 0) return padY + usableH / 2;
+            return padY + ((y / maxDepth) * usableH);
+          };
+
+          const lineSvg = (tree.edges || [])
+            .map(edge => {
+              const a = nodeMap[edge.from];
+              const b = nodeMap[edge.to];
+              if (!a || !b) return '';
+              return `<line x1="${xPx(a.x)}" y1="${yPx(a.y)}" x2="${xPx(b.x)}" y2="${yPx(b.y)}" stroke="#9aa8b7" stroke-width="2" />`;
+            })
+            .join('');
+
+          const nodeSvg = visibleNodes
+            .map(node => {
+              const cx = xPx(node.x);
+              const cy = yPx(node.y);
+              const label = escapeHtml((node.label || '').slice(0, 14));
+              const nodeText = escapeHtml(`#${node.node_index}`);
+              return `
+                <g>
+                  <circle cx="${cx}" cy="${cy}" r="22" fill="#fff" stroke="#b45309" stroke-width="2"></circle>
+                  <text x="${cx}" y="${cy - 2}" text-anchor="middle" font-size="10" font-family="Space Grotesk" fill="#1f2933">${nodeText}</text>
+                  <text x="${cx}" y="${cy + 12}" text-anchor="middle" font-size="9" font-family="Space Grotesk" fill="#5c6b7a">${label}</text>
+                </g>
+              `;
+            })
+            .join('');
+
+          host.innerHTML = `
+            <svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="xMidYMid meet">
+              <rect x="0" y="0" width="${width}" height="${height}" fill="#fffef8" stroke="#e7cba1" rx="10"></rect>
+              ${lineSvg}
+              ${nodeSvg}
+            </svg>
+          `;
+          window._treeData = tree;
         }
         async function uiLoadTree() {
           const user = ensureUser();
@@ -1184,8 +1548,12 @@ async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoRespo
             renderTree(data.data);
           } else {
             const list = document.getElementById('tree-list');
+            const graph = document.getElementById('tree-graph');
             if (list) {
               list.innerHTML = `<div class="note">${data.error}</div>`;
+            }
+            if (graph) {
+              graph.innerHTML = `<div class="note">${data.error}</div>`;
             }
           }
           writeOutput(data);
@@ -1282,8 +1650,14 @@ async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoRespo
         ensureGroupTracked();
         loadGroupState();
         uiLoadTree();
+        uiSyncApplyLatest(true);
+        window.addEventListener('resize', () => {
+          if (window._treeData) {
+            renderTreeGraph(window._treeData);
+          }
+        });
         </script>
-        "#;
+        "##;
     let group_json = serde_json::to_string(&group_id).unwrap_or_else(|_| "\"group\"".to_string());
     let body = body_template
         .replace("__GROUP__", &group_id)
@@ -1375,6 +1749,8 @@ fn ui_shell(title: &str, body: &str) -> Html<String> {
       top: 16px;
       left: 16px;
       z-index: 30;
+      display: flex;
+      gap: var(--space-sm);
     }}
     .grid {{
       display: grid;
@@ -1382,6 +1758,18 @@ fn ui_shell(title: &str, body: &str) -> Html<String> {
       grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
       align-items: stretch;
       min-width: 0;
+    }}
+    .tree-view-grid {{
+      display: grid;
+      grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+      gap: var(--space-md);
+      min-width: 0;
+    }}
+    .tree-graph {{
+      min-width: 0;
+      width: 100%;
+      overflow: hidden;
+      border-radius: 10px;
     }}
     label {{
       display: grid;
@@ -1425,6 +1813,9 @@ fn ui_shell(title: &str, body: &str) -> Html<String> {
         padding-top: 32px;
       }}
       .grid {{
+        grid-template-columns: 1fr;
+      }}
+      .tree-view-grid {{
         grid-template-columns: 1fr;
       }}
       .list-item {{
@@ -1715,7 +2106,7 @@ async fn api_group_bootstrap(
     State(state): State<UiState>,
     Json(payload): Json<UserQuery>,
 ) -> impl IntoResponse {
-    match bootstrap_group_state(&state, &payload.username, &group_id) {
+    match bootstrap_group_state(&state, &payload.username, &group_id).await {
         Ok(status) => Json(ApiResult {
             ok: true,
             data: Some(status),
@@ -1736,7 +2127,8 @@ async fn api_group_tree(
 ) -> impl IntoResponse {
     match load_group_state(&state, &query.username, &group_id) {
         Ok(group_state) => {
-            let view = build_tree_view(&group_state);
+            let labels = load_group_labels(&state, &query.username, &group_id).unwrap_or_default();
+            let view = build_tree_view(&group_state, &query.username, &labels);
             Json(ApiResult {
                 ok: true,
                 data: Some(view),
@@ -1949,6 +2341,63 @@ async fn api_submit_commit(
     }
 }
 
+async fn api_commit_from_pending(
+    AxumPath(group_id): AxumPath<String>,
+    State(state): State<UiState>,
+    Json(payload): Json<CommitFromPendingPayload>,
+) -> impl IntoResponse {
+    match action_commit_from_pending(&state, &payload, &group_id).await {
+        Ok(value) => Json(ApiResult {
+            ok: true,
+            data: Some(value),
+            error: None,
+        }),
+        Err(err) => Json(ApiResult::<CommitFromPendingResponse> {
+            ok: false,
+            data: None,
+            error: Some(err),
+        }),
+    }
+}
+
+async fn api_sync_apply_latest(
+    AxumPath(group_id): AxumPath<String>,
+    State(state): State<UiState>,
+    Json(payload): Json<SyncApplyPayload>,
+) -> impl IntoResponse {
+    match action_sync_apply_latest(&state, &payload, &group_id).await {
+        Ok(value) => Json(ApiResult {
+            ok: true,
+            data: Some(value),
+            error: None,
+        }),
+        Err(err) => Json(ApiResult::<SyncApplyResponse> {
+            ok: false,
+            data: None,
+            error: Some(err),
+        }),
+    }
+}
+
+async fn api_join_from_latest(
+    AxumPath(group_id): AxumPath<String>,
+    State(state): State<UiState>,
+    Json(payload): Json<JoinFromLatestPayload>,
+) -> impl IntoResponse {
+    match action_join_from_latest(&state, &payload, &group_id).await {
+        Ok(value) => Json(ApiResult {
+            ok: true,
+            data: Some(value),
+            error: None,
+        }),
+        Err(err) => Json(ApiResult::<JoinFromLatestResponse> {
+            ok: false,
+            data: None,
+            error: Some(err),
+        }),
+    }
+}
+
 async fn api_generate_keypackage(
     State(state): State<UiState>,
     Json(payload): Json<KeyPackageGeneratePayload>,
@@ -2051,6 +2500,14 @@ fn group_state_path(state_dir: &Path, username: &str, group_id: &str) -> PathBuf
     ))
 }
 
+fn group_labels_path(state_dir: &Path, username: &str, group_id: &str) -> PathBuf {
+    state_dir.join(format!(
+        "user-{}-group-{}-labels.json",
+        sanitize(username),
+        sanitize(group_id)
+    ))
+}
+
 fn sanitize(value: &str) -> String {
     value
         .chars()
@@ -2097,8 +2554,14 @@ fn load_group_state(
             path.to_string_lossy()
         ));
     }
-    ClientGroupState::load_from_file(&path)
-        .map_err(|err| format!("read group state {}: {err}", path.to_string_lossy()))
+    let path_for_worker = path.clone();
+    let path_for_error = path.to_string_lossy().to_string();
+    let group_state = run_with_large_stack("ui-load-group-state", move || {
+        ClientGroupState::load_from_file(&path_for_worker)
+            .map_err(|err| format!("read group state {}: {err}", path_for_error))
+    })?;
+    ensure_group_state_consistency(&group_state, "load-group-state")?;
+    Ok(group_state)
 }
 
 fn save_group_state(
@@ -2108,12 +2571,65 @@ fn save_group_state(
     group_state: &ClientGroupState,
 ) -> Result<(), String> {
     let path = group_state_path(&state.state_dir, username, group_id);
-    group_state
-        .save_to_file(&path)
-        .map_err(|err| format!("write group state {}: {err}", path.to_string_lossy()))
+    ensure_group_state_consistency(group_state, "save-group-state")?;
+    let state_for_worker = group_state.clone();
+    let path_for_worker = path.clone();
+    let path_for_error = path.to_string_lossy().to_string();
+    run_with_large_stack("ui-save-group-state", move || {
+        state_for_worker
+            .save_to_file(&path_for_worker)
+            .map_err(|err| format!("write group state {}: {err}", path_for_error))
+    })
 }
 
-fn bootstrap_group_state(
+fn ensure_group_state_consistency(
+    state: &ClientGroupState,
+    context: &str,
+) -> Result<(), String> {
+    state
+        .ensure_key_schedule_consistency()
+        .map_err(|err| format!("key schedule consistency violation after {context}: {err}"))
+}
+
+fn load_group_labels(
+    state: &UiState,
+    username: &str,
+    group_id: &str,
+) -> Result<GroupMemberLabels, String> {
+    let path = group_labels_path(&state.state_dir, username, group_id);
+    if !path.exists() {
+        return Ok(GroupMemberLabels::default());
+    }
+    let bytes = fs::read(&path).map_err(|err| format!("read group labels: {err}"))?;
+    serde_json::from_slice(&bytes).map_err(|err| format!("parse group labels: {err}"))
+}
+
+fn save_group_labels(
+    state: &UiState,
+    username: &str,
+    group_id: &str,
+    labels: &GroupMemberLabels,
+) -> Result<(), String> {
+    let path = group_labels_path(&state.state_dir, username, group_id);
+    let json = serde_json::to_vec_pretty(labels).map_err(|err| err.to_string())?;
+    fs::write(path, json).map_err(|err| format!("write group labels: {err}"))
+}
+
+fn upsert_group_label(
+    state: &UiState,
+    username: &str,
+    group_id: &str,
+    key_id: &str,
+    display_name: &str,
+) -> Result<(), String> {
+    let mut labels = load_group_labels(state, username, group_id)?;
+    labels
+        .items
+        .insert(key_id.to_string(), display_name.to_string());
+    save_group_labels(state, username, group_id, &labels)
+}
+
+async fn bootstrap_group_state(
     state: &UiState,
     username: &str,
     group_id: &str,
@@ -2131,7 +2647,24 @@ fn bootstrap_group_state(
     }
 
     let client_state = load_state(state, username)?;
-    let (key_package, _) = generate_keypackage_for_user(&client_state)?;
+    let (key_package, receiver_private) = generate_keypackage_for_user(&client_state)?;
+    let keypackage_b64 = STANDARD.encode(key_package.encode());
+    ds_publish_keypackage(state, username, &keypackage_b64).await?;
+
+    let receiver_path = receiver_private_path(&state.state_dir, username);
+    let receiver_json =
+        serde_json::to_vec_pretty(&receiver_private).map_err(|err| err.to_string())?;
+    fs::write(&receiver_path, receiver_json)
+        .map_err(|err| format!("write receiver private: {err}"))?;
+    let _ = upsert_keypackage_record(
+        state,
+        username,
+        &keypackage_b64,
+        Some(&receiver_path.to_string_lossy()),
+        true,
+    );
+
+    let own_key_id = short_id(&key_package.init_key.to_bytes());
     let leaf = LeafNode {
         public_key: key_package.init_key,
         credential: key_package.identity,
@@ -2139,6 +2672,7 @@ fn bootstrap_group_state(
     let tree = RatchetTree::from_leaves(vec![leaf]);
     let group_state = ClientGroupState::new(group_id.to_string(), tree, 0);
     save_group_state(state, username, group_id, &group_state)?;
+    upsert_group_label(state, username, group_id, &own_key_id, username)?;
     let _ = add_group(state, username, group_id);
 
     Ok(GroupBootstrapStatus {
@@ -2218,19 +2752,103 @@ fn upsert_keypackage_record(
     Ok(record)
 }
 
-fn build_tree_view(state: &ClientGroupState) -> TreeView {
+fn node_is_blank(tree: &RatchetTree, node_index: usize) -> bool {
+    matches!(tree.nodes.get(node_index), Some(hybrid_mls::tree::Node::Blank))
+}
+
+fn layout_tree_inorder(
+    tree: &RatchetTree,
+    node_index: usize,
+    depth: usize,
+    next_x: &mut usize,
+    positions: &mut HashMap<usize, (usize, usize)>,
+    edges: &mut Vec<TreeEdgeView>,
+) {
+    if node_index >= tree.nodes.len() {
+        return;
+    }
+
+    if let Some(left) = tree.left_child(node_index) {
+        if left < tree.nodes.len() {
+            layout_tree_inorder(tree, left, depth + 1, next_x, positions, edges);
+            if !node_is_blank(tree, node_index) && !node_is_blank(tree, left) {
+                edges.push(TreeEdgeView {
+                    from: node_index,
+                    to: left,
+                });
+            }
+        }
+    }
+
+    positions.insert(node_index, (*next_x, depth));
+    *next_x = (*next_x).saturating_add(1);
+
+    if let Some(right) = tree.right_child(node_index) {
+        if right < tree.nodes.len() {
+            layout_tree_inorder(tree, right, depth + 1, next_x, positions, edges);
+            if !node_is_blank(tree, node_index) && !node_is_blank(tree, right) {
+                edges.push(TreeEdgeView {
+                    from: node_index,
+                    to: right,
+                });
+            }
+        }
+    }
+}
+
+fn build_tree_view(
+    state: &ClientGroupState,
+    username: &str,
+    labels: &GroupMemberLabels,
+) -> TreeView {
+    let mut positions: HashMap<usize, (usize, usize)> = HashMap::new();
+    let mut edges = Vec::new();
+    let mut next_x = 0usize;
+    if let Some(root) = state.ratchet_tree.root_index() {
+        layout_tree_inorder(
+            &state.ratchet_tree,
+            root,
+            0,
+            &mut next_x,
+            &mut positions,
+            &mut edges,
+        );
+    }
+
+    let max_x = positions.values().map(|(x, _)| *x).max().unwrap_or(0) as f32;
     let mut nodes = Vec::with_capacity(state.ratchet_tree.nodes.len());
     for (idx, node) in state.ratchet_tree.nodes.iter().enumerate() {
+        let position = positions.get(&idx).copied();
+        let x = position.map(|(xv, _)| {
+            if max_x <= 0.0 {
+                0.5
+            } else {
+                (xv as f32) / max_x
+            }
+        });
+        let y = position.map(|(_, yv)| yv as f32);
+
         match node {
             hybrid_mls::tree::Node::Leaf(leaf) => {
                 let leaf_index = idx / 2;
                 let cred_id = short_id(&leaf.credential.to_bytes());
                 let pub_id = short_id(&leaf.public_key.to_bytes());
+                let leaf_key_id = short_id(&leaf.public_key.to_bytes());
+                let label = if leaf_index == state.own_leaf_index {
+                    username.to_string()
+                } else if let Some(mapped) = labels.items.get(&leaf_key_id) {
+                    mapped.clone()
+                } else {
+                    format!("leaf-{leaf_index}")
+                };
                 nodes.push(TreeNodeView {
                     node_index: idx,
                     node_type: "leaf".to_string(),
                     leaf_index: Some(leaf_index),
+                    label,
                     summary: format!("leaf {leaf_index} cred {cred_id} pub {pub_id}"),
+                    x,
+                    y,
                 });
             }
             hybrid_mls::tree::Node::Parent(parent) => {
@@ -2240,11 +2858,19 @@ fn build_tree_view(state: &ClientGroupState) -> TreeView {
                     short_hex(&parent.parent_hash, 6)
                 };
                 let pub_id = short_id(&parent.public_key.to_bytes());
+                let label = if Some(idx) == state.ratchet_tree.root_index() {
+                    "root".to_string()
+                } else {
+                    format!("parent-{idx}")
+                };
                 nodes.push(TreeNodeView {
                     node_index: idx,
                     node_type: "parent".to_string(),
                     leaf_index: None,
+                    label,
                     summary: format!("parent hash {hash_id} pub {pub_id}"),
+                    x,
+                    y,
                 });
             }
             hybrid_mls::tree::Node::Blank => {
@@ -2252,7 +2878,10 @@ fn build_tree_view(state: &ClientGroupState) -> TreeView {
                     node_index: idx,
                     node_type: "blank".to_string(),
                     leaf_index: None,
+                    label: "blank".to_string(),
                     summary: "blank".to_string(),
+                    x,
+                    y,
                 });
             }
         }
@@ -2262,7 +2891,10 @@ fn build_tree_view(state: &ClientGroupState) -> TreeView {
         group_id: state.group_id.clone(),
         epoch: state.epoch,
         leaf_count: state.ratchet_tree.leaf_count(),
+        own_leaf_index: state.own_leaf_index,
+        username: username.to_string(),
         root_index: state.ratchet_tree.root_index(),
+        edges,
         nodes,
     }
 }
@@ -2299,38 +2931,41 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-fn sign_message_b64(priv_key: &HybridSignPrivKey, message: &[u8]) -> Result<String, String> {
-    let signer = priv_key.clone();
+fn sign_message_b64(priv_key: HybridSignPrivKey, message: &[u8]) -> Result<String, String> {
     let payload = message.to_vec();
     run_with_large_stack("ui-hybrid-sign", move || {
-        let sig = signer.sign(&payload);
+        let sig = priv_key.sign(&payload);
         Ok(STANDARD.encode(sig.to_bytes()))
     })
 }
 
 fn signing_key_from_state(state: &ClientState) -> Result<HybridSignPrivKey, String> {
-    let classic_bytes = STANDARD
-        .decode(&state.classic_sk_b64)
-        .map_err(|_| "invalid classic signing key".to_string())?;
-    if classic_bytes.len() != 32 {
-        return Err("classic signing key must be 32 bytes".to_string());
-    }
-    let mut secret: EdSecretKey = [0u8; 32];
-    secret.copy_from_slice(&classic_bytes);
-    let classic_sk = EdSigningKey::from_bytes(&secret);
+    let classic_b64 = state.classic_sk_b64.clone();
+    let pq_b64 = state.pq_sk_b64.clone();
+    run_with_large_stack("ui-load-signing-key", move || {
+        let classic_bytes = STANDARD
+            .decode(&classic_b64)
+            .map_err(|_| "invalid classic signing key".to_string())?;
+        if classic_bytes.len() != 32 {
+            return Err("classic signing key must be 32 bytes".to_string());
+        }
+        let mut secret: EdSecretKey = [0u8; 32];
+        secret.copy_from_slice(&classic_bytes);
+        let classic_sk = EdSigningKey::from_bytes(&secret);
 
-    let pq_bytes = STANDARD
-        .decode(&state.pq_sk_b64)
-        .map_err(|_| "invalid pq signing key".to_string())?;
-    let enc: EncodedSigningKey<MlDsa65> = pq_bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| "invalid pq signing key".to_string())?;
-    let pq_sk = ml_dsa::SigningKey::<MlDsa65>::decode(&enc);
+        let pq_bytes = STANDARD
+            .decode(&pq_b64)
+            .map_err(|_| "invalid pq signing key".to_string())?;
+        let enc: EncodedSigningKey<MlDsa65> = pq_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| "invalid pq signing key".to_string())?;
+        let pq_sk = ml_dsa::SigningKey::<MlDsa65>::decode(&enc);
 
-    Ok(HybridSignPrivKey {
-        classic: classic_sk,
-        pq: pq_sk,
+        Ok(HybridSignPrivKey {
+            classic: classic_sk,
+            pq: pq_sk,
+        })
     })
 }
 
@@ -2572,7 +3207,7 @@ fn hash_payload(bytes: &[u8]) -> [u8; 32] {
     out
 }
 
-const UI_WORKER_STACK_BYTES: usize = 32 * 1024 * 1024;
+const UI_WORKER_STACK_BYTES: usize = 128 * 1024 * 1024;
 
 fn run_with_large_stack<T, F>(worker_name: &'static str, f: F) -> Result<T, String>
 where
@@ -2638,7 +3273,7 @@ async fn login_user(
     let mut client_state = load_state(state, username)?;
     let signing_key = signing_key_from_state(&client_state)?;
     let sign_input = login_signing_input(username, password);
-    let signature = sign_message_b64(&signing_key, &sign_input)?;
+    let signature = sign_message_b64(signing_key, &sign_input)?;
 
     let body = serde_json::json!({
         "username": username,
@@ -2676,7 +3311,7 @@ async fn logout_user(state: &UiState, username: &str) -> Result<serde_json::Valu
         .ok_or_else(|| "missing session_id; login first".to_string())?;
     let signing_key = signing_key_from_state(&client_state)?;
     let sign_input = logout_signing_input(username, &session_id);
-    let signature = sign_message_b64(&signing_key, &sign_input)?;
+    let signature = sign_message_b64(signing_key, &sign_input)?;
 
     let body = serde_json::json!({
         "username": username,
@@ -2715,7 +3350,7 @@ async fn ds_list_messages(
     let kind = query.kind.clone().unwrap_or_else(|| "any".to_string());
     let limit = query.limit.unwrap_or(20);
     let sign_input = list_signing_input(username, group_id, limit, &kind, query.before_id);
-    let signature = sign_message_b64(&signing_key, &sign_input)?;
+    let signature = sign_message_b64(signing_key, &sign_input)?;
 
     let mut params = vec![
         ("username", username.to_string()),
@@ -2761,7 +3396,7 @@ async fn ds_fetch_group_message(
         .ok_or_else(|| "missing session_id; login first".to_string())?;
     let signing_key = signing_key_from_state(&client_state)?;
     let sign_input = fetch_message_signing_input(username, group_id, message_id);
-    let signature = sign_message_b64(&signing_key, &sign_input)?;
+    let signature = sign_message_b64(signing_key, &sign_input)?;
 
     let query = serde_urlencoded::to_string([
         ("username", username),
@@ -2815,9 +3450,8 @@ fn generate_keypackage_for_user(
         init_key,
         signature,
     };
-    if !key_package.verify() {
-        return Err("generated keypackage failed self-verification".to_string());
-    }
+    verify_keypackage_signature_only(&key_package)
+        .map_err(|_| "generated keypackage failed self-verification".to_string())?;
 
     let receiver_private = ReceiverPrivateFile {
         classic_x25519_private_b64: STANDARD.encode(classic_private),
@@ -2876,7 +3510,7 @@ async fn ds_list_app_messages(
     let signing_key = signing_key_from_state(&client_state)?;
     let limit = query.limit.unwrap_or(20);
     let sign_input = app_list_signing_input(username, group_id, limit, query.before_id);
-    let signature = sign_message_b64(&signing_key, &sign_input)?;
+    let signature = sign_message_b64(signing_key, &sign_input)?;
 
     let mut params = vec![
         ("username", username.to_string()),
@@ -2920,7 +3554,7 @@ async fn ds_fetch_app_message(
         .ok_or_else(|| "missing session_id; login first".to_string())?;
     let signing_key = signing_key_from_state(&client_state)?;
     let sign_input = app_fetch_signing_input(username, group_id, message_id);
-    let signature = sign_message_b64(&signing_key, &sign_input)?;
+    let signature = sign_message_b64(signing_key, &sign_input)?;
 
     let query = serde_urlencoded::to_string([
         ("username", username),
@@ -2960,7 +3594,7 @@ async fn ds_send_app_message(
     let signing_key = signing_key_from_state(&client_state)?;
     let payload = message.as_bytes();
     let sign_input = app_publish_signing_input(username, group_id, payload);
-    let signature = sign_message_b64(&signing_key, &sign_input)?;
+    let signature = sign_message_b64(signing_key, &sign_input)?;
 
     let body = serde_json::json!({
         "username": username,
@@ -2999,7 +3633,7 @@ async fn ds_submit_proposal(
         .decode(proposal_b64)
         .map_err(|_| "proposal_b64 must be base64".to_string())?;
     let sign_input = proposal_signing_input(username, group_id, &proposal_bytes);
-    let signature = sign_message_b64(&signing_key, &sign_input)?;
+    let signature = sign_message_b64(signing_key, &sign_input)?;
 
     let body = serde_json::json!({
         "username": username,
@@ -3048,7 +3682,7 @@ async fn ds_submit_commit(
         None
     };
     let sign_input = commit_signing_input(username, group_id, &commit_bytes, path_bytes.as_deref());
-    let signature = sign_message_b64(&signing_key, &sign_input)?;
+    let signature = sign_message_b64(signing_key, &sign_input)?;
 
     let body = serde_json::json!({
         "username": username,
@@ -3087,7 +3721,7 @@ async fn ds_publish_keypackage(
         .decode(keypackage_b64)
         .map_err(|_| "keypackage_b64 must be base64".to_string())?;
     let sign_input = keypackage_publish_signing_input(username, &keypackage_bytes);
-    let signature = sign_message_b64(&signing_key, &sign_input)?;
+    let signature = sign_message_b64(signing_key, &sign_input)?;
 
     let body = serde_json::json!({
         "username": username,
@@ -3122,7 +3756,7 @@ async fn ds_fetch_keypackage(
         .ok_or_else(|| "missing session_id; login first".to_string())?;
     let signing_key = signing_key_from_state(&client_state)?;
     let sign_input = keypackage_fetch_signing_input(username, target);
-    let signature = sign_message_b64(&signing_key, &sign_input)?;
+    let signature = sign_message_b64(signing_key, &sign_input)?;
 
     let query = serde_urlencoded::to_string([
         ("username", username),
@@ -3149,11 +3783,30 @@ fn decode_keypackage_b64(keypackage_b64: &str) -> Result<KeyPackage, String> {
     let bytes = STANDARD
         .decode(keypackage_b64)
         .map_err(|_| "keypackage_b64 must be base64".to_string())?;
-    let keypackage = KeyPackage::decode(&bytes).ok_or("failed to decode keypackage".to_string())?;
-    if !keypackage.verify() {
-        return Err("keypackage signature verification failed".to_string());
-    }
-    Ok(keypackage)
+    decode_and_verify_keypackage_bytes(bytes)
+}
+
+fn decode_and_verify_keypackage_bytes(bytes: Vec<u8>) -> Result<KeyPackage, String> {
+    run_with_large_stack("ui-keypackage-verify", move || {
+        let keypackage =
+            KeyPackage::decode(&bytes).ok_or("failed to decode keypackage".to_string())?;
+        if !keypackage.verify() {
+            return Err("keypackage signature verification failed".to_string());
+        }
+        Ok(keypackage)
+    })
+}
+
+fn verify_keypackage_signature_only(key_package: &KeyPackage) -> Result<(), String> {
+    let bytes = key_package.encode();
+    run_with_large_stack("ui-keypackage-signature-verify", move || {
+        let keypackage =
+            KeyPackage::decode(&bytes).ok_or("failed to decode keypackage".to_string())?;
+        if !keypackage.verify() {
+            return Err("invalid add proposal key package signature".to_string());
+        }
+        Ok(())
+    })
 }
 
 fn resolve_sender_leaf(
@@ -3161,14 +3814,818 @@ fn resolve_sender_leaf(
     sender_leaf: Option<usize>,
 ) -> Result<usize, String> {
     let sender = sender_leaf.unwrap_or(state.own_leaf_index);
-    if sender >= state.ratchet_tree.leaf_count() {
+    ensure_leaf_present(&state.ratchet_tree, sender)?;
+    Ok(sender)
+}
+
+fn ensure_leaf_bounds(tree: &RatchetTree, leaf_index: usize) -> Result<(), String> {
+    if leaf_index >= tree.leaf_count() {
         return Err(format!(
-            "sender leaf {} out of bounds (leaf_count={})",
-            sender,
-            state.ratchet_tree.leaf_count()
+            "leaf index {} out of bounds (leaf_count={})",
+            leaf_index,
+            tree.leaf_count()
         ));
     }
-    Ok(sender)
+    Ok(())
+}
+
+fn ensure_leaf_present(tree: &RatchetTree, leaf_index: usize) -> Result<(), String> {
+    ensure_leaf_bounds(tree, leaf_index)?;
+    let node_index = RatchetTree::leaf_to_node_index(leaf_index);
+    match tree.nodes.get(node_index) {
+        Some(Node::Leaf(_)) => Ok(()),
+        _ => Err(format!("leaf index {} is blank", leaf_index)),
+    }
+}
+
+fn first_blank_leaf_index(tree: &RatchetTree) -> Option<usize> {
+    for node_index in (0..tree.nodes.len()).step_by(2) {
+        if matches!(tree.nodes[node_index], Node::Blank) {
+            return Some(node_index / 2);
+        }
+    }
+    None
+}
+
+fn grow_tree_by_one_leaf(tree: &mut RatchetTree) {
+    if tree.nodes.is_empty() {
+        tree.nodes.push(Node::Blank);
+    } else {
+        tree.nodes.push(Node::Blank);
+        tree.nodes.push(Node::Blank);
+    }
+}
+
+fn insert_key_package_preview(tree: &mut RatchetTree, key_package: &KeyPackage) -> Result<usize, String> {
+    verify_keypackage_signature_only(key_package)?;
+
+    let leaf_index = match first_blank_leaf_index(tree) {
+        Some(index) => index,
+        None => {
+            grow_tree_by_one_leaf(tree);
+            tree.leaf_count().saturating_sub(1)
+        }
+    };
+    let node_index = RatchetTree::leaf_to_node_index(leaf_index);
+    if node_index >= tree.nodes.len() {
+        return Err("internal tree indexing error while inserting key package".to_string());
+    }
+    tree.nodes[node_index] = Node::Leaf(LeafNode {
+        public_key: key_package.init_key.clone(),
+        credential: key_package.identity.clone(),
+    });
+    Ok(leaf_index)
+}
+
+fn apply_proposals_preview(tree: &mut RatchetTree, proposals: &[Proposal]) -> Result<(), String> {
+    for proposal in proposals {
+        match proposal {
+            Proposal::Add(key_package) => {
+                insert_key_package_preview(tree, key_package)?;
+            }
+            Proposal::Update {
+                leaf_index,
+                key_package,
+            } => {
+                ensure_leaf_bounds(tree, *leaf_index)?;
+                let node_index = RatchetTree::leaf_to_node_index(*leaf_index);
+                tree.nodes[node_index] = Node::Leaf(LeafNode {
+                    public_key: key_package.init_key.clone(),
+                    credential: key_package.identity.clone(),
+                });
+            }
+            Proposal::Remove { leaf_index } => {
+                ensure_leaf_bounds(tree, *leaf_index)?;
+                let node_index = RatchetTree::leaf_to_node_index(*leaf_index);
+                tree.nodes[node_index] = Node::Blank;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ClientRng(u64);
+
+impl ClientRng {
+    fn next_u64_internal(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+}
+
+impl TryRng for ClientRng {
+    type Error = Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(self.next_u64_internal() as u32)
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(self.next_u64_internal())
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        let mut offset = 0usize;
+        while offset < dst.len() {
+            let chunk = self.next_u64_internal().to_le_bytes();
+            let take = (dst.len() - offset).min(chunk.len());
+            dst[offset..offset + take].copy_from_slice(&chunk[..take]);
+            offset += take;
+        }
+        Ok(())
+    }
+}
+
+impl TryCryptoRng for ClientRng {}
+
+fn generate_hybrid_public_key(rng: &mut ClientRng) -> Result<HybridPublicKey, String> {
+    let mut classic_bytes = [0u8; 32];
+    rng.try_fill_bytes(&mut classic_bytes)
+        .map_err(|_| "failed to generate classic secret bytes".to_string())?;
+    let classic_priv = X25519Priv::from(classic_bytes);
+    let classic = X25519Pub::from(&classic_priv);
+
+    let mut kem_seed = [0u8; 64];
+    rng.try_fill_bytes(&mut kem_seed)
+        .map_err(|_| "failed to generate ML-KEM seed bytes".to_string())?;
+    let kyber_priv = KyberPriv::from_seed(Seed::from(kem_seed));
+    let pq = kyber_priv.encapsulation_key().clone();
+
+    Ok(HybridPublicKey { classic, pq })
+}
+
+fn build_commit_from_pending(
+    state: &ClientGroupState,
+    sender_leaf: usize,
+) -> Result<(Commit, PathUpdate), String> {
+    let proposals = state
+        .decoded_pending_proposals()
+        .ok_or_else(|| "failed to decode pending proposals from group state".to_string())?;
+    if proposals.is_empty() {
+        return Err("no pending proposals in group state".to_string());
+    }
+    if proposals
+        .iter()
+        .any(|p| matches!(p, Proposal::Remove { leaf_index } if *leaf_index == sender_leaf))
+    {
+        return Err("sender leaf cannot remove itself in this action".to_string());
+    }
+
+    let validation_commit = Commit {
+        sender: sender_leaf,
+        proposals: proposals.clone(),
+        path: Vec::new(),
+    };
+    state
+        .ratchet_tree
+        .validate_commit(&validation_commit)
+        .map_err(|e| format!("pending proposals are invalid: {e:?}"))?;
+
+    let mut tree_after_proposals = state.ratchet_tree.clone();
+    apply_proposals_preview(&mut tree_after_proposals, &proposals)?;
+    ensure_leaf_present(&tree_after_proposals, sender_leaf)?;
+
+    let direct_path = tree_after_proposals
+        .direct_path(sender_leaf)
+        .ok_or_else(|| "failed to compute direct path for sender leaf".to_string())?;
+
+    let mut rng = ClientRng(rand::random::<u64>() ^ state.epoch);
+    let mut path = Vec::with_capacity(direct_path.len());
+    for _ in direct_path {
+        path.push(ParentUpdate {
+            public_key: generate_hybrid_public_key(&mut rng)?,
+            unmerged_leaves: Vec::new(),
+        });
+    }
+
+    let mut leaf_secret = [0u8; 32];
+    rng.try_fill_bytes(&mut leaf_secret)
+        .map_err(|_| "failed to generate leaf secret".to_string())?;
+    let path_update = tree_after_proposals
+        .build_path_update(&mut rng, sender_leaf, leaf_secret)
+        .ok_or_else(|| "failed to build path update".to_string())?;
+
+    Ok((
+        Commit {
+            sender: sender_leaf,
+            proposals,
+            path,
+        },
+        path_update,
+    ))
+}
+
+fn validate_commit_envelope_metadata(
+    state: &ClientGroupState,
+    envelope: &CommitEnvelope,
+) -> Result<(), String> {
+    if envelope.group_id != state.group_id {
+        return Err(format!(
+            "group_id mismatch: state={} envelope={}",
+            state.group_id, envelope.group_id
+        ));
+    }
+    if envelope.epoch != state.epoch {
+        return Err(format!(
+            "epoch mismatch: state={} envelope={}",
+            state.epoch, envelope.epoch
+        ));
+    }
+    if envelope.sender_leaf != envelope.commit.sender {
+        return Err(format!(
+            "sender mismatch: envelope.sender_leaf={} commit.sender={}",
+            envelope.sender_leaf, envelope.commit.sender
+        ));
+    }
+    Ok(())
+}
+
+fn validate_path_update_envelope_metadata(
+    commit: &CommitEnvelope,
+    path_update: &PathUpdateEnvelope,
+) -> Result<(), String> {
+    if path_update.group_id != commit.group_id {
+        return Err(format!(
+            "path update group_id mismatch: commit={} path={}",
+            commit.group_id, path_update.group_id
+        ));
+    }
+    if path_update.epoch != commit.epoch {
+        return Err(format!(
+            "path update epoch mismatch: commit={} path={}",
+            commit.epoch, path_update.epoch
+        ));
+    }
+    if path_update.sender_leaf != commit.sender_leaf {
+        return Err(format!(
+            "path update sender mismatch: commit={} path={}",
+            commit.sender_leaf, path_update.sender_leaf
+        ));
+    }
+    Ok(())
+}
+
+fn load_receiver_private_from_file(path: &Path) -> Result<HybridPrivateKey, String> {
+    let bytes = fs::read(path).map_err(|err| format!("read receiver private {}: {err}", path.to_string_lossy()))?;
+    let key_file: ReceiverPrivateFile =
+        serde_json::from_slice(&bytes).map_err(|err| format!("parse receiver private {}: {err}", path.to_string_lossy()))?;
+
+    let classic_bytes = STANDARD
+        .decode(&key_file.classic_x25519_private_b64)
+        .map_err(|_| "classic_x25519_private_b64 is not valid base64".to_string())?;
+    if classic_bytes.len() != 32 {
+        return Err("classic_x25519_private_b64 must decode to 32 bytes".to_string());
+    }
+    let mut classic_arr = [0u8; 32];
+    classic_arr.copy_from_slice(&classic_bytes);
+
+    let seed_bytes = STANDARD
+        .decode(&key_file.pq_kem_seed_b64)
+        .map_err(|_| "pq_kem_seed_b64 is not valid base64".to_string())?;
+    if seed_bytes.len() != 64 {
+        return Err("pq_kem_seed_b64 must decode to 64 bytes".to_string());
+    }
+    let mut seed_arr = [0u8; 64];
+    seed_arr.copy_from_slice(&seed_bytes);
+
+    Ok(HybridPrivateKey {
+        classic: X25519Priv::from(classic_arr),
+        pq: KyberPriv::from_seed(Seed::from(seed_arr)),
+    })
+}
+
+fn latest_receiver_private_path(state: &UiState, username: &str) -> Result<Option<String>, String> {
+    let keypackages = load_keypackages(state, username)?;
+    Ok(keypackages
+        .items
+        .iter()
+        .filter(|item| !item.receiver_private_path.trim().is_empty())
+        .max_by_key(|item| item.created_at)
+        .map(|item| item.receiver_private_path.clone()))
+}
+
+async fn ds_list_messages_typed(
+    state: &UiState,
+    username: &str,
+    group_id: &str,
+    limit: usize,
+    kind: &str,
+    before_id: Option<i64>,
+) -> Result<DsListMessagesResponse, String> {
+    let query = ListMessagesQuery {
+        username: username.to_string(),
+        kind: Some(kind.to_string()),
+        limit: Some(limit),
+        before_id,
+    };
+    let value = ds_list_messages(state, username, group_id, &query).await?;
+    serde_json::from_value(value).map_err(|err| format!("parse list messages response: {err}"))
+}
+
+async fn ds_fetch_group_message_typed(
+    state: &UiState,
+    username: &str,
+    group_id: &str,
+    message_id: i64,
+) -> Result<DsFetchGroupMessageResponse, String> {
+    let value = ds_fetch_group_message(state, username, group_id, message_id).await?;
+    serde_json::from_value(value).map_err(|err| format!("parse fetch message response: {err}"))
+}
+
+fn extract_sorted_unique_message_ids(messages: &[DsMessageSummary]) -> Vec<i64> {
+    let mut ids = Vec::with_capacity(messages.len());
+    for item in messages {
+        if let Ok(id) = item.id.parse::<i64>() {
+            ids.push(id);
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+fn candidate_path_update_ids(
+    commit_id: i64,
+    next_commit_id: Option<i64>,
+    path_ids: &[i64],
+) -> Vec<i64> {
+    let mut out = Vec::new();
+    for id in path_ids {
+        if *id <= commit_id {
+            continue;
+        }
+        if let Some(next) = next_commit_id {
+            if *id >= next {
+                break;
+            }
+        }
+        out.push(*id);
+    }
+    out
+}
+
+fn hybrid_public_from_private(private: &HybridPrivateKey) -> HybridPublicKey {
+    HybridPublicKey {
+        classic: X25519Pub::from(&private.classic),
+        pq: private.pq.encapsulation_key().clone(),
+    }
+}
+
+fn find_leaf_by_public_key(tree: &RatchetTree, target: &HybridPublicKey) -> Option<usize> {
+    for node_index in (0..tree.nodes.len()).step_by(2) {
+        if let Some(Node::Leaf(leaf)) = tree.nodes.get(node_index) {
+            if &leaf.public_key == target {
+                return Some(node_index / 2);
+            }
+        }
+    }
+    None
+}
+
+fn commit_adds_public_key(commit: &Commit, target: &HybridPublicKey) -> bool {
+    commit.proposals.iter().any(|proposal| match proposal {
+        Proposal::Add(keypackage) => keypackage.init_key == *target,
+        _ => false,
+    })
+}
+
+async fn load_base_member_leaves_from_ds(
+    state: &UiState,
+    username: &str,
+    base_member_usernames: &[String],
+) -> Result<(Vec<LeafNode>, Vec<(String, String)>), String> {
+    if base_member_usernames.is_empty() {
+        return Err(
+            "base_member_usernames is required (comma-separated usernames in pre-commit leaf order)"
+                .to_string(),
+        );
+    }
+
+    let mut leaves = Vec::with_capacity(base_member_usernames.len());
+    let mut labels = Vec::with_capacity(base_member_usernames.len());
+    for member in base_member_usernames {
+        let member_name = member.trim();
+        if member_name.is_empty() {
+            return Err("base_member_usernames must not contain empty values".to_string());
+        }
+        let fetched = ds_fetch_keypackage(state, username, member_name).await?;
+        let keypackage_b64 = fetched
+            .get("keypackage_bytes")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                format!("fetch keypackage for '{}' did not include keypackage_bytes", member_name)
+            })?;
+        let keypackage = decode_keypackage_b64(keypackage_b64)?;
+        let key_id = short_id(&keypackage.init_key.to_bytes());
+        leaves.push(LeafNode {
+            public_key: keypackage.init_key.clone(),
+            credential: keypackage.identity.clone(),
+        });
+        labels.push((key_id, member_name.to_string()));
+    }
+
+    Ok((leaves, labels))
+}
+
+async fn find_join_commit_and_path_update(
+    state: &UiState,
+    username: &str,
+    group_id: &str,
+    receiver_public: &HybridPublicKey,
+    limit: usize,
+) -> Result<(i64, CommitEnvelope, PathUpdateEnvelope), String> {
+    let commit_summaries = ds_list_messages_typed(state, username, group_id, limit, "commit", None).await?;
+    let path_summaries = ds_list_messages_typed(state, username, group_id, limit, "path_update", None).await?;
+
+    let commit_ids = extract_sorted_unique_message_ids(&commit_summaries.messages);
+    if commit_ids.is_empty() {
+        return Err("no commit messages found for group".to_string());
+    }
+    let path_ids = extract_sorted_unique_message_ids(&path_summaries.messages);
+
+    for (idx, commit_id) in commit_ids.iter().enumerate() {
+        let next_commit = commit_ids.get(idx + 1).copied();
+        let fetched_commit =
+            ds_fetch_group_message_typed(state, username, group_id, *commit_id).await?;
+        if fetched_commit.kind != "commit" {
+            continue;
+        }
+        let commit_bytes = match STANDARD.decode(&fetched_commit.message_bytes) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let Some(commit_env) = CommitEnvelope::decode(&commit_bytes) else {
+            continue;
+        };
+        if commit_env.group_id != group_id {
+            continue;
+        }
+        if !commit_adds_public_key(&commit_env.commit, receiver_public) {
+            continue;
+        }
+
+        let candidate_path_ids = candidate_path_update_ids(*commit_id, next_commit, &path_ids);
+        for path_id in candidate_path_ids {
+            let fetched_path =
+                ds_fetch_group_message_typed(state, username, group_id, path_id).await?;
+            if fetched_path.kind != "path_update" {
+                continue;
+            }
+            let path_bytes = match STANDARD.decode(&fetched_path.message_bytes) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            let Some(path_env) = PathUpdateEnvelope::decode(&path_bytes) else {
+                continue;
+            };
+            if validate_path_update_envelope_metadata(&commit_env, &path_env).is_ok() {
+                return Ok((*commit_id, commit_env, path_env));
+            }
+        }
+
+        return Err(format!(
+            "strict receiver policy: matching Add commit found at id={} but no valid path_update was found",
+            commit_id
+        ));
+    }
+
+    Err("no Add commit found that matches receiver private key".to_string())
+}
+
+#[derive(Debug)]
+struct SyncOutcome {
+    applied: usize,
+    skipped: usize,
+}
+
+async fn fetch_and_apply_latest_once(
+    state: &UiState,
+    username: &str,
+    group_state: &mut ClientGroupState,
+    receiver_private: Option<&HybridPrivateKey>,
+    limit: usize,
+) -> Result<SyncOutcome, String> {
+    let commit_summaries =
+        ds_list_messages_typed(state, username, &group_state.group_id, limit, "commit", None).await?;
+    let path_summaries =
+        ds_list_messages_typed(state, username, &group_state.group_id, limit, "path_update", None).await?;
+
+    let commit_ids = extract_sorted_unique_message_ids(&commit_summaries.messages);
+    if commit_ids.is_empty() {
+        return Ok(SyncOutcome {
+            applied: 0,
+            skipped: 0,
+        });
+    }
+    let path_ids = extract_sorted_unique_message_ids(&path_summaries.messages);
+
+    let mut applied = 0usize;
+    let mut skipped = 0usize;
+
+    for (idx, commit_id) in commit_ids.iter().enumerate() {
+        if group_state.has_applied_commit_id(*commit_id) {
+            skipped = skipped.saturating_add(1);
+            continue;
+        }
+
+        let next_commit = commit_ids.get(idx + 1).copied();
+        let fetched_commit =
+            ds_fetch_group_message_typed(state, username, &group_state.group_id, *commit_id).await?;
+        if fetched_commit.kind != "commit" {
+            skipped = skipped.saturating_add(1);
+            continue;
+        }
+        let commit_bytes = STANDARD
+            .decode(&fetched_commit.message_bytes)
+            .map_err(|_| format!("commit message {} payload must be base64", fetched_commit.id))?;
+        let commit_env = match CommitEnvelope::decode(&commit_bytes) {
+            Some(v) => v,
+            None => {
+                skipped = skipped.saturating_add(1);
+                continue;
+            }
+        };
+
+        if commit_env.group_id != group_state.group_id {
+            skipped = skipped.saturating_add(1);
+            continue;
+        }
+        if commit_env.epoch > group_state.epoch {
+            break;
+        }
+        if validate_commit_envelope_metadata(group_state, &commit_env).is_err() {
+            skipped = skipped.saturating_add(1);
+            continue;
+        }
+
+        if let Some(receiver_private) = receiver_private {
+            let mut matched_path_update: Option<PathUpdateEnvelope> = None;
+            let candidate_path_ids = candidate_path_update_ids(*commit_id, next_commit, &path_ids);
+            for path_id in candidate_path_ids {
+                let fetched_path =
+                    ds_fetch_group_message_typed(state, username, &group_state.group_id, path_id)
+                        .await?;
+                if fetched_path.kind != "path_update" {
+                    continue;
+                }
+                let path_bytes = match STANDARD.decode(&fetched_path.message_bytes) {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                };
+                let Some(path_env) = PathUpdateEnvelope::decode(&path_bytes) else {
+                    continue;
+                };
+                if validate_path_update_envelope_metadata(&commit_env, &path_env).is_ok() {
+                    matched_path_update = Some(path_env);
+                    break;
+                }
+            }
+
+            let path_env = matched_path_update.ok_or_else(|| {
+                format!(
+                    "strict receiver policy: missing or mismatched path_update for commit_id={} (group={}, epoch={}, sender_leaf={})",
+                    commit_id, commit_env.group_id, commit_env.epoch, commit_env.sender_leaf
+                )
+            })?;
+            group_state
+                .ratchet_tree
+                .apply_commit_with_path_update(
+                    &commit_env.commit,
+                    &path_env.path_update,
+                    group_state.own_leaf_index,
+                    receiver_private,
+                )
+                .ok_or_else(|| "failed to apply commit+path update during sync".to_string())?;
+        } else {
+            group_state
+                .ratchet_tree
+                .apply_commit(&commit_env.commit)
+                .ok_or_else(|| "failed to apply commit during sync".to_string())?;
+        }
+
+        group_state.clear_pending_proposals();
+        group_state.advance_epoch_with_context(Some(&commit_bytes));
+        ensure_group_state_consistency(group_state, "sync-apply-latest commit apply")?;
+        group_state.mark_applied_commit_id(*commit_id);
+        applied = applied.saturating_add(1);
+    }
+
+    Ok(SyncOutcome { applied, skipped })
+}
+
+async fn action_commit_from_pending(
+    state: &UiState,
+    payload: &CommitFromPendingPayload,
+    group_id: &str,
+) -> Result<CommitFromPendingResponse, String> {
+    let mut group_state = load_group_state(state, &payload.username, group_id)?;
+    if group_state.group_id != group_id {
+        return Err(format!(
+            "group_id mismatch: state={} requested={}",
+            group_state.group_id, group_id
+        ));
+    }
+
+    let sender_leaf = resolve_sender_leaf(&group_state, payload.sender_leaf)?;
+    let (commit, path_update) = build_commit_from_pending(&group_state, sender_leaf)?;
+    let commit_envelope = CommitEnvelope {
+        group_id: group_state.group_id.clone(),
+        epoch: group_state.epoch,
+        sender_leaf,
+        commit: commit.clone(),
+    };
+    let path_update_envelope = PathUpdateEnvelope {
+        group_id: group_state.group_id.clone(),
+        epoch: group_state.epoch,
+        sender_leaf,
+        path_update,
+    };
+    let commit_b64 = STANDARD.encode(commit_envelope.encode());
+    let path_update_b64 = STANDARD.encode(path_update_envelope.encode());
+
+    ds_submit_commit(
+        state,
+        &payload.username,
+        group_id,
+        &commit_b64,
+        Some(path_update_b64.as_str()),
+    )
+    .await?;
+
+    let commit_context = commit.encode();
+    group_state
+        .ratchet_tree
+        .apply_commit(&commit)
+        .ok_or_else(|| "failed to apply generated commit to local state".to_string())?;
+    group_state.clear_pending_proposals();
+    group_state.advance_epoch_with_context(Some(&commit_context));
+    ensure_group_state_consistency(&group_state, "commit-from-pending apply")?;
+    save_group_state(state, &payload.username, group_id, &group_state)?;
+    let _ = add_group(state, &payload.username, group_id);
+
+    Ok(CommitFromPendingResponse {
+        commit_b64,
+        path_update_b64,
+        submitted: true,
+        sender_leaf,
+        epoch: group_state.epoch,
+        pending_proposals: group_state.pending_proposals.len(),
+        state_path: group_state_path(&state.state_dir, &payload.username, group_id)
+            .to_string_lossy()
+            .to_string(),
+    })
+}
+
+async fn action_sync_apply_latest(
+    state: &UiState,
+    payload: &SyncApplyPayload,
+    group_id: &str,
+) -> Result<SyncApplyResponse, String> {
+    let mut group_state = load_group_state(state, &payload.username, group_id)?;
+    if group_state.group_id != group_id {
+        return Err(format!(
+            "group_id mismatch: state={} requested={}",
+            group_state.group_id, group_id
+        ));
+    }
+
+    let receiver_path = match payload.receiver_private_path.as_deref() {
+        Some(path) if !path.trim().is_empty() => Some(path.to_string()),
+        _ => latest_receiver_private_path(state, &payload.username)?,
+    };
+    let receiver_private = match receiver_path.as_deref() {
+        Some(path) => Some(load_receiver_private_from_file(Path::new(path))?),
+        None => None,
+    };
+
+    let outcome = fetch_and_apply_latest_once(
+        state,
+        &payload.username,
+        &mut group_state,
+        receiver_private.as_ref(),
+        payload.limit.unwrap_or(50),
+    )
+    .await?;
+    if outcome.applied > 0 {
+        save_group_state(state, &payload.username, group_id, &group_state)?;
+    }
+    let _ = add_group(state, &payload.username, group_id);
+
+    Ok(SyncApplyResponse {
+        applied: outcome.applied,
+        skipped: outcome.skipped,
+        local_epoch: group_state.epoch,
+        used_receiver_private: receiver_private.is_some(),
+        receiver_private_path: receiver_path,
+        state_path: group_state_path(&state.state_dir, &payload.username, group_id)
+            .to_string_lossy()
+            .to_string(),
+    })
+}
+
+async fn action_join_from_latest(
+    state: &UiState,
+    payload: &JoinFromLatestPayload,
+    group_id: &str,
+) -> Result<JoinFromLatestResponse, String> {
+    let existing_path = group_state_path(&state.state_dir, &payload.username, group_id);
+    if existing_path.exists() {
+        return Err(format!(
+            "group state already exists at {}. Use Sync + Apply Latest.",
+            existing_path.to_string_lossy()
+        ));
+    }
+
+    let receiver_path = match payload.receiver_private_path.as_deref() {
+        Some(path) if !path.trim().is_empty() => path.to_string(),
+        _ => latest_receiver_private_path(state, &payload.username)?
+            .ok_or_else(|| "no receiver private key found; generate/publish a keypackage first".to_string())?,
+    };
+    let receiver_private = load_receiver_private_from_file(Path::new(&receiver_path))?;
+    let receiver_public = hybrid_public_from_private(&receiver_private);
+
+    let limit = payload.limit.unwrap_or(50);
+    let (join_commit_id, join_commit, join_path_update) = find_join_commit_and_path_update(
+        state,
+        &payload.username,
+        group_id,
+        &receiver_public,
+        limit,
+    )
+    .await?;
+
+    let base_members = payload
+        .base_member_usernames
+        .clone()
+        .unwrap_or_default();
+    let (leaves, base_labels) =
+        load_base_member_leaves_from_ds(state, &payload.username, &base_members).await?;
+    let tree = RatchetTree::from_leaves(leaves);
+    let mut group_state = ClientGroupState::new(group_id.to_string(), tree, 0);
+    group_state.set_epoch(join_commit.epoch);
+
+    group_state
+        .ratchet_tree
+        .apply_commit(&join_commit.commit)
+        .ok_or_else(|| "failed to apply selected Add commit to base member tree".to_string())?;
+
+    let own_leaf_index = find_leaf_by_public_key(&group_state.ratchet_tree, &receiver_public)
+        .ok_or_else(|| {
+            "could not infer joiner leaf after applying Add commit; verify base member order and receiver key".to_string()
+        })?;
+    group_state.own_leaf_index = own_leaf_index;
+
+    group_state
+        .ratchet_tree
+        .process_path_update_for_leaf(
+            join_commit.commit.sender,
+            own_leaf_index,
+            &receiver_private,
+            &join_path_update.path_update,
+        )
+        .ok_or_else(|| "failed to process path update during joiner onboarding".to_string())?;
+
+    group_state.clear_pending_proposals();
+    let commit_context = join_commit.commit.encode();
+    group_state.advance_epoch_with_context(Some(&commit_context));
+    ensure_group_state_consistency(&group_state, "join-from-latest apply")?;
+    group_state.mark_applied_commit_id(join_commit_id);
+
+    let outcome = fetch_and_apply_latest_once(
+        state,
+        &payload.username,
+        &mut group_state,
+        Some(&receiver_private),
+        limit,
+    )
+    .await?;
+
+    save_group_state(state, &payload.username, group_id, &group_state)?;
+    let _ = add_group(state, &payload.username, group_id);
+
+    for (key_id, label) in base_labels {
+        let _ = upsert_group_label(state, &payload.username, group_id, &key_id, &label);
+    }
+    let own_key_id = short_id(&receiver_public.to_bytes());
+    let _ = upsert_group_label(state, &payload.username, group_id, &own_key_id, &payload.username);
+
+    Ok(JoinFromLatestResponse {
+        joined: true,
+        commit_id: join_commit_id,
+        own_leaf_index,
+        local_epoch: group_state.epoch,
+        applied_after_join: outcome.applied,
+        skipped_after_join: outcome.skipped,
+        receiver_private_path: receiver_path,
+        state_path: group_state_path(&state.state_dir, &payload.username, group_id)
+            .to_string_lossy()
+            .to_string(),
+    })
 }
 
 async fn action_add_proposal(
@@ -3185,6 +4642,10 @@ async fn action_add_proposal(
     }
     let sender_leaf = resolve_sender_leaf(&group_state, payload.sender_leaf)?;
     let keypackage = decode_keypackage_b64(&payload.keypackage_b64)?;
+    let key_id = short_id(&keypackage.init_key.to_bytes());
+    if let Some(target_username) = payload.target_username.as_deref() {
+        upsert_group_label(state, &payload.username, group_id, &key_id, target_username)?;
+    }
     let proposal = Proposal::Add(keypackage);
     let envelope = ProposalEnvelope {
         group_id: group_state.group_id.clone(),
@@ -3302,4 +4763,277 @@ async fn action_update_proposal(
             .to_string_lossy()
             .to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::Router;
+    use hybrid_mls::ds::config::StorageConfig;
+    use hybrid_mls::ds::http::{self as ds_http, ApiState as DsApiState};
+    use serde_json::json;
+    use tokio::net::TcpListener;
+    use tokio::task::JoinHandle;
+
+    async fn spawn_router(app: Router) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve app");
+        });
+        (format!("http://{}", addr), handle)
+    }
+
+    fn test_run_dir(prefix: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hybrid-mls-{}-{}-{}",
+            prefix,
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(&dir).expect("create run dir");
+        dir
+    }
+
+    async fn post_json(client: &Client, url: &str, body: serde_json::Value) -> serde_json::Value {
+        let resp = client
+            .post(url)
+            .json(&body)
+            .send()
+            .await
+            .expect("post request");
+        let status = resp.status();
+        let text = resp.text().await.expect("response text");
+        assert!(
+            status.is_success(),
+            "unexpected status {} for {} with body {}",
+            status,
+            url,
+            text
+        );
+        serde_json::from_str(&text).expect("parse post json")
+    }
+
+    async fn get_json(client: &Client, url: &str) -> serde_json::Value {
+        let resp = client.get(url).send().await.expect("get request");
+        let status = resp.status();
+        let text = resp.text().await.expect("response text");
+        assert!(
+            status.is_success(),
+            "unexpected status {} for {} with body {}",
+            status,
+            url,
+            text
+        );
+        serde_json::from_str(&text).expect("parse get json")
+    }
+
+    #[tokio::test]
+    async fn ui_add_member_flow_keeps_group_visible_after_relogin() {
+        let run_dir = test_run_dir("ui-gateway-e2e");
+        let ds_data_dir = run_dir.join("data");
+        let ds_db_path = run_dir.join("ds.sqlite");
+        fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+
+        let mut ds_state = DsApiState::default();
+        ds_state.min_proposals_per_commit = 1;
+        ds_state.storage = StorageConfig::new(
+            ds_data_dir.to_string_lossy().as_ref(),
+            ds_db_path.to_string_lossy().as_ref(),
+        );
+        let ds_router = ds_http::router(ds_state);
+        let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+
+        let ui_state_dir = run_dir.join("ui-state");
+        fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+        let ui_state = UiState {
+            base_url: ds_base_url.clone(),
+            state_dir: ui_state_dir.clone(),
+            client: Client::new(),
+        };
+        let ui_router = build_ui_router(ui_state.clone());
+        let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
+
+        let client = Client::new();
+        let group_id = "g-ui-test";
+
+        let register_a = post_json(
+            &client,
+            &format!("{}/ui/api/register", ui_base_url),
+            json!({
+                "username": "parsania",
+                "password": "1234"
+            }),
+        )
+        .await;
+        assert_eq!(register_a["ok"].as_bool(), Some(true));
+
+        let register_b = post_json(
+            &client,
+            &format!("{}/ui/api/register", ui_base_url),
+            json!({
+                "username": "peyman",
+                "password": "1234"
+            }),
+        )
+        .await;
+        assert_eq!(register_b["ok"].as_bool(), Some(true));
+
+        let open_group_a = post_json(
+            &client,
+            &format!("{}/ui/api/groups/open", ui_base_url),
+            json!({
+                "username": "parsania",
+                "group_id": group_id
+            }),
+        )
+        .await;
+        assert_eq!(open_group_a["ok"].as_bool(), Some(true));
+
+        let bootstrap_a = post_json(
+            &client,
+            &format!("{}/ui/api/groups/{}/bootstrap", ui_base_url, group_id),
+            json!({
+                "username": "parsania"
+            }),
+        )
+        .await;
+        assert_eq!(bootstrap_a["ok"].as_bool(), Some(true));
+
+        let b_keygen = post_json(
+            &client,
+            &format!("{}/ui/api/keypackages/generate", ui_base_url),
+            json!({
+                "username": "peyman"
+            }),
+        )
+        .await;
+        assert_eq!(b_keygen["ok"].as_bool(), Some(true));
+        let receiver_private_path = b_keygen["data"]["receiver_private_path"]
+            .as_str()
+            .expect("receiver path")
+            .to_string();
+
+        let fetch_b_keypackage = get_json(
+            &client,
+            &format!(
+                "{}/ui/api/keypackages/peyman?username=parsania",
+                ui_base_url
+            ),
+        )
+        .await;
+        assert_eq!(fetch_b_keypackage["ok"].as_bool(), Some(true));
+        let b_keypackage_b64 = fetch_b_keypackage["data"]["keypackage_bytes"]
+            .as_str()
+            .expect("b keypackage")
+            .to_string();
+
+        let add_proposal = post_json(
+            &client,
+            &format!("{}/ui/api/groups/{}/actions/add", ui_base_url, group_id),
+            json!({
+                "username": "parsania",
+                "target_username": "peyman",
+                "keypackage_b64": b_keypackage_b64,
+                "sender_leaf": null,
+                "submit": true
+            }),
+        )
+        .await;
+        assert_eq!(add_proposal["ok"].as_bool(), Some(true));
+
+        let commit = post_json(
+            &client,
+            &format!("{}/ui/api/groups/{}/commit-from-pending", ui_base_url, group_id),
+            json!({
+                "username": "parsania",
+                "sender_leaf": null
+            }),
+        )
+        .await;
+        assert_eq!(commit["ok"].as_bool(), Some(true));
+
+        let join_b = post_json(
+            &client,
+            &format!(
+                "{}/ui/api/groups/{}/join-from-latest",
+                ui_base_url, group_id
+            ),
+            json!({
+                "username": "peyman",
+                "base_member_usernames": ["parsania"],
+                "limit": 50,
+                "receiver_private_path": receiver_private_path
+            }),
+        )
+        .await;
+        assert_eq!(
+            join_b["ok"].as_bool(),
+            Some(true),
+            "join response: {}",
+            join_b
+        );
+        assert!(
+            join_b["data"]["joined"]
+                .as_bool()
+                .expect("joined flag")
+        );
+        assert!(
+            join_b["data"]["applied_after_join"]
+                .as_u64()
+                .expect("applied count")
+                <= 1
+        );
+
+        let b_groups = get_json(
+            &client,
+            &format!("{}/ui/api/groups?username=peyman", ui_base_url),
+        )
+        .await;
+        assert_eq!(b_groups["ok"].as_bool(), Some(true));
+        let groups = b_groups["data"]["groups"]
+            .as_array()
+            .expect("groups array");
+        assert!(groups.iter().any(|g| g.as_str() == Some(group_id)));
+
+        let logout_b = post_json(
+            &client,
+            &format!("{}/ui/api/logout", ui_base_url),
+            json!({
+                "username": "peyman"
+            }),
+        )
+        .await;
+        assert_eq!(logout_b["ok"].as_bool(), Some(true));
+
+        let login_b = post_json(
+            &client,
+            &format!("{}/ui/api/login", ui_base_url),
+            json!({
+                "username": "peyman",
+                "password": "1234"
+            }),
+        )
+        .await;
+        assert_eq!(login_b["ok"].as_bool(), Some(true));
+
+        let b_groups_after_login = get_json(
+            &client,
+            &format!("{}/ui/api/groups?username=peyman", ui_base_url),
+        )
+        .await;
+        assert_eq!(b_groups_after_login["ok"].as_bool(), Some(true));
+        let groups_after_login = b_groups_after_login["data"]["groups"]
+            .as_array()
+            .expect("groups array after login");
+        assert!(groups_after_login
+            .iter()
+            .any(|g| g.as_str() == Some(group_id)));
+
+        ui_handle.abort();
+        ds_handle.abort();
+        let _ = fs::remove_dir_all(&run_dir);
+    }
 }
