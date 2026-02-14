@@ -9,6 +9,9 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 
 **Status**
 - Progress tracking is maintained in `PROJECT.md`.
+- Current implementation priority is RFC 9420 `Welcome` message flow (hybrid adaptation) before further UI/admin feature expansion.
+- RFC compliance note: beyond Welcome, remaining work includes full MLS wire framing, transcript/confirmation/membership authentication pipeline, full proposal set, and deeper RFC key-schedule alignment.
+- Post-Welcome RFC hardening tasks are tracked in `PROJECT.md` Part 10.
 
 **Architecture**
 - `src/crypto.rs` implements hybrid KEM, hybrid signatures, serialization helpers, and HPKE-style path secret encryption.
@@ -105,12 +108,86 @@ The repository now includes a DS server binary and a DS client CLI. The typical 
 cargo run --bin ds_server
 ```
 
+**UI Skeleton (DS)**
+Visit the DS-hosted placeholder pages:
+```bash
+http://127.0.0.1:3000/ui/login
+http://127.0.0.1:3000/ui/groups
+```
+These pages are placeholders and do not sign requests.
+
+**UI Gateway (Signed Requests)**
+Run the local UI gateway to generate hybrid signatures and forward signed requests to the DS:
+```bash
+cargo run --bin ds_ui_gateway
+```
+Then open:
+```bash
+http://127.0.0.1:4000/ui/login
+```
+The gateway stores per-user signing material in `./ui-state` by default.
+It signs requests locally and forwards them to the DS.
+The UI now includes group and app message list/fetch views with per-kind filters for group messages.
+
+Quick UI test:
+1. Run `cargo run --bin ds_server`.
+2. Run `cargo run --bin ds_ui_gateway`.
+3. Open `http://127.0.0.1:4000/ui/login`, register/login, add a group id, and use the group page to list/fetch messages and app messages.
+The UI now provides logout on all pages and a KeyPackage library panel on the groups page.
+The groups page supports a one-click Generate + Publish KeyPackage action (stores receiver private locally), plus list/copy/publish actions for stored keypackages.
+Advanced manual KeyPackage publish remains available under the expandable section.
+Group lists now support filter/search, refresh, and forget actions; opening a group auto-tracks it locally.
+Group pages now include an Actions menu to create Add/Remove/Update proposals using local group state.
+Action flows require a local `ClientGroupState` file at `ui-state/user-<name>-group-<group>.bin` (create via `ds_client bootstrap-group-state` or `join-from-commit`).
+Group pages also include a Tree Structure panel that renders the local ratchet tree nodes (leaf/parent/blank) with short key fingerprints.
+If the tree view says the group state file is missing, create or import the local group state first; the UI now shows a clearer error message for that case.
+UI cards, inputs, and buttons now use consistent sizing and spacing with responsive stacking on smaller screens.
+List Messages, Send App Message, and Submit Proposal panels now use the same shadowed card styling and full-width controls for consistent sizing.
+Logout is now a fixed top-left action on all UI pages and always returns to `/ui/login`.
+All UI controls now share a single fixed height via CSS (`--control-height`) for uniform sizing.
+Spacing across panels is now driven by shared CSS spacing tokens (`--space-*`) for consistent layout.
+Card content spacing now uses `--space-md` to keep inner element spacing uniform.
+Card panels now use `align-content: start` with `grid-auto-rows: min-content` to avoid stretched gaps between inner elements.
+KeyPackage fields in the Actions panel now show a short preview by default; users can expand to view the full base64 in a fixed-size textarea.
+UI containers now enforce `min-width: 0` and `max-width: 100%` to prevent long base64 values from stretching the layout.
+The UI now auto-bootstraps a one-member local group state when you click “Add Group,” so the tree view can render a single creator leaf immediately.
+UI pages now include a Back button with browser-history fallback (`/ui/groups` or `/ui/login`).
+The tree section now includes both:
+- a textual node list
+- an SVG binary-tree graph (circles + links) rendered from local ratchet tree topology
+Leaf labels use known usernames when available (own leaf and locally mapped added keypackages), otherwise fallback labels like `leaf-<index>`.
+Important MLS flow note: `Add` proposal does not make a user a member by itself. A `Commit` containing that proposal must be created and applied before the added user can join/sync.
+For an added user (for example Peyman), visibility is commit-driven: after creator submits Add and Commit, the added user must run `Sync + Apply Latest` with receiver private material; only then local state reflects membership and the group appears in that user’s tracked list.
+Troubleshooting: if the added user still sees no group, check that the user has a local tracked group entry and a valid local group-state baseline for that group. Current UI sync operates on locally tracked groups and does not yet auto-discover/join unknown groups solely from DS message history.
+The group Actions panel now includes `Create + Submit Commit` to build a real commit from local pending proposals and submit it to DS in one step.
+The same panel now includes `Sync + Apply Latest` to fetch DS commits/path updates and apply them into local `ClientGroupState`, so newly added members can materialize membership after commit publication.
+The same panel now also includes `Join from latest Add commit` for joiner onboarding when local group state does not exist yet.
+Joiner onboarding expects `Onboarding base members` as comma-separated usernames in pre-commit leaf order (for example `parsania` in a one-member base tree) and uses the joiner receiver-private file to locate the correct Add commit/path update pair.
+UI bootstrap now publishes the creator bootstrap KeyPackage to DS and stores the matching receiver-private material locally so joiner onboarding has a DS-visible base member key package source.
+`Sync + Apply Latest` can auto-pick the latest locally stored receiver-private file from the user keypackage library, or accept a manual receiver-private path.
+The group page top bar now also includes a quick `Sync + Apply Latest` button next to logout.
+After login/refresh, UI now auto-runs sync: groups page syncs all tracked groups once, and group detail page auto-syncs current group once.
+Action proposals are dual-tracked by design: they are submitted to DS and queued locally as pending proposals until a commit is created.
+DS signature/keypackage verification now runs on a dedicated large-stack worker thread to avoid Tokio worker stack overflows during hybrid ML-DSA verification in local demos.
+UI gateway proposal flow now also runs keypackage decode/verify, group-state load/save, signing-key decode, and message signing in dedicated large-stack workers to prevent stack overflows on Add/Update proposal submission.
+There is now an end-to-end UI+DS test in `src/bin/ds_ui_gateway.rs` covering: register two users, creator bootstrap, publish/fetch keypackage, Add proposal, Commit creation, receiver sync/apply, and group visibility persistence after logout/login.
+Part 8 in `PROJECT.md` tracks the upcoming UI and admin-demo roadmap.
+KeyPackage publishing does not require a group; a user can publish a KeyPackage before being added to a group.
+Private keys are currently stored locally in files (CLI state and keygen outputs, plus UI gateway `./ui-state`), suitable only for local testing.
+
+Gateway environment variables:
+- `DS_UI_BIND` (default `127.0.0.1:4000`)
+- `DS_GATEWAY_BASE_URL` (default `http://127.0.0.1:3000`)
+- `DS_UI_STATE_DIR` (default `./ui-state`)
+
 Optional environment variables:
 - `DS_BIND` (default `127.0.0.1:3000`)
 - `DS_DATA_DIR` (default `./data`)
 - `DS_DB_PATH` (default `${DS_DATA_DIR}/ds.sqlite`)
 - `DS_MAX_BYTES`
 - `DS_MIN_PROPOSALS_PER_COMMIT`
+- `DS_SESSION_TTL_SECS`
+- `DS_SESSION_MAX_PER_USER`
 
 **Local 1-DS / 4-Client Startup Scripts**
 ```bash
@@ -187,6 +264,7 @@ Conceptual steps:
 **Delivery Service Session Hardening (Current)**
 - DS endpoints now enforce session-aware auth (`session_id` + signature + username binding).
 - Expired sessions are rejected and cleaned up; login purges stale sessions; logout endpoint is available.
+- Session TTL and per-user session rotation limits are configurable (`DS_SESSION_TTL_SECS`, `DS_SESSION_MAX_PER_USER`).
 - Signed-request checks are applied across proposal/commit submit, message list/fetch, app-message flows, and keypackage publish/fetch.
 - `ds_client` now persists `session_id`, sends it on authenticated requests, and supports `logout`.
 - DS-backed integration coverage (`tests/ds_fetch_apply_e2e.rs`) passes for session/misuse/replay/strict-receiver scenarios.
@@ -261,6 +339,7 @@ Group bootstrap notes:
 Joiner onboarding notes:
 - `join-from-commit` expects base pre-commit members via `--base-member-keypackage` (ordered by leaf index before the add commit).
 - If `--own-leaf` is omitted, the CLI tries to infer it by matching receiver private key to a leaf public key after commit apply.
+- RFC 9420 `Welcome` message handling is not implemented yet; current onboarding is commit/path-update based (`join-from-commit` in CLI, `join-from-latest` in UI gateway).
 
 Sync notes:
 - `fetch-and-apply-latest` requires a DS account state in `--state` for request signing.

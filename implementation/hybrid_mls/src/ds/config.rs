@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_MAX_BYTES: u64 = 20 * 1024 * 1024 * 1024;
-pub const DEFAULT_MIN_PROPOSALS_PER_COMMIT: usize = 10;
+pub const DEFAULT_MIN_PROPOSALS_PER_COMMIT: usize = 1;
+pub const DEFAULT_SESSION_TTL_SECS: u64 = 60 * 60 * 24;
+pub const DEFAULT_SESSION_MAX_PER_USER: usize = 1;
 
 #[derive(Clone, Debug)]
 pub struct StorageConfig {

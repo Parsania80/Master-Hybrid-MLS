@@ -79,10 +79,57 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 1 | Implement DS storage and eviction policy | ✅ Done | SQLite metadata + disk spool + max-byte eviction implemented. |
 | 2 | Implement signed HTTP endpoints for auth/proposals/commits/messages | ✅ Done | Core endpoints and signature checks implemented in `src/ds/http.rs`. |
 | 3 | Implement keypackage publish/fetch and app-message transport | ✅ Done | Endpoints + CLI wiring implemented. |
-| 4 | Finalize DS session lifecycle and policy enforcement | 🔄 Current | Session-aware auth policy is now enforced across DS endpoints (`session_id` required, session ownership/expiry validation, login-time purge, logout endpoint). CLI now carries `session_id` across signed requests and supports explicit logout; DS-backed e2e suite is green after session-policy and misuse assertion updates. Remaining hardening can focus on policy knobs (TTL/rotation/rate limits). |
-| 5 | Build operator/user web UI for sign-in and group actions | ⬜ Todo | UI not implemented yet. |
+| 4 | Finalize DS session lifecycle and policy enforcement | ✅ Done | Session-aware auth policy is now enforced across DS endpoints (`session_id` required, session ownership/expiry validation, login-time purge, logout endpoint). CLI now carries `session_id` across signed requests and supports explicit logout; DS-backed e2e suite is green after session-policy and misuse assertion updates. Configurable session TTL and per-user session rotation limits are now implemented and tested. Hybrid signature/keypackage verification now executes in a dedicated large-stack worker to prevent runtime stack overflow under local demo load. |
+| 5 | Build operator/user web UI for sign-in and group actions | ✅ Done | Added DS UI skeleton routes (`/ui/login`, `/ui/groups`, `/ui/groups/:group_id`) plus a local `ds_ui_gateway` binary that serves signed UI flows and forwards requests to the DS. |
 | 6 | Add multi-VM deployment/test guide and automation | ⬜ Todo | Convert local demo into repeatable 5-VM procedure. |
 
+### Part 8: UI and Admin Demo
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 1 | User login + logout UX | ✅ Done | Logout on all pages, `/ui/login` default, and local session status shown. |
+| 2 | KeyPackage UX (simple flow) | ✅ Done | One-click generate + publish, optional manual publish with clear feedback, and stored receiver private file path. |
+| 3 | KeyPackage selection/share UX | ✅ Done | Local keypackage library with list/copy/use/publish actions. |
+| 4 | Group list + membership UX | ✅ Done | Groups list now supports add, refresh, filter/search, forget, and auto-track on group open. |
+| 5 | Group page action menu | ✅ Done | Actions menu now creates Add/Remove/Update proposals, supports Create+Submit Commit from pending proposals, and includes Sync+Apply Latest to consume DS commit/path-update streams into local state. Added stack-safe large-stack worker execution for UI/DS hybrid signing and keypackage verification in proposal flow, plus UI+DS end-to-end test coverage for register/bootstrap/add/commit/sync/relogin group visibility. Top-bar Sync + Apply Latest is now available and auto-sync runs on groups/group page load for logged-in users. Added MLS-aligned joiner-onboarding endpoint/button (`join-from-latest`) that reconstructs a pre-commit base tree from ordered base-member keypackages, applies the matched Add commit + path update, and persists local state. |
+| 6 | Tree structure view | ✅ Done | Group UI now renders local ratchet tree nodes (leaf/parent/blank) with short key fingerprints and metadata. |
+| 7 | Admin account bootstrap | 🔄 Current | Ensure `admin/admin@123` exists in DB on startup; admin sees all users and groups. |
+| 8 | Admin demo index | ⬜ Todo | Admin “Demo” menu lists demos, allows create/open; demos stored under `ui-state/demo/<id>`. |
+| 9 | Admin demo UI layout | ⬜ Todo | Two-column layout: right tree view; left split into actions (top) and logs (bottom). |
+| 10 | Admin demo actions | ⬜ Todo | Add/Remove/Update actions with inputs (adder, added; remover; updater) and deterministic flow. |
+| 11 | Admin demo logging | ⬜ Todo | Timestamped MLS-style step logs with separators; logs persisted in `ui-state/demo/<id>`. |
+| 12 | Admin demo persistence | ⬜ Todo | Demo state reload on open; “new demo” initializes A-only tree and clean logs. |
+
+### Part 9: RFC 9420 Welcome (Hybrid)
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 1 | Define Welcome/GroupInfo/GroupSecrets hybrid wire structures and codecs | 🔄 Current | Add RFC-style message model in a new module (Welcome message, encrypted group secrets, group info container) with strict decode validation and tests. |
+| 2 | Implement hybrid HPKE-style encryption for Welcome secrets | ⬜ Todo | Use existing hybrid KEM + AEAD framing to encrypt joiner secrets to each added member key package; define domain-separated context labels aligned to RFC terms. |
+| 3 | Committer flow: generate Welcome when commit contains Add proposals | ⬜ Todo | Extend commit creation path to emit Welcome payload(s) tied to commit epoch/group context and path update outputs. |
+| 4 | DS transport for Welcome messages | ⬜ Todo | Add `welcome` message kind and signed submit/list/fetch DS API support with storage + retrieval tests. |
+| 5 | CLI join-from-welcome command | ⬜ Todo | Add `ds_client join-from-welcome` that consumes Welcome + local key material, reconstructs state safely, and verifies metadata consistency. |
+| 6 | Sync integration: auto-consume Welcome before commit/path apply | ⬜ Todo | Teach fetch/sync to bootstrap unknown-group local state via Welcome, then continue normal commit/path-update processing. |
+| 7 | UI onboarding migration from commit-scan to Welcome-first | ⬜ Todo | Replace/manual-fallback current `join-from-latest` with Welcome-driven onboarding flow, preserving strict validation and clear operator errors. |
+| 8 | RFC 9420 compliance note + test vectors for Welcome flow | ⬜ Todo | Add mapping doc and deterministic tests for encoding/decoding and joiner-secret derivation path in hybrid model. |
+
+### Part 10: RFC 9420 Post-Welcome Compliance Hardening (Hybrid)
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 1 | Implement MLS wire objects (`MLSMessage`, `PublicMessage`, `PrivateMessage`) | ⬜ Todo | Add strict encode/decode and content-type framing aligned to RFC 9420 wire model. |
+| 2 | Implement `AuthenticatedContent` and framing signatures | ⬜ Todo | Move proposal/commit payload signing toward authenticated-content structure rather than ad-hoc envelope-only transport metadata. |
+| 3 | Implement transcript hash pipeline | ⬜ Todo | Add confirmed/interim transcript hash updates across commits and proposals per RFC flow. |
+| 4 | Implement confirmation tag verification | ⬜ Todo | Generate and verify commit confirmation tags tied to transcript + key schedule state. |
+| 5 | Implement membership tag verification | ⬜ Todo | Add membership authentication checks for PublicMessage-style processing where required by RFC semantics. |
+| 6 | Extend proposal set: `PreSharedKey` | ⬜ Todo | Add proposal type, serialization, validation, commit integration, and tests. |
+| 7 | Extend proposal set: `ReInit` | ⬜ Todo | Add proposal type, state-transition handling, and compatibility checks. |
+| 8 | Extend proposal set: `GroupContextExtensions` | ⬜ Todo | Add proposal structure and group-context update application rules. |
+| 9 | Add proposal validation matrix for new proposal families | ⬜ Todo | Add duplicate/conflict/bounds/state-machine tests for mixed proposal batches. |
+| 10 | Implement full RFC-style key schedule chain | ⬜ Todo | Introduce/align `commit_secret`, `joiner_secret`, `welcome_secret`, epoch secrets, and derivation contexts with hybrid combiner adaptation. |
+| 11 | Align key schedule labels/contexts to RFC names | ⬜ Todo | Replace remaining prototype labels with RFC-equivalent labels/inputs where possible, documenting hybrid deltas explicitly. |
+| 12 | Implement RFC-style application message protection | ⬜ Todo | Encrypt/decrypt application messages as MLS `PrivateMessage` semantics instead of DS payload-only transport bytes. |
+| 13 | Add DS-backed protocol state-machine guards | ⬜ Todo | Enforce stronger server/client checks for epoch ordering, content type expectations, and message applicability constraints. |
+| 14 | Relax and harden commit policy for multiple Add proposals | ⬜ Todo | Remove single-Add restriction (`DuplicateAdd`) where RFC allows multiple Adds, with robust conflict checks and tests. |
+| 15 | Add RFC conformance test matrix and vectors | ⬜ Todo | Add deterministic vectors + negative cases for wire decode, transcript/confirmation/membership tags, proposals, and key schedule transitions. |
+
 ---
-Current: `Part 7 / Task 4 - Finalize DS session lifecycle and policy enforcement`
-Next: `Part 7 / Task 5 - Build operator/user web UI for sign-in and group actions`
+Current: `Part 9 / Task 1 - Define Welcome/GroupInfo/GroupSecrets hybrid wire structures and codecs`
+Next: `Part 9 / Task 2 - Implement hybrid HPKE-style encryption for Welcome secrets`

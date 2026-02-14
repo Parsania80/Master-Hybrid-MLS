@@ -1,25 +1,36 @@
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
+use std::thread;
 
 use crate::ds::auth::{decode_hybrid_signature_b64, decode_hybrid_sign_pub_key_bytes};
-use crate::ds::config::{DEFAULT_MAX_BYTES, DEFAULT_MIN_PROPOSALS_PER_COMMIT, StorageConfig};
+use crate::ds::config::{
+    DEFAULT_MAX_BYTES,
+    DEFAULT_MIN_PROPOSALS_PER_COMMIT,
+    DEFAULT_SESSION_MAX_PER_USER,
+    DEFAULT_SESSION_TTL_SECS,
+    StorageConfig,
+};
 use crate::ds::storage::{MessageKind, Storage, StorageError};
 use crate::tree::KeyPackage;
 use sha3::{Digest, Sha3_256};
 use rand::rngs::OsRng;
 use rand::RngCore;
 
+const DS_CRYPTO_WORKER_STACK_BYTES: usize = 128 * 1024 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct ApiState {
     pub max_bytes: u64,
     pub min_proposals_per_commit: usize,
+    pub session_ttl_secs: u64,
+    pub session_max_per_user: usize,
     pub storage: StorageConfig,
 }
 
@@ -28,6 +39,8 @@ impl Default for ApiState {
         Self {
             max_bytes: DEFAULT_MAX_BYTES,
             min_proposals_per_commit: DEFAULT_MIN_PROPOSALS_PER_COMMIT,
+            session_ttl_secs: DEFAULT_SESSION_TTL_SECS,
+            session_max_per_user: DEFAULT_SESSION_MAX_PER_USER,
             storage: StorageConfig::new("./data", "./data/ds.sqlite"),
         }
     }
@@ -190,6 +203,10 @@ pub struct FetchKeyPackageResponse {
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/healthz", get(health))
+        .route("/ui", get(ui_index))
+        .route("/ui/login", get(ui_login))
+        .route("/ui/groups", get(ui_groups))
+        .route("/ui/groups/:group_id", get(ui_group_detail))
         .route("/v1/auth/register", post(register))
         .route("/v1/auth/login", post(login))
         .route("/v1/auth/logout", post(logout))
@@ -207,6 +224,270 @@ pub fn router(state: ApiState) -> Router {
 
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, "ok")
+}
+
+async fn ui_index() -> impl IntoResponse {
+    Redirect::to("/ui/login")
+}
+
+async fn ui_login() -> impl IntoResponse {
+    ui_shell(
+        "DS Login",
+        r#"
+        <main class="panel">
+            <section class="hero">
+                <div class="eyebrow">Hybrid MLS Delivery Service</div>
+                <h1>Sign In or Register</h1>
+                <p class="muted">
+                    This is a skeleton UI for local testing. It does not yet perform
+                    request signing or real session handling.
+                </p>
+            </section>
+            <section class="card">
+                <form class="stack">
+                    <label>
+                        <span>Username</span>
+                        <input type="text" placeholder="alice" />
+                    </label>
+                    <label>
+                        <span>Password</span>
+                        <input type="password" placeholder="••••••••" />
+                    </label>
+                    <div class="row">
+                        <button class="primary" type="button">Login</button>
+                        <button class="ghost" type="button">Register</button>
+                    </div>
+                    <div class="note">API signing is required; wire-up is coming next.</div>
+                </form>
+            </section>
+        </main>
+        "#,
+    )
+}
+
+async fn ui_groups() -> impl IntoResponse {
+    ui_shell(
+        "Groups",
+        r#"
+        <main class="panel">
+            <section class="hero">
+                <div class="eyebrow">Groups</div>
+                <h1>Membership Overview</h1>
+                <p class="muted">Select a group to inspect proposals, commits, and key updates.</p>
+            </section>
+            <section class="card">
+                <div class="list">
+                    <div class="list-item">
+                        <div>
+                            <div class="title">group-alpha</div>
+                            <div class="muted">Members: 3 • Epoch: 4</div>
+                        </div>
+                        <a class="link" href="/ui/groups/group-alpha">Open</a>
+                    </div>
+                    <div class="list-item">
+                        <div>
+                            <div class="title">group-beta</div>
+                            <div class="muted">Members: 2 • Epoch: 1</div>
+                        </div>
+                        <a class="link" href="/ui/groups/group-beta">Open</a>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button class="ghost" type="button">Create Group</button>
+                    <button class="ghost" type="button">Join Group</button>
+                </div>
+            </section>
+        </main>
+        "#,
+    )
+}
+
+async fn ui_group_detail(Path(group_id): Path<String>) -> impl IntoResponse {
+    let body = format!(
+        r#"
+        <main class="panel">
+            <section class="hero">
+                <div class="eyebrow">Group</div>
+                <h1>{group}</h1>
+                <p class="muted">Actions are placeholders until request-signing UI is wired.</p>
+            </section>
+            <section class="card">
+                <div class="grid">
+                    <button class="primary" type="button">Add Member</button>
+                    <button class="ghost" type="button">Remove Member</button>
+                    <button class="ghost" type="button">Update My Keys</button>
+                    <button class="ghost" type="button">Submit Commit</button>
+                </div>
+                <div class="divider"></div>
+                <div class="list">
+                    <div class="list-item">
+                        <div class="title">Latest Commit</div>
+                        <div class="muted">Epoch 4 • Commit ID #128</div>
+                    </div>
+                    <div class="list-item">
+                        <div class="title">Pending Proposals</div>
+                        <div class="muted">2 proposals awaiting commit</div>
+                    </div>
+                </div>
+            </section>
+        </main>
+        "#,
+        group = group_id
+    );
+    ui_shell("Group Detail", &body)
+}
+
+fn ui_shell(title: &str, body: &str) -> Html<String> {
+    Html(format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  <style>
+    :root {{
+      --ink: #121826;
+      --muted: #52607a;
+      --accent: #f97316;
+      --accent-dark: #c2410c;
+      --panel: #ffffff;
+      --bg: #f3f0e9;
+      --shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: "Spectral", "Merriweather", serif;
+      color: var(--ink);
+      background: radial-gradient(circle at top, #fff6e4 0%, #f6efe1 40%, #f1e7d6 100%);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      padding: 48px 20px;
+    }}
+    .panel {{
+      max-width: 980px;
+      width: 100%;
+      display: grid;
+      gap: 24px;
+    }}
+    .hero {{
+      padding: 12px 8px;
+    }}
+    .eyebrow {{
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      font-size: 0.7rem;
+      color: var(--accent-dark);
+      margin-bottom: 10px;
+    }}
+    h1 {{
+      font-size: 2.4rem;
+      margin: 0 0 10px 0;
+    }}
+    .muted {{
+      color: var(--muted);
+      font-size: 1rem;
+    }}
+    .card {{
+      background: var(--panel);
+      border-radius: 18px;
+      padding: 28px;
+      box-shadow: var(--shadow);
+    }}
+    .stack {{
+      display: grid;
+      gap: 16px;
+    }}
+    label {{
+      display: grid;
+      gap: 8px;
+      font-size: 0.95rem;
+    }}
+    input {{
+      border-radius: 10px;
+      border: 1px solid #e2e8f0;
+      padding: 12px 14px;
+      font-size: 1rem;
+      background: #fafafa;
+    }}
+    .row {{
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
+    button {{
+      border: none;
+      border-radius: 12px;
+      padding: 12px 18px;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }}
+    .primary {{
+      background: var(--accent);
+      color: white;
+    }}
+    .primary:hover {{
+      background: var(--accent-dark);
+    }}
+    .ghost {{
+      background: #f1f5f9;
+      color: var(--ink);
+    }}
+    .note {{
+      font-size: 0.85rem;
+      color: var(--muted);
+    }}
+    .list {{
+      display: grid;
+      gap: 16px;
+    }}
+    .list-item {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: #f8fafc;
+    }}
+    .title {{
+      font-weight: 600;
+    }}
+    .link {{
+      text-decoration: none;
+      color: var(--accent-dark);
+      font-weight: 600;
+    }}
+    .actions {{
+      margin-top: 16px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
+    .grid {{
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    }}
+    .divider {{
+      height: 1px;
+      background: #e2e8f0;
+      margin: 20px 0;
+    }}
+    @media (max-width: 720px) {{
+      h1 {{ font-size: 2rem; }}
+      .card {{ padding: 20px; }}
+    }}
+  </style>
+</head>
+<body>
+  {body}
+</body>
+</html>"#,
+        title = title,
+        body = body
+    ))
 }
 
 async fn register(
@@ -294,9 +575,21 @@ async fn login(
     let token = generate_token();
     let now = now_unix();
     let _ = storage.purge_expired_sessions(now);
-    let expires_at = now + 60 * 60 * 24;
+    if state.session_max_per_user == 1 {
+        if let Err(err) = storage.delete_sessions_for_user(&req.username) {
+            return storage_error(err);
+        }
+    }
+
+    let ttl_secs = i64::try_from(state.session_ttl_secs).unwrap_or(i64::MAX);
+    let expires_at = now.saturating_add(ttl_secs);
     if let Err(err) = storage.insert_session(&token, &req.username, now, expires_at) {
         return storage_error(err);
+    }
+    if state.session_max_per_user > 1 {
+        if let Err(err) = storage.trim_sessions_for_user(&req.username, state.session_max_per_user) {
+            return storage_error(err);
+        }
     }
 
     let mut headers = HeaderMap::new();
@@ -737,7 +1030,7 @@ async fn publish_keypackage(
             .into_response();
     };
 
-    if !keypackage.verify() {
+    if !verify_keypackage_signature_with_large_stack(&payload) {
         return auth_error("invalid_keypackage_signature");
     }
 
@@ -963,13 +1256,46 @@ fn verify_with_keys(
     signature_b64: &str,
     message: &[u8],
 ) -> bool {
-    let Some(pub_key) = decode_hybrid_sign_pub_key_bytes(classic_pub, pq_pub) else {
-        return false;
-    };
-    let Some(sig) = decode_hybrid_signature_b64(signature_b64) else {
-        return false;
-    };
-    sig.verify(&pub_key, message)
+    let classic = classic_pub.to_vec();
+    let pq = pq_pub.to_vec();
+    let sig = signature_b64.to_string();
+    let msg = message.to_vec();
+    let result = run_ds_crypto_with_large_stack("ds-verify-signature", move || {
+        let Some(pub_key) = decode_hybrid_sign_pub_key_bytes(&classic, &pq) else {
+            return Ok(false);
+        };
+        let Some(signature) = decode_hybrid_signature_b64(&sig) else {
+            return Ok(false);
+        };
+        Ok(signature.verify(&pub_key, &msg))
+    })
+    .unwrap_or(false);
+    result
+}
+
+fn verify_keypackage_signature_with_large_stack(payload: &[u8]) -> bool {
+    let encoded = payload.to_vec();
+    run_ds_crypto_with_large_stack("ds-verify-keypackage", move || {
+        let Some(keypackage) = KeyPackage::decode(&encoded) else {
+            return Ok(false);
+        };
+        Ok(keypackage.verify())
+    })
+    .unwrap_or(false)
+}
+
+fn run_ds_crypto_with_large_stack<F>(worker_name: &'static str, f: F) -> Result<bool, String>
+where
+    F: FnOnce() -> Result<bool, String> + Send + 'static,
+{
+    let handle = thread::Builder::new()
+        .name(worker_name.to_string())
+        .stack_size(DS_CRYPTO_WORKER_STACK_BYTES)
+        .spawn(f)
+        .map_err(|err| format!("failed to spawn {worker_name}: {err}"))?;
+    handle
+        .join()
+        .map_err(|_| format!("{worker_name} panicked"))?
 }
 
 fn fetch_user_keys(state: &ApiState, username: &str) -> Result<(Vec<u8>, Vec<u8>), Response> {
@@ -1565,6 +1891,70 @@ mod tests {
         let encoded = json["message_bytes"].as_str().unwrap();
         let decoded = STANDARD.decode(encoded).unwrap();
         assert_eq!(decoded, payload);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn login_enforces_ttl_and_rotation() {
+        let (mut state, base) = temp_state("session-ttl-rotation");
+        state.session_ttl_secs = 60;
+        state.session_max_per_user = 1;
+        let app = router(state.clone());
+
+        let mut rng = OsRng;
+        let (priv_key, _pub_key, classic_b64, pq_b64) = make_signing_keys(&mut rng);
+        let username = "alice";
+        let password = "secret";
+        let session_1 = register_and_login(
+            &app,
+            username,
+            password,
+            &classic_b64,
+            &pq_b64,
+            &priv_key,
+        )
+        .await;
+
+        let mut config = state.storage.clone();
+        config.max_bytes = state.max_bytes;
+        let storage = Storage::open(config).expect("open storage");
+        let meta = storage
+            .get_session_meta(&session_1)
+            .expect("get session meta")
+            .expect("session meta");
+        assert_eq!(meta.0, username);
+        assert_eq!(meta.2 - meta.1, 60);
+
+        let sign_input = login_signing_input(username, password);
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
+        let login = LoginRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+            signature,
+        };
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&login).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let session_2 = json["session_id"].as_str().unwrap().to_string();
+
+        let mut config = state.storage.clone();
+        config.max_bytes = state.max_bytes;
+        let storage = Storage::open(config).expect("open storage");
+        assert!(storage.get_session(&session_1).expect("get session1").is_none());
+        assert!(storage.get_session(&session_2).expect("get session2").is_some());
 
         let _ = std::fs::remove_dir_all(base);
     }
