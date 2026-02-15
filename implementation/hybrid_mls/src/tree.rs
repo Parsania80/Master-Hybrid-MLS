@@ -1,13 +1,6 @@
 use crate::crypto::{
-    decrypt_path_secret,
-    encrypt_path_secret,
-    hybrid_kem_decapsulate,
-    hybrid_kem_encapsulate,
-    HybridCiphertext,
-    HybridPrivateKey,
-    HybridPublicKey,
-    HybridSignPubKey,
-    HybridSignature,
+    decrypt_path_secret, encrypt_path_secret, hybrid_kem_decapsulate, hybrid_kem_encapsulate,
+    HybridCiphertext, HybridPrivateKey, HybridPublicKey, HybridSignPubKey, HybridSignature,
     KyberPub,
 };
 use ed25519_dalek::{Signature as EdSig, VerifyingKey as EdPublic};
@@ -24,7 +17,7 @@ pub struct LeafNode {
     /// The Hybrid Key (X25519 + Kyber) used to encrypt to this user.
     pub public_key: HybridPublicKey,
     /// The User's Identity (Verifying Key)
-    pub credential: HybridSignPubKey, 
+    pub credential: HybridSignPubKey,
 }
 
 /// Represents a path/subgroup in the tree.
@@ -33,7 +26,7 @@ pub struct ParentNode {
     pub public_key: HybridPublicKey,
     /// Hash of this parent node bound to its copath (RFC 9420).
     pub parent_hash: Vec<u8>,
-    pub unmerged_leaves: Vec<u32>, 
+    pub unmerged_leaves: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,8 +58,13 @@ pub struct ParentUpdate {
 #[derive(Clone, Debug)]
 pub enum Proposal {
     Add(KeyPackage),
-    Update { leaf_index: usize, key_package: KeyPackage },
-    Remove { leaf_index: usize },
+    Update {
+        leaf_index: usize,
+        key_package: KeyPackage,
+    },
+    Remove {
+        leaf_index: usize,
+    },
 }
 
 /// Commit object applying a batch of proposals plus a path update by the sender.
@@ -189,7 +187,10 @@ impl Proposal {
                 encode_u8(&mut out, PROPOSAL_ADD);
                 encode_bytes(&mut out, &key_package.encode());
             }
-            Proposal::Update { leaf_index, key_package } => {
+            Proposal::Update {
+                leaf_index,
+                key_package,
+            } => {
                 encode_u8(&mut out, PROPOSAL_UPDATE);
                 encode_u32(&mut out, *leaf_index as u32);
                 encode_bytes(&mut out, &key_package.encode());
@@ -635,7 +636,10 @@ impl RatchetTree {
                 Proposal::Add(key_package) => {
                     self.insert_key_package(key_package)?;
                 }
-                Proposal::Update { leaf_index, key_package } => {
+                Proposal::Update {
+                    leaf_index,
+                    key_package,
+                } => {
                     self.update_leaf(*leaf_index, key_package)?;
                 }
                 Proposal::Remove { leaf_index } => {
@@ -691,15 +695,12 @@ impl RatchetTree {
         secrets_rev.reverse();
 
         let mut ciphertexts = Vec::new();
-        for ((parent_index, copath_index), path_secret) in
-            path.iter().zip(secrets_rev.iter())
-        {
+        for ((parent_index, copath_index), path_secret) in path.iter().zip(secrets_rev.iter()) {
             let resolution = self.resolution(*copath_index)?;
             let mut level_ct = Vec::new();
             for node_index in resolution {
                 let public_key = self.node_public_key(node_index)?;
-                let ctx =
-                    path_secret_encryption_context(leaf_index, *parent_index, node_index);
+                let ctx = path_secret_encryption_context(leaf_index, *parent_index, node_index);
 
                 let (ct, shared) = hybrid_kem_encapsulate(rng, public_key, &ctx);
                 let payload = encrypt_path_secret(&shared, &ctx, path_secret);
@@ -748,8 +749,7 @@ impl RatchetTree {
                     return None;
                 }
                 let ct = level_cts.get(pos)?;
-                let ctx =
-                    path_secret_encryption_context(sender, parent_index, receiver_node);
+                let ctx = path_secret_encryption_context(sender, parent_index, receiver_node);
 
                 let shared = hybrid_kem_decapsulate(receiver_private, &ct.kem, &ctx);
                 let secret = decrypt_path_secret(&shared, &ctx, &ct.payload)?;
@@ -925,7 +925,8 @@ impl RatchetTree {
             let blanked = self.blanked_leaves_for_copath(&unmerged_leaves, copath_index)?;
             let sibling_hash = self.tree_hash_with_blank_set(copath_index, &blanked)?;
 
-            let parent_hash = compute_parent_hash_bytes(&parent_key, &next_parent_hash, &sibling_hash);
+            let parent_hash =
+                compute_parent_hash_bytes(&parent_key, &next_parent_hash, &sibling_hash);
             if let Node::Parent(parent) = &mut self.nodes[parent_index] {
                 parent.parent_hash = parent_hash.clone();
             }
@@ -946,7 +947,11 @@ impl RatchetTree {
             let left = self.left_child(current)?;
             let right = self.right_child(current)?;
             let in_left = self.leaf_in_subtree(leaf_index, left)?;
-            let (next, copath) = if in_left { (left, right) } else { (right, left) };
+            let (next, copath) = if in_left {
+                (left, right)
+            } else {
+                (right, left)
+            };
             path.push((current, copath));
             current = next;
         }
@@ -1590,9 +1595,7 @@ mod tests {
             })
             .collect();
 
-        let leaf_index = tree
-            .add_key_package(&kp, &parent_path)
-            .expect("add failed");
+        let leaf_index = tree.add_key_package(&kp, &parent_path).expect("add failed");
         assert_eq!(leaf_index, 1);
 
         let leaf_node_index = RatchetTree::leaf_to_node_index(leaf_index);
@@ -1620,9 +1623,7 @@ mod tests {
             unmerged_leaves: Vec::new(),
         }];
 
-        let leaf_index = tree
-            .add_key_package(&kp, &parent_path)
-            .expect("add failed");
+        let leaf_index = tree.add_key_package(&kp, &parent_path).expect("add failed");
         assert_eq!(leaf_index, 1);
         assert_eq!(tree.node_count(), 3);
     }
@@ -1954,12 +1955,7 @@ mod tests {
             .apply_commit(&commit_epoch1)
             .expect("apply sender commit epoch1");
         let derived_epoch1 = alice_receiver_state
-            .apply_commit_with_path_update(
-                &commit_epoch1,
-                &path_update_epoch1,
-                0,
-                &alice_priv,
-            )
+            .apply_commit_with_path_update(&commit_epoch1, &path_update_epoch1, 0, &alice_priv)
             .expect("alice apply epoch1");
         assert!(derived_epoch1.iter().any(|v| v.is_some()));
         assert_eq!(sender_state, alice_receiver_state);
@@ -1991,12 +1987,7 @@ mod tests {
 
         let bob_priv_epoch1 = hybrid_private_key(92);
         let derived_with_new_key = bob_receiver_with_new_key
-            .apply_commit_with_path_update(
-                &commit_epoch2,
-                &path_update_epoch2,
-                1,
-                &bob_priv_epoch1,
-            )
+            .apply_commit_with_path_update(&commit_epoch2, &path_update_epoch2, 1, &bob_priv_epoch1)
             .expect("bob apply epoch2 with new key");
         assert!(derived_with_new_key.iter().any(|v| v.is_some()));
         assert_eq!(sender_after_epoch2, bob_receiver_with_new_key);
@@ -2038,11 +2029,8 @@ mod tests {
         sender_state
             .apply_commit(&remove_commit)
             .expect("sender apply remove commit");
-        let mut bob_after_remove = RatchetTree::from_leaves(vec![
-            make_leaf(96),
-            make_leaf(97),
-            make_leaf(98),
-        ]);
+        let mut bob_after_remove =
+            RatchetTree::from_leaves(vec![make_leaf(96), make_leaf(97), make_leaf(98)]);
         let bob_derived = bob_after_remove
             .apply_commit_with_path_update(&remove_commit, &path_update_remove, 1, &bob_priv)
             .expect("bob apply remove commit");
@@ -2072,12 +2060,7 @@ mod tests {
         let mut removed_carol_state = sender_state.clone();
         let alice_priv = hybrid_private_key(96);
         let alice_derived = alice_after_remove
-            .apply_commit_with_path_update(
-                &bob_update_commit,
-                &path_update_epoch2,
-                0,
-                &alice_priv,
-            )
+            .apply_commit_with_path_update(&bob_update_commit, &path_update_epoch2, 0, &alice_priv)
             .expect("alice apply bob update");
         assert!(alice_derived.iter().any(|v| v.is_some()));
 
@@ -2249,7 +2232,7 @@ mod tests {
         let mut missing_second_level = Vec::new();
         encode_u32(&mut missing_second_level, 2); // levels
         encode_u32(&mut missing_second_level, 0); // level[0] count
-        // level[1] count is missing
+                                                  // level[1] count is missing
         assert!(PathUpdate::decode(&missing_second_level).is_none());
     }
 

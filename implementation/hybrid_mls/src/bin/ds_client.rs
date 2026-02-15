@@ -1,9 +1,12 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use clap::{Parser, Subcommand};
-use ed25519_dalek::{SecretKey as EdSecretKey, SigningKey as EdSigningKey, VerifyingKey as EdPublic};
+use ed25519_dalek::{
+    SecretKey as EdSecretKey, SigningKey as EdSigningKey, VerifyingKey as EdPublic,
+};
 use ml_dsa::{EncodedSigningKey, EncodedVerifyingKey, KeyGen, MlDsa65};
 use ml_kem::{KeyExport, Seed};
 use rand::rngs::OsRng;
@@ -15,13 +18,29 @@ use serde_urlencoded;
 use sha3::{Digest, Sha3_256};
 use x25519_dalek::{PublicKey as X25519Pub, StaticSecret as X25519Priv};
 
+use hybrid_mls::authenticated_content::{
+    commit_authenticated_content_hash, path_update_authenticated_content_hash,
+    proposal_authenticated_content_hash,
+};
 use hybrid_mls::client_state::ClientGroupState;
-use hybrid_mls::crypto::{HybridPrivateKey, HybridPublicKey, HybridSignPrivKey, KyberPriv};
+use hybrid_mls::crypto::{
+    decrypt_hpke_payload, encrypt_hpke_payload, HybridPrivateKey, HybridPublicKey,
+    HybridSignPrivKey, KyberPriv,
+};
 use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
-use hybrid_mls::tree::{Commit, KeyPackage, LeafNode, Node, ParentUpdate, PathUpdate, Proposal, RatchetTree};
+use hybrid_mls::key_schedule::tree_snapshot_hash;
+use hybrid_mls::transcript::{derive_confirmation_tag, verify_confirmation_tag};
+use hybrid_mls::tree::{
+    Commit, KeyPackage, LeafNode, Node, ParentUpdate, PathUpdate, Proposal, RatchetTree,
+};
+use hybrid_mls::welcome::{EncryptedGroupSecrets, GroupInfo, GroupSecrets, Welcome};
 
 #[derive(Parser, Debug)]
-#[command(name = "ds-client", version, about = "Hybrid MLS Delivery Service client")]
+#[command(
+    name = "ds-client",
+    version,
+    about = "Hybrid MLS Delivery Service client"
+)]
 pub struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:3000")]
     pub base_url: String,
@@ -96,6 +115,8 @@ pub enum Commands {
         commit_file: PathBuf,
         #[arg(long)]
         path_update_file: Option<PathBuf>,
+        #[arg(long)]
+        welcome_file: Option<PathBuf>,
     },
     ListMessages {
         #[arg(long)]
@@ -191,6 +212,8 @@ pub enum Commands {
         #[arg(long)]
         path_update_out: PathBuf,
         #[arg(long)]
+        welcome_out: Option<PathBuf>,
+        #[arg(long)]
         sender_leaf: Option<usize>,
     },
     ApplyReceivedCommit {
@@ -223,9 +246,35 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    JoinFromWelcome {
+        #[arg(long = "base-member-keypackage", required = true)]
+        base_member_keypackage: Vec<PathBuf>,
+        #[arg(long)]
+        commit_file: PathBuf,
+        #[arg(long)]
+        path_update_file: PathBuf,
+        #[arg(long)]
+        welcome_file: PathBuf,
+        #[arg(long)]
+        receiver_private_file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        own_leaf: Option<usize>,
+        #[arg(long)]
+        derived_out: Option<PathBuf>,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     FetchAndApplyLatest {
         #[arg(long)]
         group_state: PathBuf,
+        #[arg(long)]
+        group_id: Option<String>,
+        #[arg(long = "base-member-keypackage")]
+        base_member_keypackage: Vec<PathBuf>,
+        #[arg(long)]
+        own_leaf: Option<usize>,
         #[arg(long)]
         username: Option<String>,
         #[arg(long)]
@@ -301,6 +350,7 @@ struct SubmitCommitRequest {
     session_id: String,
     commit_bytes: String,
     path_update_bytes: Option<String>,
+    welcome_bytes: Option<String>,
     signature: String,
 }
 
@@ -480,7 +530,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             force,
         } => {
             if cli.state.exists() && !force {
-                return Err(format!("state file already exists: {} (use --force to overwrite)", cli.state.display()).into());
+                return Err(format!(
+                    "state file already exists: {} (use --force to overwrite)",
+                    cli.state.display()
+                )
+                .into());
             }
 
             let (mut state, sig_b64) = register_state(&username, &password)?;
@@ -518,7 +572,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             let login_body = login_resp.text().await?;
             println!("{login_status}\n{login_body}");
             if !login_status.is_success() {
-                return Err(format!("auto-login failed after register: {login_status} {login_body}").into());
+                return Err(format!(
+                    "auto-login failed after register: {login_status} {login_body}"
+                )
+                .into());
             }
 
             let json: serde_json::Value = serde_json::from_str(&login_body)?;
@@ -611,6 +668,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             group_id,
             commit_file,
             path_update_file,
+            welcome_file,
         } => {
             let state = load_state(&cli.state)?;
             let username = resolve_username(username, &state)?;
@@ -621,7 +679,14 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(path) => Some(fs::read(path)?),
                 None => None,
             };
-            let path_update_b64 = path_update_payload.as_ref().map(|bytes| STANDARD.encode(bytes));
+            let welcome_payload = match welcome_file {
+                Some(path) => Some(fs::read(path)?),
+                None => None,
+            };
+            let path_update_b64 = path_update_payload
+                .as_ref()
+                .map(|bytes| STANDARD.encode(bytes));
+            let welcome_b64 = welcome_payload.as_ref().map(|bytes| STANDARD.encode(bytes));
 
             let priv_key = signing_key_from_state(&state)?;
             let sign_input = commit_signing_input(
@@ -629,6 +694,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 &group_id,
                 &commit_payload,
                 path_update_payload.as_deref(),
+                welcome_payload.as_deref(),
             );
             let signature = sign_message_b64(&priv_key, &sign_input)?;
 
@@ -637,6 +703,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 session_id,
                 commit_bytes: commit_b64,
                 path_update_bytes: path_update_b64,
+                welcome_bytes: welcome_b64,
                 signature,
             };
 
@@ -730,7 +797,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let query = serde_urlencoded::to_string(params)?;
 
-            let url = format!("{}/v1/groups/{}/app-messages?{}", cli.base_url, group_id, query);
+            let url = format!(
+                "{}/v1/groups/{}/app-messages?{}",
+                cli.base_url, group_id, query
+            );
             let resp = client.get(url).send().await?;
             print_response(resp).await?;
         }
@@ -939,11 +1009,13 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             group_state,
             commit_out,
             path_update_out,
+            welcome_out,
             sender_leaf,
         } => {
             let mut state = load_group_state(&group_state)?;
             let sender_leaf = resolve_sender_leaf(sender_leaf, &state)?;
             let (commit, path_update) = build_commit_from_pending(&state, sender_leaf)?;
+            let welcome = build_welcome_for_commit(&state, &commit, &path_update)?;
 
             let commit_envelope = CommitEnvelope {
                 group_id: state.group_id.clone(),
@@ -960,6 +1032,14 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
             fs::write(&commit_out, commit_envelope.encode())?;
             fs::write(&path_update_out, path_update_envelope.encode())?;
+            let welcome_path = if let Some(welcome) = welcome {
+                let welcome_bytes = welcome.encode();
+                let path = welcome_out.unwrap_or_else(|| default_welcome_out_path(&commit_out));
+                fs::write(&path, welcome_bytes)?;
+                Some(path)
+            } else {
+                None
+            };
 
             let commit_context = commit.encode();
             state
@@ -972,9 +1052,13 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             save_group_state(&group_state, &state)?;
 
             println!(
-                "created commit envelope at {} and path update envelope at {} (group={}, new_epoch={}, sender_leaf={})",
+                "created commit envelope at {} and path update envelope at {}{} (group={}, new_epoch={}, sender_leaf={})",
                 commit_out.display(),
                 path_update_out.display(),
+                welcome_path
+                    .as_ref()
+                    .map(|path| format!(", welcome at {}", path.display()))
+                    .unwrap_or_default(),
                 state.group_id,
                 state.epoch,
                 sender_leaf
@@ -1082,55 +1166,20 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
             let commit_envelope = load_commit_envelope_from_file(&commit_file)?;
             let path_update_envelope = load_path_update_envelope_from_file(&path_update_file)?;
-            validate_path_update_envelope_metadata(&commit_envelope, &path_update_envelope)?;
             let receiver_private = load_receiver_private_from_file(&receiver_private_file)?;
-
-            let mut leaves = Vec::with_capacity(base_member_keypackage.len());
-            for path in &base_member_keypackage {
-                let key_package = load_keypackage_from_file(path)?;
-                leaves.push(leaf_from_keypackage(&key_package));
-            }
-            let tree = RatchetTree::from_leaves(leaves);
-            let mut state = ClientGroupState::new(commit_envelope.group_id.clone(), tree, 0);
-            state.set_epoch(commit_envelope.epoch);
-
-            state
-                .ratchet_tree
-                .apply_commit(&commit_envelope.commit)
-                .ok_or("failed to apply commit while joining from commit")?;
-
-            let resolved_own_leaf = match own_leaf {
-                Some(index) => {
-                    ensure_leaf_present(&state.ratchet_tree, index)?;
-                    index
-                }
-                None => {
-                    let public = hybrid_public_from_private(&receiver_private);
-                    find_leaf_by_public_key(&state.ratchet_tree, &public)
-                        .ok_or("could not infer own leaf from receiver private key; use --own-leaf")?
-                }
-            };
-            state.own_leaf_index = resolved_own_leaf;
-
-            let derived = state
-                .ratchet_tree
-                .process_path_update_for_leaf(
-                    commit_envelope.commit.sender,
-                    resolved_own_leaf,
-                    &receiver_private,
-                    &path_update_envelope.path_update,
-                )
-                .ok_or("failed to process path update for joiner")?;
+            let (state, derived) = join_from_commit_material(
+                &base_member_keypackage,
+                &commit_envelope,
+                &path_update_envelope,
+                &receiver_private,
+                own_leaf,
+                "join-from-commit apply",
+            )?;
 
             if let Some(path) = derived_out {
                 let json = serialize_derived_path_secrets(&Some(derived.clone()));
                 fs::write(&path, serde_json::to_vec_pretty(&json)?)?;
             }
-
-            state.clear_pending_proposals();
-            let commit_context = commit_envelope.commit.encode();
-            state.advance_epoch_with_context(Some(&commit_context));
-            ensure_group_state_consistency(&state, "join-from-commit apply")?;
             save_group_state(&out, &state)?;
 
             println!(
@@ -1142,8 +1191,83 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 derived.len()
             );
         }
+        Commands::JoinFromWelcome {
+            base_member_keypackage,
+            commit_file,
+            path_update_file,
+            welcome_file,
+            receiver_private_file,
+            out,
+            own_leaf,
+            derived_out,
+            force,
+        } => {
+            if out.exists() && !force {
+                return Err(format!(
+                    "group state output already exists: {} (use --force to overwrite)",
+                    out.display()
+                )
+                .into());
+            }
+            if base_member_keypackage.is_empty() {
+                return Err("at least one --base-member-keypackage is required".into());
+            }
+
+            let commit_envelope = load_commit_envelope_from_file(&commit_file)?;
+            let path_update_envelope = load_path_update_envelope_from_file(&path_update_file)?;
+            let welcome = load_welcome_from_file(&welcome_file)?;
+            let receiver_private = load_receiver_private_from_file(&receiver_private_file)?;
+
+            let (state, derived) = join_from_commit_material(
+                &base_member_keypackage,
+                &commit_envelope,
+                &path_update_envelope,
+                &receiver_private,
+                own_leaf,
+                "join-from-welcome apply",
+            )?;
+            let group_secrets = validate_welcome_for_joiner(
+                &welcome,
+                &commit_envelope,
+                &state,
+                &derived,
+                &receiver_private,
+            )?;
+
+            if let Some(path) = derived_out {
+                let mut json = serialize_derived_path_secrets(&Some(derived.clone()));
+                if let Some(object) = json.as_object_mut() {
+                    object.insert(
+                        "joiner_secret_b64".to_string(),
+                        serde_json::Value::String(STANDARD.encode(group_secrets.joiner_secret)),
+                    );
+                    object.insert(
+                        "welcome_path_secret_b64".to_string(),
+                        group_secrets
+                            .path_secret
+                            .map(|secret| STANDARD.encode(secret))
+                            .map(serde_json::Value::String)
+                            .unwrap_or(serde_json::Value::Null),
+                    );
+                }
+                fs::write(&path, serde_json::to_vec_pretty(&json)?)?;
+            }
+            save_group_state(&out, &state)?;
+
+            println!(
+                "joined group via welcome at {} (group={}, epoch={}, own_leaf={}, derived_path_secrets={})",
+                out.display(),
+                state.group_id,
+                state.epoch,
+                state.own_leaf_index,
+                derived.len()
+            );
+        }
         Commands::FetchAndApplyLatest {
             group_state,
+            group_id,
+            base_member_keypackage,
+            own_leaf,
             username,
             receiver_private_file,
             limit,
@@ -1156,11 +1280,35 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             let username = resolve_username(username, &auth_state)?;
             let session_id = require_session_id(&auth_state)?;
             let signing_key = signing_key_from_state(&auth_state)?;
-            let mut state = load_group_state(&group_state)?;
             let receiver_private = match receiver_private_file {
                 Some(path) => Some(load_receiver_private_from_file(&path)?),
                 None => None,
             };
+            let mut state_opt = if group_state.exists() {
+                Some(load_group_state(&group_state)?)
+            } else {
+                None
+            };
+            if state_opt.is_none() {
+                if group_id.is_none() {
+                    return Err(
+                        "--group-id is required when --group-state does not exist (unknown-group Welcome bootstrap)"
+                            .into(),
+                    );
+                }
+                if base_member_keypackage.is_empty() {
+                    return Err(
+                        "at least one --base-member-keypackage is required for unknown-group Welcome bootstrap"
+                            .into(),
+                    );
+                }
+                if receiver_private.is_none() {
+                    return Err(
+                        "--receiver-private-file is required for unknown-group Welcome bootstrap"
+                            .into(),
+                    );
+                }
+            }
             let mut polls = 0usize;
             let mut total_applied = 0usize;
             let mut total_skipped = 0usize;
@@ -1168,13 +1316,68 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
             loop {
                 polls = polls.saturating_add(1);
+
+                if state_opt.is_none() {
+                    let unknown_group_id = group_id
+                        .as_ref()
+                        .expect("validated group_id for unknown group");
+                    let bootstrap = try_bootstrap_unknown_group_from_welcome_once(
+                        &client,
+                        &cli.base_url,
+                        &username,
+                        &session_id,
+                        &signing_key,
+                        unknown_group_id,
+                        &base_member_keypackage,
+                        own_leaf,
+                        receiver_private
+                            .as_ref()
+                            .expect("validated receiver private for unknown group"),
+                        limit,
+                    )
+                    .await?;
+
+                    if let Some((state, bootstrap_record)) = bootstrap {
+                        println!(
+                            "bootstrapped unknown group state via welcome (group={}, epoch={}, own_leaf={})",
+                            state.group_id, state.epoch, state.own_leaf_index
+                        );
+                        save_group_state(&group_state, &state)?;
+                        total_applied = total_applied.saturating_add(1);
+                        all_records.push(bootstrap_record);
+                        state_opt = Some(state);
+                    } else if !watch {
+                        return Err(format!(
+                            "could not bootstrap unknown group '{}' from Welcome stream (no decryptable welcome+commit+path tuple found)",
+                            unknown_group_id
+                        )
+                        .into());
+                    }
+                }
+
+                let state = match state_opt.as_mut() {
+                    Some(state) => state,
+                    None => {
+                        if let Some(max) = max_polls {
+                            if polls >= max {
+                                return Err(
+                                    "sync finished without local state: no Welcome bootstrap found before max polls"
+                                        .into(),
+                                );
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(poll_interval_ms));
+                        continue;
+                    }
+                };
+
                 let outcome = fetch_and_apply_latest_once(
                     &client,
                     &cli.base_url,
                     &username,
                     &session_id,
                     &signing_key,
-                    &mut state,
+                    state,
                     receiver_private.as_ref(),
                     limit,
                 )
@@ -1184,7 +1387,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 all_records.extend(outcome.derived_records);
 
                 if outcome.applied > 0 {
-                    save_group_state(&group_state, &state)?;
+                    save_group_state(&group_state, state)?;
                 }
 
                 println!(
@@ -1209,6 +1412,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 fs::write(path, serde_json::to_vec_pretty(&json)?)?;
             }
 
+            let state = state_opt.ok_or("sync finished without a local group state")?;
             println!(
                 "sync finished for group={} (polls={}, applied_total={}, skipped_total={}, local_epoch={})",
                 state.group_id, polls, total_applied, total_skipped, state.epoch
@@ -1273,7 +1477,10 @@ fn load_group_state(path: &Path) -> Result<ClientGroupState, Box<dyn std::error:
     Ok(state)
 }
 
-fn save_group_state(path: &Path, state: &ClientGroupState) -> Result<(), Box<dyn std::error::Error>> {
+fn save_group_state(
+    path: &Path,
+    state: &ClientGroupState,
+) -> Result<(), Box<dyn std::error::Error>> {
     state
         .ensure_key_schedule_consistency()
         .map_err(|err| format!("refusing to save inconsistent group state: {}", err))?;
@@ -1285,9 +1492,13 @@ fn ensure_group_state_consistency(
     state: &ClientGroupState,
     context: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    state
-        .ensure_key_schedule_consistency()
-        .map_err(|err| format!("key schedule consistency violation after {}: {}", context, err).into())
+    state.ensure_key_schedule_consistency().map_err(|err| {
+        format!(
+            "key schedule consistency violation after {}: {}",
+            context, err
+        )
+        .into()
+    })
 }
 
 fn resolve_sender_leaf(
@@ -1316,8 +1527,8 @@ fn ensure_leaf_present(
 fn load_keypackage_from_file(path: &Path) -> Result<KeyPackage, Box<dyn std::error::Error>> {
     let bytes = fs::read(path)?;
     run_with_large_stack("hybrid-keypackage-verify", move || {
-        let keypackage =
-            KeyPackage::decode(&bytes).ok_or_else(|| "invalid keypackage file: decode failed".to_string())?;
+        let keypackage = KeyPackage::decode(&bytes)
+            .ok_or_else(|| "invalid keypackage file: decode failed".to_string())?;
         if !keypackage.verify() {
             return Err("invalid keypackage file: signature verification failed".to_string());
         }
@@ -1350,7 +1561,9 @@ fn find_leaf_by_public_key(tree: &RatchetTree, target: &HybridPublicKey) -> Opti
     None
 }
 
-fn load_commit_envelope_from_file(path: &Path) -> Result<CommitEnvelope, Box<dyn std::error::Error>> {
+fn load_commit_envelope_from_file(
+    path: &Path,
+) -> Result<CommitEnvelope, Box<dyn std::error::Error>> {
     let bytes = fs::read(path)?;
     CommitEnvelope::decode(&bytes).ok_or_else(|| "invalid commit envelope file".into())
 }
@@ -1360,6 +1573,180 @@ fn load_path_update_envelope_from_file(
 ) -> Result<PathUpdateEnvelope, Box<dyn std::error::Error>> {
     let bytes = fs::read(path)?;
     PathUpdateEnvelope::decode(&bytes).ok_or_else(|| "invalid path update envelope file".into())
+}
+
+fn load_welcome_from_file(path: &Path) -> Result<Welcome, Box<dyn std::error::Error>> {
+    let bytes = fs::read(path)?;
+    Welcome::decode(&bytes).ok_or_else(|| "invalid welcome file".into())
+}
+
+fn join_from_commit_material(
+    base_member_keypackage: &[PathBuf],
+    commit_envelope: &CommitEnvelope,
+    path_update_envelope: &PathUpdateEnvelope,
+    receiver_private: &HybridPrivateKey,
+    own_leaf: Option<usize>,
+    context_label: &str,
+) -> Result<(ClientGroupState, Vec<Option<[u8; 32]>>), Box<dyn std::error::Error>> {
+    if commit_envelope.sender_leaf != commit_envelope.commit.sender {
+        return Err(format!(
+            "commit sender mismatch: envelope.sender_leaf={} commit.sender={}",
+            commit_envelope.sender_leaf, commit_envelope.commit.sender
+        )
+        .into());
+    }
+    validate_path_update_envelope_metadata(commit_envelope, path_update_envelope)?;
+
+    let mut leaves = Vec::with_capacity(base_member_keypackage.len());
+    for path in base_member_keypackage {
+        let key_package = load_keypackage_from_file(path)?;
+        leaves.push(leaf_from_keypackage(&key_package));
+    }
+    let tree = RatchetTree::from_leaves(leaves);
+    let mut state = ClientGroupState::new(commit_envelope.group_id.clone(), tree, 0);
+    state.set_epoch(commit_envelope.epoch);
+
+    state
+        .ratchet_tree
+        .apply_commit(&commit_envelope.commit)
+        .ok_or("failed to apply commit while joining")?;
+
+    let resolved_own_leaf = match own_leaf {
+        Some(index) => {
+            ensure_leaf_present(&state.ratchet_tree, index)?;
+            index
+        }
+        None => {
+            let public = hybrid_public_from_private(receiver_private);
+            find_leaf_by_public_key(&state.ratchet_tree, &public)
+                .ok_or("could not infer own leaf from receiver private key; use --own-leaf")?
+        }
+    };
+    state.own_leaf_index = resolved_own_leaf;
+
+    let derived = state
+        .ratchet_tree
+        .process_path_update_for_leaf(
+            commit_envelope.commit.sender,
+            resolved_own_leaf,
+            receiver_private,
+            &path_update_envelope.path_update,
+        )
+        .ok_or("failed to process path update for joiner")?;
+
+    state.clear_pending_proposals();
+    let commit_context = commit_envelope.commit.encode();
+    state.advance_epoch_with_context(Some(&commit_context));
+    ensure_group_state_consistency(&state, context_label)?;
+
+    Ok((state, derived))
+}
+
+fn validate_welcome_for_joiner(
+    welcome: &Welcome,
+    commit_envelope: &CommitEnvelope,
+    state: &ClientGroupState,
+    derived: &[Option<[u8; 32]>],
+    receiver_private: &HybridPrivateKey,
+) -> Result<GroupSecrets, Box<dyn std::error::Error>> {
+    if welcome.cipher_suite != 0x0001 {
+        return Err(format!("unsupported welcome cipher_suite={}", welcome.cipher_suite).into());
+    }
+    if welcome.secrets.is_empty() {
+        return Err("welcome has no encrypted group secrets".into());
+    }
+
+    let expected_refs: HashSet<[u8; 32]> = commit_envelope
+        .commit
+        .proposals
+        .iter()
+        .filter_map(|proposal| match proposal {
+            Proposal::Add(key_package) => Some(hash32_with_label(
+                b"WELCOME-KEYPACKAGE-REF",
+                &[&key_package.encode()],
+            )),
+            _ => None,
+        })
+        .collect();
+    if expected_refs.is_empty() {
+        return Err("join-from-welcome requires an Add commit".into());
+    }
+
+    let join_epoch = commit_envelope.epoch.saturating_add(1);
+    let mut matched: Option<GroupSecrets> = None;
+    for encrypted in &welcome.secrets {
+        if !expected_refs.contains(&encrypted.key_package_ref_hash) {
+            continue;
+        }
+        if let Some(group_secrets) =
+            encrypted.decrypt_group_secrets(&commit_envelope.group_id, join_epoch, receiver_private)
+        {
+            matched = Some(group_secrets);
+            break;
+        }
+    }
+    let group_secrets = matched.ok_or(
+        "welcome does not include decryptable GroupSecrets for this joiner and commit Add set",
+    )?;
+
+    if let Some(path_secret) = group_secrets.path_secret {
+        let derived_first = derived.first().and_then(|value| *value).ok_or(
+            "joiner derived no path secret at index 0 while welcome carried a path_secret",
+        )?;
+        if path_secret != derived_first {
+            return Err("welcome path_secret mismatch against derived path secret".into());
+        }
+    }
+
+    let root_secret = state
+        .key_schedule
+        .root_secret_for_epoch(state.epoch)
+        .ok_or("missing key schedule root secret for current epoch")?;
+    let group_info_bytes = decrypt_hpke_payload(
+        &root_secret,
+        &welcome_group_info_context(&state.group_id, state.epoch, commit_envelope.commit.sender),
+        &welcome.encrypted_group_info,
+    )
+    .ok_or("failed to decrypt Welcome.encrypted_group_info")?;
+    let group_info = GroupInfo::decode(&group_info_bytes)
+        .ok_or("failed to decode decrypted Welcome GroupInfo payload")?;
+    if group_info.group_id != state.group_id {
+        return Err(format!(
+            "welcome group_id mismatch: welcome={} state={}",
+            group_info.group_id, state.group_id
+        )
+        .into());
+    }
+    if group_info.epoch != state.epoch {
+        return Err(format!(
+            "welcome epoch mismatch: welcome={} state={}",
+            group_info.epoch, state.epoch
+        )
+        .into());
+    }
+    if group_info.signer_leaf as usize != commit_envelope.commit.sender {
+        return Err(format!(
+            "welcome signer mismatch: welcome={} commit={}",
+            group_info.signer_leaf, commit_envelope.commit.sender
+        )
+        .into());
+    }
+    if group_info.confirmed_transcript_hash != state.confirmed_transcript_hash() {
+        return Err("welcome GroupInfo confirmed_transcript_hash mismatch against local transcript state".into());
+    }
+    if !verify_confirmation_tag(
+        &root_secret,
+        &group_info.confirmed_transcript_hash,
+        &group_info.confirmation_tag,
+    ) {
+        return Err("welcome GroupInfo confirmation_tag mismatch against transcript+key-schedule state".into());
+    }
+    let expected_tree_hash = tree_snapshot_hash(&state.ratchet_tree.encode());
+    if group_info.tree_hash != expected_tree_hash {
+        return Err("welcome GroupInfo tree_hash mismatch against local reconstructed tree".into());
+    }
+
+    Ok(group_secrets)
 }
 
 fn load_kem_keygen_file(path: &Path) -> Result<KemKeygenFile, Box<dyn std::error::Error>> {
@@ -1513,7 +1900,9 @@ fn validate_path_update_envelope_metadata(
     Ok(())
 }
 
-fn load_receiver_private_from_file(path: &Path) -> Result<HybridPrivateKey, Box<dyn std::error::Error>> {
+fn load_receiver_private_from_file(
+    path: &Path,
+) -> Result<HybridPrivateKey, Box<dyn std::error::Error>> {
     let bytes = fs::read(path)?;
     let key_file: ReceiverPrivateFile = serde_json::from_slice(&bytes)?;
 
@@ -1643,6 +2032,103 @@ fn build_commit_from_pending(
     ))
 }
 
+fn default_welcome_out_path(commit_out: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.welcome", commit_out.to_string_lossy()))
+}
+
+fn build_welcome_for_commit(
+    state: &ClientGroupState,
+    commit: &Commit,
+    path_update: &PathUpdate,
+) -> Result<Option<Welcome>, Box<dyn std::error::Error>> {
+    let add_keypackages = commit
+        .proposals
+        .iter()
+        .filter_map(|proposal| match proposal {
+            Proposal::Add(kp) => Some(kp),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if add_keypackages.is_empty() {
+        return Ok(None);
+    }
+
+    let mut tree_after_commit = state.ratchet_tree.clone();
+    tree_after_commit
+        .apply_commit(commit)
+        .ok_or("failed to preview commit tree for welcome generation")?;
+    let next_epoch = state.epoch.saturating_add(1);
+    let commit_context = commit.encode();
+    let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
+
+    let mut key_schedule = state.key_schedule.clone();
+    let root_secret = key_schedule.ensure_epoch(
+        next_epoch,
+        &state.group_id,
+        tree_hash,
+        Some(&commit_context),
+    );
+    let confirmed_transcript_hash =
+        state.predict_confirmed_transcript_after_commit(&commit_context);
+    let confirmation_tag = derive_confirmation_tag(&root_secret, &confirmed_transcript_hash);
+    let group_info = GroupInfo {
+        group_id: state.group_id.clone(),
+        epoch: next_epoch,
+        tree_hash,
+        confirmed_transcript_hash,
+        signer_leaf: commit.sender as u32,
+        extensions: Vec::new(),
+        confirmation_tag,
+        signature: hash32_with_label(
+            b"WELCOME-GROUP-INFO-SIGNATURE",
+            &[state.group_id.as_bytes(), &commit_context, &tree_hash],
+        )
+        .to_vec(),
+    };
+    let encrypted_group_info = encrypt_hpke_payload(
+        &root_secret,
+        &welcome_group_info_context(&state.group_id, next_epoch, commit.sender),
+        &group_info.encode(),
+    );
+
+    let mut rng = ClientRng(rand::random::<u64>() ^ state.epoch ^ next_epoch);
+    let path_secret = path_update.path_secrets.first().copied();
+    let mut encrypted = Vec::with_capacity(add_keypackages.len());
+    for key_package in add_keypackages {
+        if !key_package.verify() {
+            return Err("invalid add proposal key package signature".into());
+        }
+        let key_ref_hash = hash32_with_label(b"WELCOME-KEYPACKAGE-REF", &[&key_package.encode()]);
+        let group_secrets = GroupSecrets {
+            joiner_secret: hash32_with_label(
+                b"WELCOME-JOINER-SECRET",
+                &[
+                    &root_secret,
+                    state.group_id.as_bytes(),
+                    &next_epoch.to_be_bytes(),
+                    &key_ref_hash,
+                ],
+            ),
+            path_secret,
+            psk_ids: Vec::new(),
+        };
+        encrypted.push(EncryptedGroupSecrets::encrypt_for_recipient(
+            &mut rng,
+            &state.group_id,
+            next_epoch,
+            key_ref_hash,
+            &key_package.init_key,
+            &group_secrets,
+        ));
+    }
+
+    Ok(Some(Welcome {
+        cipher_suite: 0x0001,
+        secrets: encrypted,
+        encrypted_group_info,
+    }))
+}
+
 fn apply_proposals_preview(
     tree: &mut RatchetTree,
     proposals: &[Proposal],
@@ -1717,14 +2203,19 @@ fn grow_tree_by_one_leaf(tree: &mut RatchetTree) {
     }
 }
 
-fn ensure_leaf_bounds(tree: &RatchetTree, leaf_index: usize) -> Result<(), Box<dyn std::error::Error>> {
+fn ensure_leaf_bounds(
+    tree: &RatchetTree,
+    leaf_index: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     if leaf_index >= tree.leaf_count() {
         return Err(format!("leaf index {leaf_index} is out of bounds").into());
     }
     Ok(())
 }
 
-fn generate_hybrid_public_key(rng: &mut ClientRng) -> Result<HybridPublicKey, Box<dyn std::error::Error>> {
+fn generate_hybrid_public_key(
+    rng: &mut ClientRng,
+) -> Result<HybridPublicKey, Box<dyn std::error::Error>> {
     let mut classic_bytes = [0u8; 32];
     rng.try_fill_bytes(&mut classic_bytes)
         .map_err(|_| "failed to generate classic secret bytes")?;
@@ -1779,7 +2270,10 @@ impl TryRng for ClientRng {
 
 impl TryCryptoRng for ClientRng {}
 
-fn resolve_username(candidate: Option<String>, state: &ClientState) -> Result<String, Box<dyn std::error::Error>> {
+fn resolve_username(
+    candidate: Option<String>,
+    state: &ClientState,
+) -> Result<String, Box<dyn std::error::Error>> {
     Ok(candidate.unwrap_or_else(|| state.username.clone()))
 }
 
@@ -1823,7 +2317,10 @@ fn require_session_id(state: &ClientState) -> Result<String, Box<dyn std::error:
         .ok_or_else(|| "missing session_id in state; run login first".into())
 }
 
-fn register_state(username: &str, password: &str) -> Result<(ClientState, String), Box<dyn std::error::Error>> {
+fn register_state(
+    username: &str,
+    password: &str,
+) -> Result<(ClientState, String), Box<dyn std::error::Error>> {
     let username = username.to_string();
     let password = password.to_string();
     run_with_large_stack("hybrid-register-state", move || {
@@ -1862,7 +2359,9 @@ fn register_state(username: &str, password: &str) -> Result<(ClientState, String
     })
 }
 
-fn signing_key_from_state(state: &ClientState) -> Result<HybridSignPrivKey, Box<dyn std::error::Error>> {
+fn signing_key_from_state(
+    state: &ClientState,
+) -> Result<HybridSignPrivKey, Box<dyn std::error::Error>> {
     let classic_bytes = STANDARD.decode(&state.classic_sk_b64)?;
     if classic_bytes.len() != 32 {
         return Err("classic signing key must be 32 bytes".into());
@@ -1872,10 +2371,16 @@ fn signing_key_from_state(state: &ClientState) -> Result<HybridSignPrivKey, Box<
     let classic_sk = EdSigningKey::from_bytes(&secret);
 
     let pq_bytes = STANDARD.decode(&state.pq_sk_b64)?;
-    let enc: EncodedSigningKey<MlDsa65> = pq_bytes.as_slice().try_into().map_err(|_| "invalid pq signing key")?;
+    let enc: EncodedSigningKey<MlDsa65> = pq_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "invalid pq signing key")?;
     let pq_sk = ml_dsa::SigningKey::<MlDsa65>::decode(&enc);
 
-    Ok(HybridSignPrivKey { classic: classic_sk, pq: pq_sk })
+    Ok(HybridSignPrivKey {
+        classic: classic_sk,
+        pq: pq_sk,
+    })
 }
 
 async fn print_response(resp: reqwest::Response) -> Result<(), Box<dyn std::error::Error>> {
@@ -2075,6 +2580,188 @@ async fn fetch_and_apply_latest_once(
     })
 }
 
+async fn try_bootstrap_unknown_group_from_welcome_once(
+    client: &Client,
+    base_url: &str,
+    username: &str,
+    session_id: &str,
+    signing_key: &HybridSignPrivKey,
+    group_id: &str,
+    base_member_keypackage: &[PathBuf],
+    own_leaf: Option<usize>,
+    receiver_private: &HybridPrivateKey,
+    limit: usize,
+) -> Result<Option<(ClientGroupState, serde_json::Value)>, Box<dyn std::error::Error>> {
+    let commit_summaries = ds_list_messages(
+        client,
+        base_url,
+        username,
+        session_id,
+        signing_key,
+        group_id,
+        limit,
+        "commit",
+        None,
+    )
+    .await?;
+    let path_summaries = ds_list_messages(
+        client,
+        base_url,
+        username,
+        session_id,
+        signing_key,
+        group_id,
+        limit,
+        "path_update",
+        None,
+    )
+    .await?;
+    let welcome_summaries = ds_list_messages(
+        client,
+        base_url,
+        username,
+        session_id,
+        signing_key,
+        group_id,
+        limit,
+        "welcome",
+        None,
+    )
+    .await?;
+
+    let commit_ids = extract_sorted_unique_message_ids(&commit_summaries.messages);
+    let path_ids = extract_sorted_unique_message_ids(&path_summaries.messages);
+    let mut welcome_ids = extract_sorted_unique_message_ids(&welcome_summaries.messages);
+    if commit_ids.is_empty() || path_ids.is_empty() || welcome_ids.is_empty() {
+        return Ok(None);
+    }
+    welcome_ids.reverse();
+
+    for welcome_id in welcome_ids {
+        let fetched_welcome = ds_fetch_group_message(
+            client,
+            base_url,
+            username,
+            session_id,
+            signing_key,
+            group_id,
+            welcome_id,
+        )
+        .await?;
+        if fetched_welcome.kind != "welcome" {
+            continue;
+        }
+        let welcome_bytes = match STANDARD.decode(&fetched_welcome.message_bytes) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let Some(welcome) = Welcome::decode(&welcome_bytes) else {
+            continue;
+        };
+
+        let mut matched_commit: Option<(usize, i64)> = None;
+        for (idx, commit_id) in commit_ids.iter().enumerate() {
+            if *commit_id < welcome_id {
+                matched_commit = Some((idx, *commit_id));
+            } else {
+                break;
+            }
+        }
+        let Some((commit_pos, commit_id)) = matched_commit else {
+            continue;
+        };
+        let next_commit_id = commit_ids.get(commit_pos + 1).copied();
+
+        let fetched_commit = ds_fetch_group_message(
+            client,
+            base_url,
+            username,
+            session_id,
+            signing_key,
+            group_id,
+            commit_id,
+        )
+        .await?;
+        if fetched_commit.kind != "commit" {
+            continue;
+        }
+        let commit_bytes = match STANDARD.decode(&fetched_commit.message_bytes) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let Some(commit_env) = CommitEnvelope::decode(&commit_bytes) else {
+            continue;
+        };
+        if commit_env.group_id != group_id {
+            continue;
+        }
+
+        let candidate_path_ids = candidate_path_update_ids(commit_id, next_commit_id, &path_ids);
+        for path_id in candidate_path_ids {
+            let fetched_path = ds_fetch_group_message(
+                client,
+                base_url,
+                username,
+                session_id,
+                signing_key,
+                group_id,
+                path_id,
+            )
+            .await?;
+            if fetched_path.kind != "path_update" {
+                continue;
+            }
+            let path_bytes = match STANDARD.decode(&fetched_path.message_bytes) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let Some(path_env) = PathUpdateEnvelope::decode(&path_bytes) else {
+                continue;
+            };
+
+            let (mut state, derived) = match join_from_commit_material(
+                base_member_keypackage,
+                &commit_env,
+                &path_env,
+                receiver_private,
+                own_leaf,
+                "fetch-and-apply-latest welcome bootstrap",
+            ) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let group_secrets = match validate_welcome_for_joiner(
+                &welcome,
+                &commit_env,
+                &state,
+                &derived,
+                receiver_private,
+            ) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            state.mark_applied_commit_id(commit_id);
+
+            return Ok(Some((
+                state,
+                serde_json::json!({
+                    "kind": "welcome_bootstrap",
+                    "commit_id": commit_id,
+                    "welcome_id": welcome_id,
+                    "joiner_secret_b64": STANDARD.encode(group_secrets.joiner_secret),
+                    "welcome_path_secret_b64": group_secrets.path_secret.map(|secret| STANDARD.encode(secret)),
+                    "derived_path_secrets_b64": derived
+                        .iter()
+                        .map(|opt| opt.as_ref().map(|secret| STANDARD.encode(secret)))
+                        .collect::<Vec<_>>(),
+                }),
+            )));
+        }
+    }
+
+    Ok(None)
+}
+
 async fn ds_list_messages(
     client: &Client,
     base_url: &str,
@@ -2172,7 +2859,7 @@ fn candidate_path_update_ids(
 }
 
 fn proposal_signing_input(username: &str, group_id: &str, proposal: &[u8]) -> Vec<u8> {
-    let hash = hash_payload(proposal);
+    let hash = proposal_authenticated_content_hash(group_id, proposal);
     let mut out = Vec::new();
     out.extend_from_slice(b"proposal|");
     out.extend_from_slice(username.as_bytes());
@@ -2188,8 +2875,9 @@ fn commit_signing_input(
     group_id: &str,
     commit: &[u8],
     path_update: Option<&[u8]>,
+    welcome: Option<&[u8]>,
 ) -> Vec<u8> {
-    let commit_hash = hash_payload(commit);
+    let commit_hash = commit_authenticated_content_hash(group_id, commit);
     let mut out = Vec::new();
     out.extend_from_slice(b"commit|");
     out.extend_from_slice(username.as_bytes());
@@ -2199,8 +2887,13 @@ fn commit_signing_input(
     out.extend_from_slice(&commit_hash);
     out.extend_from_slice(b"|");
     if let Some(path) = path_update {
-        let path_hash = hash_payload(path);
+        let path_hash = path_update_authenticated_content_hash(group_id, path);
         out.extend_from_slice(&path_hash);
+    }
+    out.extend_from_slice(b"|");
+    if let Some(welcome) = welcome {
+        let welcome_hash = hash_payload(welcome);
+        out.extend_from_slice(&welcome_hash);
     }
     out
 }
@@ -2333,6 +3026,17 @@ fn keypackage_fetch_signing_input(username: &str, target: &str) -> Vec<u8> {
     out
 }
 
+fn welcome_group_info_context(group_id: &str, epoch: u64, signer_leaf: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"welcome-group-info|");
+    out.extend_from_slice(group_id.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(&epoch.to_be_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(&(signer_leaf as u32).to_be_bytes());
+    out
+}
+
 fn hash_payload(bytes: &[u8]) -> [u8; 32] {
     let mut hasher = Sha3_256::new();
     hasher.update(b"DS-PAYLOAD");
@@ -2343,10 +3047,73 @@ fn hash_payload(bytes: &[u8]) -> [u8; 32] {
     out
 }
 
+fn hash32_with_label(label: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    let mut hasher = Sha3_256::new();
+    hasher.update(label);
+    for part in parts {
+        hasher.update((part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hybrid_mls::crypto::{HybridSignPrivKey, HybridSignPubKey, KyberPriv};
     use hybrid_mls::tree::RatchetTree;
+    use hybrid_mls::tree::{LeafNode, Proposal};
+    use ml_dsa::{KeyGen, MlDsa65};
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    fn hex(bytes: &[u8; 32]) -> String {
+        bytes
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
+    }
+
+    fn test_member(seed: u8) -> (KeyPackage, HybridPrivateKey) {
+        let classic_priv = X25519Priv::from([seed; 32]);
+        let classic_pub = X25519Pub::from(&classic_priv);
+
+        let kem_seed = Seed::from([seed.wrapping_add(1); 64]);
+        let pq_priv = KyberPriv::from_seed(kem_seed);
+        let pq_pub = pq_priv.encapsulation_key().clone();
+
+        let sign_classic = EdSigningKey::from_bytes(&[seed.wrapping_add(2); 32]);
+        let mut dsa_rng = StdRng::seed_from_u64(seed as u64 + 777);
+        let sign_pair = MlDsa65::key_gen(&mut dsa_rng);
+
+        let identity = HybridSignPubKey {
+            classic: EdPublic::from(&sign_classic),
+            pq: sign_pair.verifying_key().clone(),
+        };
+        let signer = HybridSignPrivKey {
+            classic: sign_classic,
+            pq: sign_pair.signing_key().clone(),
+        };
+        let init_key = HybridPublicKey {
+            classic: classic_pub,
+            pq: pq_pub,
+        };
+
+        let kp = KeyPackage {
+            identity,
+            init_key: init_key.clone(),
+            signature: signer.sign(&init_key.to_bytes()),
+        };
+        let priv_key = HybridPrivateKey {
+            classic: classic_priv,
+            pq: pq_priv,
+        };
+
+        (kp, priv_key)
+    }
 
     #[test]
     fn extract_sorted_unique_message_ids_sorts_dedups_and_skips_invalid() {
@@ -2479,8 +3246,7 @@ mod tests {
     #[test]
     fn epoch_derived_secrets_json_includes_expected_fields() {
         let state = ClientGroupState::new("group-debug", RatchetTree::new(1), 0);
-        let json =
-            epoch_derived_secrets_json(&state, 0, true).expect("derive json for epoch 0");
+        let json = epoch_derived_secrets_json(&state, 0, true).expect("derive json for epoch 0");
 
         assert_eq!(json["group_id"].as_str(), Some("group-debug"));
         assert_eq!(json["epoch"].as_u64(), Some(0));
@@ -2493,8 +3259,7 @@ mod tests {
     #[test]
     fn epoch_derived_secrets_json_hides_root_when_not_requested() {
         let state = ClientGroupState::new("group-debug", RatchetTree::new(1), 0);
-        let json =
-            epoch_derived_secrets_json(&state, 0, false).expect("derive json without root");
+        let json = epoch_derived_secrets_json(&state, 0, false).expect("derive json without root");
 
         assert!(json["root_secret_b64"].is_null());
     }
@@ -2507,5 +3272,247 @@ mod tests {
 
         let result = ensure_group_state_consistency(&state, "unit test");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_welcome_for_commit_returns_none_when_no_add_proposals() {
+        let (member_a, _) = test_member(1);
+        let (member_b, _) = test_member(2);
+        let (member_a_updated, _) = test_member(3);
+        let tree = RatchetTree::from_leaves(vec![
+            LeafNode {
+                public_key: member_a.init_key.clone(),
+                credential: member_a.identity.clone(),
+            },
+            LeafNode {
+                public_key: member_b.init_key.clone(),
+                credential: member_b.identity.clone(),
+            },
+        ]);
+        let mut state = ClientGroupState::new("group-no-add", tree, 0);
+        state.queue_proposal(&Proposal::Update {
+            leaf_index: 0,
+            key_package: member_a_updated,
+        });
+
+        let (commit, path_update) = build_commit_from_pending(&state, 0).expect("build commit");
+        let welcome =
+            build_welcome_for_commit(&state, &commit, &path_update).expect("welcome generation");
+        assert!(welcome.is_none());
+    }
+
+    #[test]
+    fn build_welcome_for_commit_encrypts_group_secrets_for_added_member() {
+        let (member_a, _) = test_member(10);
+        let (member_b, member_b_priv) = test_member(11);
+        let tree = RatchetTree::from_leaves(vec![leaf_from_keypackage(&member_a)]);
+        let mut state = ClientGroupState::new("group-add", tree, 0);
+        state.queue_proposal(&Proposal::Add(member_b.clone()));
+
+        let (commit, path_update) = build_commit_from_pending(&state, 0).expect("build commit");
+        let welcome = build_welcome_for_commit(&state, &commit, &path_update)
+            .expect("welcome generation")
+            .expect("welcome must exist for add proposal");
+
+        assert_eq!(welcome.secrets.len(), 1);
+        assert!(!welcome.encrypted_group_info.is_empty());
+        let key_ref_hash = hash32_with_label(b"WELCOME-KEYPACKAGE-REF", &[&member_b.encode()]);
+        let encrypted = &welcome.secrets[0];
+        assert_eq!(encrypted.key_package_ref_hash, key_ref_hash);
+
+        let group_secrets = encrypted
+            .decrypt_group_secrets("group-add", state.epoch + 1, &member_b_priv)
+            .expect("decrypt group secrets");
+        assert_eq!(
+            group_secrets.path_secret,
+            path_update.path_secrets.first().copied()
+        );
+        assert_ne!(group_secrets.joiner_secret, [0u8; 32]);
+    }
+
+    #[test]
+    fn build_welcome_for_commit_sets_verifiable_confirmation_tag() {
+        let (member_a, _) = test_member(41);
+        let (member_b, _) = test_member(42);
+        let tree = RatchetTree::from_leaves(vec![leaf_from_keypackage(&member_a)]);
+        let mut state = ClientGroupState::new("group-confirmation", tree, 0);
+        state.queue_proposal(&Proposal::Add(member_b));
+
+        let (commit, path_update) = build_commit_from_pending(&state, 0).expect("build commit");
+        let welcome = build_welcome_for_commit(&state, &commit, &path_update)
+            .expect("welcome generation")
+            .expect("welcome present");
+
+        let mut tree_after_commit = state.ratchet_tree.clone();
+        tree_after_commit
+            .apply_commit(&commit)
+            .expect("apply commit for welcome verification");
+        let next_epoch = state.epoch + 1;
+        let commit_context = commit.encode();
+        let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
+        let mut key_schedule = state.key_schedule.clone();
+        let root_secret =
+            key_schedule.ensure_epoch(next_epoch, &state.group_id, tree_hash, Some(&commit_context));
+        let group_info_bytes = decrypt_hpke_payload(
+            &root_secret,
+            &welcome_group_info_context(&state.group_id, next_epoch, commit.sender),
+            &welcome.encrypted_group_info,
+        )
+        .expect("decrypt group info");
+        let group_info = GroupInfo::decode(&group_info_bytes).expect("decode group info");
+        assert!(verify_confirmation_tag(
+            &root_secret,
+            &group_info.confirmed_transcript_hash,
+            &group_info.confirmation_tag
+        ));
+    }
+
+    #[test]
+    fn validate_welcome_for_joiner_rejects_bad_confirmation_tag() {
+        let (member_a, _) = test_member(51);
+        let (member_b, member_b_priv) = test_member(52);
+        let tree = RatchetTree::from_leaves(vec![leaf_from_keypackage(&member_a)]);
+        let mut sender_state = ClientGroupState::new("group-bad-confirmation", tree, 0);
+        sender_state.queue_proposal(&Proposal::Add(member_b.clone()));
+
+        let (commit, path_update) =
+            build_commit_from_pending(&sender_state, 0).expect("build commit");
+        let commit_env = CommitEnvelope {
+            group_id: sender_state.group_id.clone(),
+            epoch: sender_state.epoch,
+            sender_leaf: 0,
+            commit: commit.clone(),
+        };
+        let path_env = PathUpdateEnvelope {
+            group_id: sender_state.group_id.clone(),
+            epoch: sender_state.epoch,
+            sender_leaf: 0,
+            path_update: path_update.clone(),
+        };
+        let mut welcome = build_welcome_for_commit(&sender_state, &commit, &path_update)
+            .expect("welcome generation")
+            .expect("welcome present");
+
+        let mut tree_after_commit = sender_state.ratchet_tree.clone();
+        tree_after_commit
+            .apply_commit(&commit)
+            .expect("apply commit for welcome tamper");
+        let next_epoch = sender_state.epoch + 1;
+        let commit_context = commit.encode();
+        let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
+        let mut key_schedule = sender_state.key_schedule.clone();
+        let root_secret = key_schedule.ensure_epoch(
+            next_epoch,
+            &sender_state.group_id,
+            tree_hash,
+            Some(&commit_context),
+        );
+        let mut group_info = GroupInfo::decode(
+            &decrypt_hpke_payload(
+                &root_secret,
+                &welcome_group_info_context(&sender_state.group_id, next_epoch, commit.sender),
+                &welcome.encrypted_group_info,
+            )
+            .expect("decrypt group info"),
+        )
+        .expect("decode group info");
+        group_info.confirmation_tag[0] ^= 0x01;
+        welcome.encrypted_group_info = encrypt_hpke_payload(
+            &root_secret,
+            &welcome_group_info_context(&sender_state.group_id, next_epoch, commit.sender),
+            &group_info.encode(),
+        );
+
+        let tree = RatchetTree::from_leaves(vec![leaf_from_keypackage(&member_a)]);
+        let mut join_state = ClientGroupState::new(sender_state.group_id.clone(), tree, 0);
+        join_state.set_epoch(commit_env.epoch);
+        join_state
+            .ratchet_tree
+            .apply_commit(&commit_env.commit)
+            .expect("apply commit on join side");
+        let own_leaf = find_leaf_by_public_key(
+            &join_state.ratchet_tree,
+            &hybrid_public_from_private(&member_b_priv),
+        )
+        .expect("find joiner leaf");
+        join_state.own_leaf_index = own_leaf;
+        let derived = join_state
+            .ratchet_tree
+            .process_path_update_for_leaf(
+                commit_env.commit.sender,
+                own_leaf,
+                &member_b_priv,
+                &path_env.path_update,
+            )
+            .expect("process path update");
+        join_state.clear_pending_proposals();
+        join_state.advance_epoch_with_context(Some(&commit_context));
+
+        let err = validate_welcome_for_joiner(
+            &welcome,
+            &commit_env,
+            &join_state,
+            &derived,
+            &member_b_priv,
+        )
+        .expect_err("confirmation mismatch should fail");
+        assert!(err
+            .to_string()
+            .contains("confirmation_tag mismatch"));
+    }
+
+    #[test]
+    fn deterministic_vector_welcome_joiner_secret_matches_expected() {
+        let (member_a, _) = test_member(30);
+        let (member_b, member_b_priv) = test_member(31);
+        let tree = RatchetTree::from_leaves(vec![leaf_from_keypackage(&member_a)]);
+        let state = ClientGroupState::new("vector-welcome-group", tree, 0);
+
+        let proposals = vec![Proposal::Add(member_b.clone())];
+        let mut tree_after_proposals = state.ratchet_tree.clone();
+        apply_proposals_preview(&mut tree_after_proposals, &proposals).expect("apply proposals");
+        ensure_leaf_present(&tree_after_proposals, 0).expect("sender leaf present");
+        let direct_path = tree_after_proposals
+            .direct_path(0)
+            .expect("direct path for sender");
+
+        let mut rng = ClientRng(0xdecafbad_u64);
+        let mut path = Vec::with_capacity(direct_path.len());
+        for _ in direct_path {
+            path.push(ParentUpdate {
+                public_key: generate_hybrid_public_key(&mut rng).expect("deterministic public key"),
+                unmerged_leaves: Vec::new(),
+            });
+        }
+        let mut leaf_secret = [0u8; 32];
+        rng.try_fill_bytes(&mut leaf_secret)
+            .expect("deterministic leaf secret");
+        let path_update = tree_after_proposals
+            .build_path_update(&mut rng, 0, leaf_secret)
+            .expect("path update");
+
+        let commit = Commit {
+            sender: 0,
+            proposals,
+            path,
+        };
+
+        let welcome = build_welcome_for_commit(&state, &commit, &path_update)
+            .expect("welcome generation")
+            .expect("welcome should exist");
+        assert_eq!(welcome.secrets.len(), 1);
+        let key_ref_hash = hash32_with_label(b"WELCOME-KEYPACKAGE-REF", &[&member_b.encode()]);
+        let group_secrets = welcome.secrets[0]
+            .decrypt_group_secrets("vector-welcome-group", 1, &member_b_priv)
+            .expect("decrypt group secrets");
+        assert_eq!(welcome.secrets[0].key_package_ref_hash, key_ref_hash);
+        assert_eq!(
+            group_secrets.path_secret,
+            path_update.path_secrets.first().copied()
+        );
+        assert_eq!(
+            hex(&group_secrets.joiner_secret),
+            "f14c4c4cdef9cd6790493c0cc44790ff21ebcce34d116da1af2bf803957b5f5c"
+        );
     }
 }

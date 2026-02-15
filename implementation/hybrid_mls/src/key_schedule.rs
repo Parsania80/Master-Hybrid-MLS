@@ -115,9 +115,7 @@ impl KeyScheduleState {
         commit_context: Option<&[u8]>,
     ) -> [u8; 32] {
         while self.current_epoch < target_epoch {
-            let previous_root = self
-                .current_root_secret()
-                .unwrap_or(self.init_secret);
+            let previous_root = self.current_root_secret().unwrap_or(self.init_secret);
             let next_epoch = self.current_epoch.saturating_add(1);
             let next_root = derive_epoch_root_secret(
                 &previous_root,
@@ -224,21 +222,10 @@ pub fn derive_epoch_secrets(
     epoch_bytes.copy_from_slice(&epoch.to_be_bytes());
     let context = group_id.as_bytes();
 
-    let handshake_secret = labeled_hash(
-        b"handshake secret",
-        context,
-        &[root_secret, &epoch_bytes],
-    );
-    let application_secret = labeled_hash(
-        b"application secret",
-        context,
-        &[root_secret, &epoch_bytes],
-    );
-    let exporter_secret = labeled_hash(
-        b"exporter secret",
-        context,
-        &[root_secret, &epoch_bytes],
-    );
+    let handshake_secret = labeled_hash(b"handshake secret", context, &[root_secret, &epoch_bytes]);
+    let application_secret =
+        labeled_hash(b"application secret", context, &[root_secret, &epoch_bytes]);
+    let exporter_secret = labeled_hash(b"exporter secret", context, &[root_secret, &epoch_bytes]);
 
     EpochDerivedSecrets {
         epoch,
@@ -462,7 +449,10 @@ mod tests {
     }
 
     fn hex(bytes: &[u8; 32]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        bytes
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
     }
 
     #[test]

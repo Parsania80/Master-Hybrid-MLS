@@ -92,7 +92,7 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 4 | Group list + membership UX | ✅ Done | Groups list now supports add, refresh, filter/search, forget, and auto-track on group open. |
 | 5 | Group page action menu | ✅ Done | Actions menu now creates Add/Remove/Update proposals, supports Create+Submit Commit from pending proposals, and includes Sync+Apply Latest to consume DS commit/path-update streams into local state. Added stack-safe large-stack worker execution for UI/DS hybrid signing and keypackage verification in proposal flow, plus UI+DS end-to-end test coverage for register/bootstrap/add/commit/sync/relogin group visibility. Top-bar Sync + Apply Latest is now available and auto-sync runs on groups/group page load for logged-in users. Added MLS-aligned joiner-onboarding endpoint/button (`join-from-latest`) that reconstructs a pre-commit base tree from ordered base-member keypackages, applies the matched Add commit + path update, and persists local state. |
 | 6 | Tree structure view | ✅ Done | Group UI now renders local ratchet tree nodes (leaf/parent/blank) with short key fingerprints and metadata. |
-| 7 | Admin account bootstrap | 🔄 Current | Ensure `admin/admin@123` exists in DB on startup; admin sees all users and groups. |
+| 7 | Admin account bootstrap | ⬜ Todo | Ensure `admin/admin@123` exists in DB on startup; admin sees all users and groups. (Paused while Part 9 is active.) |
 | 8 | Admin demo index | ⬜ Todo | Admin “Demo” menu lists demos, allows create/open; demos stored under `ui-state/demo/<id>`. |
 | 9 | Admin demo UI layout | ⬜ Todo | Two-column layout: right tree view; left split into actions (top) and logs (bottom). |
 | 10 | Admin demo actions | ⬜ Todo | Add/Remove/Update actions with inputs (adder, added; remover; updater) and deterministic flow. |
@@ -102,23 +102,23 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 ### Part 9: RFC 9420 Welcome (Hybrid)
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 1 | Define Welcome/GroupInfo/GroupSecrets hybrid wire structures and codecs | 🔄 Current | Add RFC-style message model in a new module (Welcome message, encrypted group secrets, group info container) with strict decode validation and tests. |
-| 2 | Implement hybrid HPKE-style encryption for Welcome secrets | ⬜ Todo | Use existing hybrid KEM + AEAD framing to encrypt joiner secrets to each added member key package; define domain-separated context labels aligned to RFC terms. |
-| 3 | Committer flow: generate Welcome when commit contains Add proposals | ⬜ Todo | Extend commit creation path to emit Welcome payload(s) tied to commit epoch/group context and path update outputs. |
-| 4 | DS transport for Welcome messages | ⬜ Todo | Add `welcome` message kind and signed submit/list/fetch DS API support with storage + retrieval tests. |
-| 5 | CLI join-from-welcome command | ⬜ Todo | Add `ds_client join-from-welcome` that consumes Welcome + local key material, reconstructs state safely, and verifies metadata consistency. |
-| 6 | Sync integration: auto-consume Welcome before commit/path apply | ⬜ Todo | Teach fetch/sync to bootstrap unknown-group local state via Welcome, then continue normal commit/path-update processing. |
-| 7 | UI onboarding migration from commit-scan to Welcome-first | ⬜ Todo | Replace/manual-fallback current `join-from-latest` with Welcome-driven onboarding flow, preserving strict validation and clear operator errors. |
-| 8 | RFC 9420 compliance note + test vectors for Welcome flow | ⬜ Todo | Add mapping doc and deterministic tests for encoding/decoding and joiner-secret derivation path in hybrid model. |
+| 1 | Define Welcome/GroupInfo/GroupSecrets hybrid wire structures and codecs | ✅ Done | Added `src/welcome.rs` with strict codecs for `Welcome`, `EncryptedGroupSecrets`, `GroupSecrets`, and `GroupInfo`; includes round-trip + malformed decode tests. |
+| 2 | Implement hybrid HPKE-style encryption for Welcome secrets | ✅ Done | Added `EncryptedGroupSecrets::encrypt_for_recipient` and `decrypt_group_secrets` using hybrid KEM encapsulation/decapsulation + HPKE-style AEAD payload protection with group/epoch/key-ref bound context. Added round-trip/wrong-recipient/tamper tests. |
+| 3 | Committer flow: generate Welcome when commit contains Add proposals | ✅ Done | `ds_client create-commit` now generates Welcome when pending proposals include Add; output is written to `--welcome-out` or `<commit_out>.welcome`. UI `commit-from-pending` now returns optional `welcome_b64` for Add commits. Added unit tests for no-Add and Add+decryptable GroupSecrets cases. |
+| 4 | DS transport for Welcome messages | ✅ Done | DS commit submit API now accepts optional `welcome_bytes` and persists it as `kind=welcome`; signed list/fetch supports `kind=welcome`; UI and CLI commit submit paths now sign+send optional Welcome payloads. Added DS transport round-trip test for commit/path/welcome and CLI-driven DS-backed integration test validating `list-messages --kind welcome`. |
+| 5 | CLI join-from-welcome command | ✅ Done | Added `ds_client join-from-welcome` consuming `welcome+commit+path_update+receiver_private` with base pre-commit members; validates decryptable GroupSecrets, checks Welcome GroupInfo consistency (`group_id`, `epoch`, `tree_hash`, `signer_leaf`), and persists joined state. |
+| 6 | Sync integration: auto-consume Welcome before commit/path apply | ✅ Done | `fetch-and-apply-latest` now supports unknown-group bootstrap from DS Welcome stream (`--group-id`, `--base-member-keypackage`, `--receiver-private-file`) and then continues normal commit/path sync. Added DS-backed integration test for auto-bootstrap plus negative coverage (wrong base members, wrong receiver key, tampered welcome). |
+| 7 | UI onboarding migration from commit-scan to Welcome-first | ✅ Done | `join-from-latest` now resolves onboarding material from DS `welcome+commit+path_update`, reconstructs joiner state, validates Welcome decryptability + path-secret consistency + GroupInfo (`group_id`, `epoch`, `signer_leaf`, `tree_hash`), then persists state and performs catch-up sync. |
+| 8 | RFC 9420 compliance note + test vectors for Welcome flow | ✅ Done | Added README RFC mapping note for Welcome wire objects and key-schedule linkage; added deterministic vectors in `src/welcome.rs` (fixed GroupSecrets encoding bytes + fixed Welcome-encoding digest with strict decode) and `src/bin/ds_client.rs` (fixed joiner-secret derivation vector for deterministic commit/path material). Added DS-backed integration test to assert Welcome payload byte stability across submit/fetch round-trip (`tests/ds_fetch_apply_e2e.rs`). |
 
 ### Part 10: RFC 9420 Post-Welcome Compliance Hardening (Hybrid)
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 1 | Implement MLS wire objects (`MLSMessage`, `PublicMessage`, `PrivateMessage`) | ⬜ Todo | Add strict encode/decode and content-type framing aligned to RFC 9420 wire model. |
-| 2 | Implement `AuthenticatedContent` and framing signatures | ⬜ Todo | Move proposal/commit payload signing toward authenticated-content structure rather than ad-hoc envelope-only transport metadata. |
-| 3 | Implement transcript hash pipeline | ⬜ Todo | Add confirmed/interim transcript hash updates across commits and proposals per RFC flow. |
-| 4 | Implement confirmation tag verification | ⬜ Todo | Generate and verify commit confirmation tags tied to transcript + key schedule state. |
-| 5 | Implement membership tag verification | ⬜ Todo | Add membership authentication checks for PublicMessage-style processing where required by RFC semantics. |
+| 1 | Implement MLS wire objects (`MLSMessage`, `PublicMessage`, `PrivateMessage`) | ✅ Done | Added `src/mls_wire.rs` with strict codecs for `MlsMessage` (version + wire_format framing), `PublicMessage`, and `PrivateMessage`; includes content-type framing (`Proposal`/`Commit`/`Application` + project `PathUpdate` extension), envelope conversion helpers, and malformed decode tests. |
+| 2 | Implement `AuthenticatedContent` and framing signatures | ✅ Done | Added `src/authenticated_content.rs` with `AuthenticatedContentTbs`/`AuthenticatedContent` sign+verify codecs over `PublicMessage` framing and envelope conversion helpers. Proposal/commit/path DS request signing inputs now prefer authenticated-content hashes (with payload-hash fallback for malformed legacy/misuse test payloads). |
+| 3 | Implement transcript hash pipeline | ✅ Done | Added `src/transcript.rs` with confirmed/interim transcript state, proposal/commit update helpers, and deterministic vectors. Integrated transcript persistence into `ClientGroupState` v4 serialization and wired commit epoch advance to update transcript state. Welcome generation now uses predicted confirmed transcript hash; joiner Welcome validation now checks GroupInfo confirmed transcript hash against reconstructed local transcript state. |
+| 4 | Implement confirmation tag verification | ✅ Done | Added transcript confirmation-tag derivation/verification helpers (`src/transcript.rs`) and integrated them into Welcome flow. Welcome generation now computes `GroupInfo.confirmation_tag` from next-epoch root secret + confirmed transcript hash; joiner-side Welcome validation now verifies confirmation tag against local transcript/key-schedule state and rejects mismatches. |
+| 5 | Implement membership tag verification | 🔄 Current | Add membership authentication checks for PublicMessage-style processing where required by RFC semantics. |
 | 6 | Extend proposal set: `PreSharedKey` | ⬜ Todo | Add proposal type, serialization, validation, commit integration, and tests. |
 | 7 | Extend proposal set: `ReInit` | ⬜ Todo | Add proposal type, state-transition handling, and compatibility checks. |
 | 8 | Extend proposal set: `GroupContextExtensions` | ⬜ Todo | Add proposal structure and group-context update application rules. |
@@ -131,5 +131,5 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 15 | Add RFC conformance test matrix and vectors | ⬜ Todo | Add deterministic vectors + negative cases for wire decode, transcript/confirmation/membership tags, proposals, and key schedule transitions. |
 
 ---
-Current: `Part 9 / Task 1 - Define Welcome/GroupInfo/GroupSecrets hybrid wire structures and codecs`
-Next: `Part 9 / Task 2 - Implement hybrid HPKE-style encryption for Welcome secrets`
+Current: `Part 10 / Task 5 - Implement membership tag verification`
+Next: `Part 10 / Task 6 - Extend proposal set: PreSharedKey`

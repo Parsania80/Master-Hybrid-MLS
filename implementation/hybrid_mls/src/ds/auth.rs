@@ -4,10 +4,7 @@ use ml_dsa::{EncodedSignature, EncodedVerifyingKey, MlDsa65};
 
 use crate::crypto::{HybridSignPubKey, HybridSignature};
 
-pub fn decode_hybrid_sign_pub_key_bytes(
-    classic: &[u8],
-    pq: &[u8],
-) -> Option<HybridSignPubKey> {
+pub fn decode_hybrid_sign_pub_key_bytes(classic: &[u8], pq: &[u8]) -> Option<HybridSignPubKey> {
     if classic.len() != 32 {
         return None;
     }
@@ -82,11 +79,9 @@ mod tests {
         let sig = priv_key.sign(message);
         let sig_b64 = STANDARD.encode(sig.to_bytes());
 
-        let decoded_pub = decode_hybrid_sign_pub_key_bytes(
-            pub_key.classic.as_bytes(),
-            &pub_key.pq.encode(),
-        )
-        .expect("decode pub key");
+        let decoded_pub =
+            decode_hybrid_sign_pub_key_bytes(pub_key.classic.as_bytes(), &pub_key.pq.encode())
+                .expect("decode pub key");
         let decoded_sig = decode_hybrid_signature_b64(&sig_b64).expect("decode signature");
 
         assert!(decoded_sig.verify(&decoded_pub, message));

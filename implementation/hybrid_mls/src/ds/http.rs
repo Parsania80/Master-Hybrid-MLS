@@ -9,19 +9,20 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::thread;
 
-use crate::ds::auth::{decode_hybrid_signature_b64, decode_hybrid_sign_pub_key_bytes};
+use crate::authenticated_content::{
+    commit_authenticated_content_hash, path_update_authenticated_content_hash,
+    proposal_authenticated_content_hash,
+};
+use crate::ds::auth::{decode_hybrid_sign_pub_key_bytes, decode_hybrid_signature_b64};
 use crate::ds::config::{
-    DEFAULT_MAX_BYTES,
-    DEFAULT_MIN_PROPOSALS_PER_COMMIT,
-    DEFAULT_SESSION_MAX_PER_USER,
-    DEFAULT_SESSION_TTL_SECS,
-    StorageConfig,
+    StorageConfig, DEFAULT_MAX_BYTES, DEFAULT_MIN_PROPOSALS_PER_COMMIT,
+    DEFAULT_SESSION_MAX_PER_USER, DEFAULT_SESSION_TTL_SECS,
 };
 use crate::ds::storage::{MessageKind, Storage, StorageError};
 use crate::tree::KeyPackage;
-use sha3::{Digest, Sha3_256};
 use rand::rngs::OsRng;
 use rand::RngCore;
+use sha3::{Digest, Sha3_256};
 
 const DS_CRYPTO_WORKER_STACK_BYTES: usize = 128 * 1024 * 1024;
 
@@ -111,6 +112,7 @@ pub struct SubmitCommitRequest {
     pub session_id: String,
     pub commit_bytes: String,
     pub path_update_bytes: Option<String>,
+    pub welcome_bytes: Option<String>,
     pub signature: String,
 }
 
@@ -212,13 +214,22 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/auth/logout", post(logout))
         .route("/v1/keypackages", post(publish_keypackage))
         .route("/v1/keypackages/:target", get(fetch_keypackage))
-        .route("/v1/groups/:group_id/app-messages", post(submit_app_message))
+        .route(
+            "/v1/groups/:group_id/app-messages",
+            post(submit_app_message),
+        )
         .route("/v1/groups/:group_id/app-messages", get(list_app_messages))
-        .route("/v1/groups/:group_id/app-messages/:message_id", get(fetch_app_message))
+        .route(
+            "/v1/groups/:group_id/app-messages/:message_id",
+            get(fetch_app_message),
+        )
         .route("/v1/groups/:group_id/proposals", post(submit_proposal))
         .route("/v1/groups/:group_id/commits", post(submit_commit))
         .route("/v1/groups/:group_id/messages", get(list_messages))
-        .route("/v1/groups/:group_id/messages/:message_id", get(fetch_group_message))
+        .route(
+            "/v1/groups/:group_id/messages/:message_id",
+            get(fetch_group_message),
+        )
         .with_state(state)
 }
 
@@ -503,7 +514,12 @@ async fn register(
         Err(err) => return err,
     };
 
-    let sign_input = register_signing_input(&req.username, &req.password, &req.classic_pub_key, &req.pq_pub_key);
+    let sign_input = register_signing_input(
+        &req.username,
+        &req.password,
+        &req.classic_pub_key,
+        &req.pq_pub_key,
+    );
     if !verify_with_keys(&classic_pub, &pq_pub, &req.signature, &sign_input) {
         return auth_error("invalid_signature");
     }
@@ -517,13 +533,9 @@ async fn register(
         Err(err) => return storage_error(err),
     };
 
-    if let Err(err) = storage.insert_user(
-        &req.username,
-        &password_hash,
-        &salt,
-        &classic_pub,
-        &pq_pub,
-    ) {
+    if let Err(err) =
+        storage.insert_user(&req.username, &password_hash, &salt, &classic_pub, &pq_pub)
+    {
         return storage_error(err);
     }
 
@@ -536,10 +548,7 @@ async fn register(
         .into_response()
 }
 
-async fn login(
-    State(state): State<ApiState>,
-    Json(req): Json<LoginRequest>,
-) -> impl IntoResponse {
+async fn login(State(state): State<ApiState>, Json(req): Json<LoginRequest>) -> impl IntoResponse {
     let mut storage = match open_storage(&state) {
         Ok(s) => s,
         Err(err) => return storage_error(err),
@@ -587,7 +596,8 @@ async fn login(
         return storage_error(err);
     }
     if state.session_max_per_user > 1 {
-        if let Err(err) = storage.trim_sessions_for_user(&req.username, state.session_max_per_user) {
+        if let Err(err) = storage.trim_sessions_for_user(&req.username, state.session_max_per_user)
+        {
             return storage_error(err);
         }
     }
@@ -602,9 +612,7 @@ async fn login(
     (
         StatusCode::OK,
         headers,
-        Json(LoginResponse {
-            session_id: token,
-        }),
+        Json(LoginResponse { session_id: token }),
     )
         .into_response()
 }
@@ -632,11 +640,7 @@ async fn logout(
         return storage_error(err);
     }
 
-    (
-        StatusCode::OK,
-        Json(LogoutResponse { logged_out: true }),
-    )
-        .into_response()
+    (StatusCode::OK, Json(LogoutResponse { logged_out: true })).into_response()
 }
 
 async fn submit_proposal(
@@ -672,16 +676,19 @@ async fn submit_proposal(
         Err(err) => return storage_error(err),
     };
 
-    (StatusCode::OK, Json(SubmitProposalResponse {
-        accepted: true,
-        pending_proposals: pending,
-        message: MessageSummary {
-            id: stored.id.to_string(),
-            kind: stored.kind.as_str().to_string(),
-            size: stored.size,
-            created_at: stored.created_at,
-        },
-    }))
+    (
+        StatusCode::OK,
+        Json(SubmitProposalResponse {
+            accepted: true,
+            pending_proposals: pending,
+            message: MessageSummary {
+                id: stored.id.to_string(),
+                kind: stored.kind.as_str().to_string(),
+                size: stored.size,
+                created_at: stored.created_at,
+            },
+        }),
+    )
         .into_response()
 }
 
@@ -701,11 +708,24 @@ async fn submit_commit(
         },
         None => None,
     };
+    let welcome_payload = match req.welcome_bytes {
+        Some(ref bytes) => match decode_b64(bytes) {
+            Ok(p) => Some(p),
+            Err(err) => return err,
+        },
+        None => None,
+    };
     if let Err(resp) = verify_request_signature(
         &state,
         &req.username,
         &req.session_id,
-        commit_signing_input(&req.username, &group_id, &commit_payload, path_update_payload.as_deref()),
+        commit_signing_input(
+            &req.username,
+            &group_id,
+            &commit_payload,
+            path_update_payload.as_deref(),
+            welcome_payload.as_deref(),
+        ),
         &req.signature,
     ) {
         return resp;
@@ -745,15 +765,23 @@ async fn submit_commit(
             return storage_error(err);
         }
     }
+    if let Some(welcome_payload) = welcome_payload {
+        if let Err(err) = storage.store_message(&group_id, MessageKind::Welcome, &welcome_payload) {
+            return storage_error(err);
+        }
+    }
 
     if let Err(err) = storage.delete_group_kind(&group_id, MessageKind::Proposal) {
         return storage_error(err);
     }
 
-    (StatusCode::OK, Json(SubmitCommitResponse {
-        accepted: true,
-        commit_id: stored.id.to_string(),
-    }))
+    (
+        StatusCode::OK,
+        Json(SubmitCommitResponse {
+            accepted: true,
+            commit_id: stored.id.to_string(),
+        }),
+    )
         .into_response()
 }
 
@@ -791,24 +819,25 @@ async fn list_messages(
         Err(err) => return storage_error(err),
     };
 
-    let kind = match query.kind.as_deref() {
-        None | Some("any") => None,
-        Some("proposal") => Some(MessageKind::Proposal),
-        Some("commit") => Some(MessageKind::Commit),
-        Some("path_update") => Some(MessageKind::PathUpdate),
-        Some("application") => Some(MessageKind::Application),
-        Some(_) => {
-            return (
+    let kind =
+        match query.kind.as_deref() {
+            None | Some("any") => None,
+            Some("proposal") => Some(MessageKind::Proposal),
+            Some("commit") => Some(MessageKind::Commit),
+            Some("path_update") => Some(MessageKind::PathUpdate),
+            Some("welcome") => Some(MessageKind::Welcome),
+            Some("application") => Some(MessageKind::Application),
+            Some(_) => return (
                 StatusCode::BAD_REQUEST,
                 Json(ApiError {
                     code: "invalid_kind".to_string(),
-                    message: "kind must be proposal, commit, path_update, application, or any"
-                        .to_string(),
+                    message:
+                        "kind must be proposal, commit, path_update, welcome, application, or any"
+                            .to_string(),
                 }),
             )
-                .into_response()
-        }
-    };
+                .into_response(),
+        };
 
     let items = match storage.list_group_kind(&group_id, kind, limit, query.before_id) {
         Ok(list) => list,
@@ -934,14 +963,12 @@ async fn fetch_app_message(
         Ok(s) => s,
         Err(err) => return storage_error(err),
     };
-    let Some(payload) = (match storage.load_message_group_kind(
-        message_id,
-        &group_id,
-        MessageKind::Application,
-    ) {
-        Ok(res) => res,
-        Err(err) => return storage_error(err),
-    }) else {
+    let Some(payload) =
+        (match storage.load_message_group_kind(message_id, &group_id, MessageKind::Application) {
+            Ok(res) => res,
+            Err(err) => return storage_error(err),
+        })
+    else {
         return (
             StatusCode::NOT_FOUND,
             Json(ApiError {
@@ -1091,7 +1118,8 @@ async fn fetch_keypackage(
     };
 
     let sign_input = keypackage_fetch_signing_input(username, &target);
-    if let Err(resp) = verify_request_signature(&state, username, session_id, sign_input, signature) {
+    if let Err(resp) = verify_request_signature(&state, username, session_id, sign_input, signature)
+    {
         return resp;
     }
 
@@ -1136,18 +1164,16 @@ fn not_implemented(endpoint: &str) -> (StatusCode, Json<ApiError>) {
 }
 
 fn decode_b64(value: &str) -> Result<Vec<u8>, Response> {
-    STANDARD
-        .decode(value)
-        .map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    code: "invalid_base64".to_string(),
-                    message: "payload must be base64".to_string(),
-                }),
-            )
-                .into_response()
-        })
+    STANDARD.decode(value).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                code: "invalid_base64".to_string(),
+                message: "payload must be base64".to_string(),
+            }),
+        )
+            .into_response()
+    })
 }
 
 fn storage_error(err: StorageError) -> Response {
@@ -1185,13 +1211,7 @@ fn verify_request_signature(
     message: Vec<u8>,
     signature_b64: &str,
 ) -> Result<(), Response> {
-    verify_authenticated_request(
-        state,
-        username,
-        session_id,
-        message,
-        signature_b64,
-    )
+    verify_authenticated_request(state, username, session_id, message, signature_b64)
 }
 
 fn verify_authenticated_request(
@@ -1217,7 +1237,8 @@ fn verify_authenticated_request(
         return Err(auth_error("session_expired"));
     }
 
-    let Some((classic_pub, pq_pub)) = storage.get_user_keys(username).map_err(storage_error)? else {
+    let Some((classic_pub, pq_pub)) = storage.get_user_keys(username).map_err(storage_error)?
+    else {
         return Err(auth_error("unknown_user"));
     };
 
@@ -1228,11 +1249,7 @@ fn verify_authenticated_request(
     }
 }
 
-fn verify_session_only(
-    state: &ApiState,
-    username: &str,
-    session_id: &str,
-) -> Result<(), Response> {
+fn verify_session_only(state: &ApiState, username: &str, session_id: &str) -> Result<(), Response> {
     let mut storage = open_storage(state).map_err(storage_error)?;
     let now = now_unix();
     let Some((session_username, expires_at)) =
@@ -1300,7 +1317,8 @@ where
 
 fn fetch_user_keys(state: &ApiState, username: &str) -> Result<(Vec<u8>, Vec<u8>), Response> {
     let storage = open_storage(state).map_err(storage_error)?;
-    let Some((classic_pub, pq_pub)) = storage.get_user_keys(username).map_err(storage_error)? else {
+    let Some((classic_pub, pq_pub)) = storage.get_user_keys(username).map_err(storage_error)?
+    else {
         return Err(auth_error("unknown_user"));
     };
     Ok((classic_pub, pq_pub))
@@ -1319,7 +1337,7 @@ fn verify_password(password: &str, salt: &[u8], expected: &[u8]) -> bool {
 }
 
 fn proposal_signing_input(username: &str, group_id: &str, proposal: &[u8]) -> Vec<u8> {
-    let hash = hash_payload(proposal);
+    let hash = proposal_authenticated_content_hash(group_id, proposal);
     let mut out = Vec::new();
     out.extend_from_slice(b"proposal|");
     out.extend_from_slice(username.as_bytes());
@@ -1335,8 +1353,9 @@ fn commit_signing_input(
     group_id: &str,
     commit: &[u8],
     path_update: Option<&[u8]>,
+    welcome: Option<&[u8]>,
 ) -> Vec<u8> {
-    let commit_hash = hash_payload(commit);
+    let commit_hash = commit_authenticated_content_hash(group_id, commit);
     let mut out = Vec::new();
     out.extend_from_slice(b"commit|");
     out.extend_from_slice(username.as_bytes());
@@ -1346,8 +1365,13 @@ fn commit_signing_input(
     out.extend_from_slice(&commit_hash);
     out.extend_from_slice(b"|");
     if let Some(path) = path_update {
-        let path_hash = hash_payload(path);
+        let path_hash = path_update_authenticated_content_hash(group_id, path);
         out.extend_from_slice(&path_hash);
+    }
+    out.extend_from_slice(b"|");
+    if let Some(welcome) = welcome {
+        let welcome_hash = hash_payload(welcome);
+        out.extend_from_slice(&welcome_hash);
     }
     out
 }
@@ -1507,19 +1531,19 @@ fn generate_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{SecretKey, SigningKey as EdSigningKey};
     use axum::body::Body;
     use axum::http::Request;
+    use ed25519_dalek::{SecretKey, SigningKey as EdSigningKey};
     use http_body_util::BodyExt;
-    use ml_kem::Seed;
     use ml_dsa::{KeyGen, MlDsa65};
+    use ml_kem::Seed;
     use rand::{rngs::OsRng, RngCore};
     use serde_urlencoded;
     use tower::util::ServiceExt;
     use x25519_dalek::{PublicKey as X25519Pub, StaticSecret as X25519Priv};
 
-    use crate::crypto::{HybridSignPrivKey, HybridSignPubKey};
     use crate::crypto::{HybridPublicKey, KyberPriv};
+    use crate::crypto::{HybridSignPrivKey, HybridSignPubKey};
     use crate::tree::KeyPackage;
 
     #[test]
@@ -1559,10 +1583,8 @@ mod tests {
     }
 
     fn temp_state(label: &str) -> (ApiState, std::path::PathBuf) {
-        let base = std::env::temp_dir().join(format!(
-            "hybrid-mls-http-{label}-{}",
-            rand::random::<u64>()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("hybrid-mls-http-{label}-{}", rand::random::<u64>()));
         let db_path = base.join("ds.sqlite");
         let mut state = ApiState::default();
         state.storage = StorageConfig::new(&base, &db_path);
@@ -1593,7 +1615,11 @@ mod tests {
         (priv_key, pub_key, classic_b64, pq_b64)
     }
 
-    fn make_keypackage(seed: u8, identity: HybridSignPubKey, signer: &HybridSignPrivKey) -> KeyPackage {
+    fn make_keypackage(
+        seed: u8,
+        identity: HybridSignPubKey,
+        signer: &HybridSignPrivKey,
+    ) -> KeyPackage {
         let classic_kem_priv = X25519Priv::from([seed; 32]);
         let classic_kem_pub = X25519Pub::from(&classic_kem_priv);
 
@@ -1682,15 +1708,8 @@ mod tests {
 
         let username = "alice";
         let password = "secret";
-        let session_id = register_and_login(
-            &app,
-            username,
-            password,
-            &classic_b64,
-            &pq_b64,
-            &priv_key,
-        )
-        .await;
+        let session_id =
+            register_and_login(&app, username, password, &classic_b64, &pq_b64, &priv_key).await;
 
         let keypackage = make_keypackage(7, pub_key.clone(), &priv_key);
         let kp_bytes = keypackage.encode();
@@ -1756,15 +1775,8 @@ mod tests {
 
         let username = "bob";
         let password = "secret";
-        let session_id = register_and_login(
-            &app,
-            username,
-            password,
-            &classic_b64,
-            &pq_b64,
-            &priv_key,
-        )
-        .await;
+        let session_id =
+            register_and_login(&app, username, password, &classic_b64, &pq_b64, &priv_key).await;
 
         let (other_priv, other_pub, _classic_b64, _pq_b64) = make_signing_keys(&mut rng);
         let keypackage = make_keypackage(9, other_pub.clone(), &other_priv);
@@ -1803,15 +1815,8 @@ mod tests {
         let (priv_key, _pub_key, classic_b64, pq_b64) = make_signing_keys(&mut rng);
         let username = "carol";
         let password = "secret";
-        let session_id = register_and_login(
-            &app,
-            username,
-            password,
-            &classic_b64,
-            &pq_b64,
-            &priv_key,
-        )
-        .await;
+        let session_id =
+            register_and_login(&app, username, password, &classic_b64, &pq_b64, &priv_key).await;
 
         let group_id = "group-app";
         let payload = b"hello-app";
@@ -1906,15 +1911,8 @@ mod tests {
         let (priv_key, _pub_key, classic_b64, pq_b64) = make_signing_keys(&mut rng);
         let username = "alice";
         let password = "secret";
-        let session_1 = register_and_login(
-            &app,
-            username,
-            password,
-            &classic_b64,
-            &pq_b64,
-            &priv_key,
-        )
-        .await;
+        let session_1 =
+            register_and_login(&app, username, password, &classic_b64, &pq_b64, &priv_key).await;
 
         let mut config = state.storage.clone();
         config.max_bytes = state.max_bytes;
@@ -1953,14 +1951,20 @@ mod tests {
         let mut config = state.storage.clone();
         config.max_bytes = state.max_bytes;
         let storage = Storage::open(config).expect("open storage");
-        assert!(storage.get_session(&session_1).expect("get session1").is_none());
-        assert!(storage.get_session(&session_2).expect("get session2").is_some());
+        assert!(storage
+            .get_session(&session_1)
+            .expect("get session1")
+            .is_none());
+        assert!(storage
+            .get_session(&session_2)
+            .expect("get session2")
+            .is_some());
 
         let _ = std::fs::remove_dir_all(base);
     }
 
     #[tokio::test]
-    async fn group_message_fetch_commit_and_path_roundtrip() {
+    async fn group_message_fetch_commit_path_and_welcome_roundtrip() {
         let (mut state, base) = temp_state("group-fetch");
         state.min_proposals_per_commit = 1;
         let app = router(state.clone());
@@ -1969,15 +1973,8 @@ mod tests {
         let (priv_key, _pub_key, classic_b64, pq_b64) = make_signing_keys(&mut rng);
         let username = "diana";
         let password = "secret";
-        let session_id = register_and_login(
-            &app,
-            username,
-            password,
-            &classic_b64,
-            &pq_b64,
-            &priv_key,
-        )
-        .await;
+        let session_id =
+            register_and_login(&app, username, password, &classic_b64, &pq_b64, &priv_key).await;
 
         let group_id = "group-fetch";
 
@@ -2006,13 +2003,21 @@ mod tests {
 
         let commit_payload = b"commit-1";
         let path_payload = b"path-1";
-        let sign_input = commit_signing_input(username, group_id, commit_payload, Some(path_payload));
+        let welcome_payload = b"welcome-1";
+        let sign_input = commit_signing_input(
+            username,
+            group_id,
+            commit_payload,
+            Some(path_payload),
+            Some(welcome_payload),
+        );
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let commit_req = serde_json::json!({
             "username": username,
             "session_id": session_id.clone(),
             "commit_bytes": STANDARD.encode(commit_payload),
             "path_update_bytes": STANDARD.encode(path_payload),
+            "welcome_bytes": STANDARD.encode(welcome_payload),
             "signature": signature,
         });
         let resp = app
@@ -2053,7 +2058,11 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let commit_id = json["messages"][0]["id"].as_str().unwrap().parse::<i64>().unwrap();
+        let commit_id = json["messages"][0]["id"]
+            .as_str()
+            .unwrap()
+            .parse::<i64>()
+            .unwrap();
 
         let sign_input = fetch_message_signing_input(username, group_id, commit_id);
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
@@ -2068,7 +2077,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/v1/groups/{group_id}/messages/{commit_id}?{query}"))
+                    .uri(format!(
+                        "/v1/groups/{group_id}/messages/{commit_id}?{query}"
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2078,7 +2089,9 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["kind"].as_str().unwrap(), "commit");
-        let decoded = STANDARD.decode(json["message_bytes"].as_str().unwrap()).unwrap();
+        let decoded = STANDARD
+            .decode(json["message_bytes"].as_str().unwrap())
+            .unwrap();
         assert_eq!(decoded, commit_payload);
 
         let sign_input = list_signing_input(username, group_id, 10, "path_update", None);
@@ -2105,7 +2118,11 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let path_id = json["messages"][0]["id"].as_str().unwrap().parse::<i64>().unwrap();
+        let path_id = json["messages"][0]["id"]
+            .as_str()
+            .unwrap()
+            .parse::<i64>()
+            .unwrap();
 
         let sign_input = fetch_message_signing_input(username, group_id, path_id);
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
@@ -2116,6 +2133,7 @@ mod tests {
         ])
         .unwrap();
         let resp = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -2129,8 +2147,69 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["kind"].as_str().unwrap(), "path_update");
-        let decoded = STANDARD.decode(json["message_bytes"].as_str().unwrap()).unwrap();
+        let decoded = STANDARD
+            .decode(json["message_bytes"].as_str().unwrap())
+            .unwrap();
         assert_eq!(decoded, path_payload);
+
+        let sign_input = list_signing_input(username, group_id, 10, "welcome", None);
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
+        let query = serde_urlencoded::to_string([
+            ("username", username),
+            ("session_id", session_id.as_str()),
+            ("signature", signature.as_str()),
+            ("limit", "10"),
+            ("kind", "welcome"),
+        ])
+        .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/groups/{group_id}/messages?{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let welcome_id = json["messages"][0]["id"]
+            .as_str()
+            .unwrap()
+            .parse::<i64>()
+            .unwrap();
+
+        let sign_input = fetch_message_signing_input(username, group_id, welcome_id);
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
+        let query = serde_urlencoded::to_string([
+            ("username", username),
+            ("session_id", session_id.as_str()),
+            ("signature", signature.as_str()),
+        ])
+        .unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/v1/groups/{group_id}/messages/{welcome_id}?{query}"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"].as_str().unwrap(), "welcome");
+        let decoded = STANDARD
+            .decode(json["message_bytes"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(decoded, welcome_payload);
 
         let _ = std::fs::remove_dir_all(base);
     }

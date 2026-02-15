@@ -17,6 +17,14 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 - `src/crypto.rs` implements hybrid KEM, hybrid signatures, serialization helpers, and HPKE-style path secret encryption.
 - `src/tree.rs` implements the ratchet tree, parent hashes, node resolution, proposals/commits, and path update logic.
 - `src/key_schedule.rs` implements persisted epoch-secret tree state used to track per-epoch root secrets and derive epoch-level handshake/application/exporter secrets.
+- `src/mls_wire.rs` implements RFC-style wire model skeletons for `MlsMessage`, `PublicMessage`, and `PrivateMessage` with strict framing/codec checks.
+- `src/authenticated_content.rs` implements `AuthenticatedContent` framing/signature scaffolding over `PublicMessage`, including sign/verify, strict codecs, and envelope conversion helpers.
+- `src/transcript.rs` implements confirmed/interim transcript hash state and update helpers for proposal/commit-driven transcript progression.
+- Confirmation-tag verification is now wired into Welcome handling: sender computes `GroupInfo.confirmation_tag` from `(epoch root secret, confirmed transcript hash)` and joiner validates it during Welcome processing.
+- `src/welcome.rs` implements RFC-style Welcome wire structures/codecs (`Welcome`, `EncryptedGroupSecrets`, `GroupSecrets`, `GroupInfo`) with strict decode behavior.
+- `src/welcome.rs` now also provides hybrid HPKE-style Welcome secret protection (`EncryptedGroupSecrets::encrypt_for_recipient` / `decrypt_group_secrets`) bound to group+epoch+key-ref context.
+- Committer flows now generate Welcome payloads when a commit includes `Add` proposals (`ds_client create-commit` and UI `commit-from-pending`).
+- DS transport now persists Welcome payloads as `kind=welcome` via commit submission (`welcome_bytes`) and allows signed list/fetch using `kind=welcome`.
 
 **Hybrid Cryptography Stack**
 
@@ -63,6 +71,18 @@ Field-level malformed tests now cover `PathSecretCiphertext::decode` rejection f
 | `path secret derivation` | Context label for direct-path secret evolution | Generation/position context for tree derivation | Section 9.1 | Current context uses `(parent_index, level)`; RFC tree-ratchet context is generation-based (`uint32`, big-endian). |
 | `path secret encryption` | Context label for per-recipient path ciphertext KEM+AEAD | `EncryptWithLabel` context = provisional `GroupContext` | Section 7.6 | Current context is structural tuple `(sender,parent,recipient)`; RFC target is full provisional `GroupContext`. |
 
+**RFC 9420 Welcome Mapping (Compact)**
+
+| Current Object | RFC 9420 Term | RFC Section |
+| --- | --- | --- |
+| `welcome::Welcome` | `Welcome` wire struct (`version`, `cipher_suite`, `secrets`, `encrypted_group_info`) | Section 12.4.1 |
+| `welcome::EncryptedGroupSecrets` | `EncryptedGroupSecrets` wire struct (`new_member`, `encrypted_group_secrets`) | Section 12.4.2 |
+| `welcome::GroupSecrets` | `GroupSecrets` payload (`joiner_secret`, optional `path_secret`, `psk_ids`) | Section 12.4.3.1 |
+| `welcome::GroupInfo` | `GroupInfo` payload carried in `encrypted_group_info` | Section 12.4.3.2 |
+| `build_welcome_for_commit` derivations | `joiner_secret` / welcome key-schedule linkage | Section 8.4 + Section 12.4.3 |
+
+Hybrid note: this project keeps RFC field semantics but uses the project’s hybrid KEM/signature stack for protection/signing.
+
 **Build and Test**
 ```bash
 cargo check
@@ -82,6 +102,9 @@ This suite now includes replay safety, strict-path negative cases, and a DS-back
 It now also includes a DS-backed membership-change chain (`A adds C -> B update -> A removes C`) with final convergence checks for surviving members.
 It now also includes DS-backed malformed payload submission coverage: malformed commit bytes are skipped without state advance, and malformed path-update bytes trigger strict receiver rejection.
 It also includes malformed proposal payload sync-impact coverage: malformed proposals alone do not advance sync state, and malformed proposal traffic does not block valid commit synchronization.
+It now includes a CLI-driven Welcome transport integration case: submit commit+path+welcome and verify DS `list-messages --kind welcome` returns the stored Welcome record.
+It now includes a DS-backed Welcome payload stability test that verifies submit/fetch round-trip returns byte-identical Welcome payloads.
+It now includes negative auto-bootstrap coverage for Welcome-first sync: wrong base members, wrong receiver private key, and tampered Welcome payload are all rejected.
 
 Deterministic key-schedule vectors (fixed inputs/expected outputs):
 ```bash
@@ -89,6 +112,32 @@ cargo test --lib deterministic_vector_alpha_matches_expected
 cargo test --lib deterministic_vector_beta_matches_expected
 ```
 These lock `init_secret`, `root_secret`, and derived `handshake/application/exporter` values to catch accidental derivation drift.
+
+Deterministic Welcome vectors:
+```bash
+cargo test --lib deterministic_vector_group_secrets_encoding_matches_expected
+cargo test --lib deterministic_vector_welcome_encoding_matches_expected
+cargo test --bin ds_client deterministic_vector_welcome_joiner_secret_matches_expected
+```
+These lock Welcome-related wire bytes/hash and joiner-secret derivation behavior to catch accidental drift in onboarding flow.
+
+MLS wire model tests:
+```bash
+cargo test --lib mls_wire::tests
+```
+These cover strict public/private wire framing, round-trip encoding, envelope conversions, and malformed decode rejection.
+
+Authenticated content tests:
+```bash
+cargo test --lib authenticated_content::tests
+```
+These cover `AuthenticatedContent` sign/verify, round-trip codec behavior, tamper/trailing-byte rejection, and hash behavior (authenticated-content hash with payload-hash fallback).
+
+Transcript pipeline tests:
+```bash
+cargo test --lib transcript::tests
+```
+These cover transcript state round-trip, proposal/commit hash progression, and deterministic transcript vectors.
 
 **Example Program**
 Run a minimal in-memory flow (group creation + Add commit + path update processing):
@@ -161,8 +210,8 @@ For an added user (for example Peyman), visibility is commit-driven: after creat
 Troubleshooting: if the added user still sees no group, check that the user has a local tracked group entry and a valid local group-state baseline for that group. Current UI sync operates on locally tracked groups and does not yet auto-discover/join unknown groups solely from DS message history.
 The group Actions panel now includes `Create + Submit Commit` to build a real commit from local pending proposals and submit it to DS in one step.
 The same panel now includes `Sync + Apply Latest` to fetch DS commits/path updates and apply them into local `ClientGroupState`, so newly added members can materialize membership after commit publication.
-The same panel now also includes `Join from latest Add commit` for joiner onboarding when local group state does not exist yet.
-Joiner onboarding expects `Onboarding base members` as comma-separated usernames in pre-commit leaf order (for example `parsania` in a one-member base tree) and uses the joiner receiver-private file to locate the correct Add commit/path update pair.
+The same panel now also includes `Join from latest Welcome` for joiner onboarding when local group state does not exist yet.
+Joiner onboarding expects `Onboarding base members` as comma-separated usernames in pre-commit leaf order (for example `parsania` in a one-member base tree) and uses the joiner receiver-private file to locate a valid DS `welcome+commit+path_update` tuple.
 UI bootstrap now publishes the creator bootstrap KeyPackage to DS and stores the matching receiver-private material locally so joiner onboarding has a DS-visible base member key package source.
 `Sync + Apply Latest` can auto-pick the latest locally stored receiver-private file from the user keypackage library, or accept a manual receiver-private path.
 The group page top bar now also includes a quick `Sync + Apply Latest` button next to logout.
@@ -284,10 +333,12 @@ cargo run --bin ds_client -- keygen --out /path/to/alice-kem.json
 cargo run --bin ds_client --state /path/to/alice-client.json -- keypackage-export --kem-file /path/to/alice-kem.json --keypackage-out /path/to/alice.kp --receiver-private-out /path/to/alice-recv.json
 cargo run --bin ds_client -- bootstrap-group-state --group-id group1 --member-keypackage /path/to/alice.kp --member-keypackage /path/to/bob.kp --own-leaf 0 --out /path/to/alice-group-state.bin
 cargo run --bin ds_client -- join-from-commit --base-member-keypackage /path/to/alice.kp --commit-file /path/to/commit.bin --path-update-file /path/to/path-update.bin --receiver-private-file /path/to/bob-recv.json --out /path/to/bob-group-state.bin
+cargo run --bin ds_client -- join-from-welcome --base-member-keypackage /path/to/alice.kp --commit-file /path/to/commit.bin --path-update-file /path/to/path-update.bin --welcome-file /path/to/welcome.bin --receiver-private-file /path/to/bob-recv.json --out /path/to/bob-group-state.bin
 cargo run --bin ds_client --state /path/to/alice-client.json -- fetch-and-apply-latest --group-state /path/to/alice-group-state.bin --receiver-private-file /path/to/alice-recv.json --limit 100
+cargo run --bin ds_client --state /path/to/bob-client.json -- fetch-and-apply-latest --group-state /path/to/bob-group-state.bin --group-id group1 --base-member-keypackage /path/to/alice.kp --receiver-private-file /path/to/bob-recv.json --limit 100
 cargo run --bin ds_client --state /path/to/alice-client.json -- fetch-and-apply-latest --group-state /path/to/alice-group-state.bin --receiver-private-file /path/to/alice-recv.json --watch --poll-interval-ms 2000
 cargo run --bin ds_client -- submit-proposal --base-url http://127.0.0.1:3000 --group-id group1 --proposal-file /path/to/proposal.bin
-cargo run --bin ds_client -- submit-commit --base-url http://127.0.0.1:3000 --group-id group1 --commit-file /path/to/commit.bin --path-update-file /path/to/path.bin
+cargo run --bin ds_client -- submit-commit --base-url http://127.0.0.1:3000 --group-id group1 --commit-file /path/to/commit.bin --path-update-file /path/to/path.bin --welcome-file /path/to/welcome.bin
 cargo run --bin ds_client -- list-messages --base-url http://127.0.0.1:3000 --group-id group1 --limit 50 --kind commit
 cargo run --bin ds_client -- publish-key-package --base-url http://127.0.0.1:3000 --keypackage-file /path/to/keypackage.bin
 cargo run --bin ds_client -- fetch-key-package --base-url http://127.0.0.1:3000 --target alice --out /path/to/keypackage.bin
@@ -297,7 +348,7 @@ cargo run --bin ds_client -- fetch-app-message --base-url http://127.0.0.1:3000 
 cargo run --bin ds_client -- create-add-proposal --group-state /path/to/group-state.bin --keypackage-file /path/to/new-member.kp --out /path/to/add.proposal.bin
 cargo run --bin ds_client -- create-update-proposal --group-state /path/to/group-state.bin --keypackage-file /path/to/new-self.kp --out /path/to/update.proposal.bin --target-leaf 1
 cargo run --bin ds_client -- create-remove-proposal --group-state /path/to/group-state.bin --remove-leaf 2 --out /path/to/remove.proposal.bin
-cargo run --bin ds_client -- create-commit --group-state /path/to/group-state.bin --commit-out /path/to/commit.bin --path-update-out /path/to/path-update.bin
+cargo run --bin ds_client -- create-commit --group-state /path/to/group-state.bin --commit-out /path/to/commit.bin --path-update-out /path/to/path-update.bin --welcome-out /path/to/welcome.bin
 cargo run --bin ds_client -- apply-received-commit --group-state /path/to/group-state.bin --commit-file /path/to/commit.bin --path-update-file /path/to/path-update.bin --receiver-private-file /path/to/receiver-private.json --derived-out /path/to/derived.json
 cargo run --bin ds_client -- show-derived-secrets --group-state /path/to/group-state.bin --epoch 2 --include-root --out /path/to/epoch2-secrets.json
 ```
@@ -306,9 +357,12 @@ The client stores signing keys in `ds-client.json` by default and can now:
 - Export a signed MLS `KeyPackage` plus receiver private material (`keypackage-export`) using client identity keys from `--state`.
 - Bootstrap initial local group state from ordered member key packages (`bootstrap-group-state`).
 - Join a group as a newly-added member from commit/path payloads (`join-from-commit`), with optional automatic leaf detection from receiver private key.
+- Join a group as a newly-added member with Welcome validation (`join-from-welcome`), which checks decryptable `GroupSecrets`, validates Welcome `GroupInfo` against reconstructed local state (`group_id`, `epoch`, `tree_hash`, `signer_leaf`), and then persists state.
 - Sync and apply DS commits automatically (`fetch-and-apply-latest`) by listing commit/path update messages, fetching payload bytes, and applying in epoch order.
+- `fetch-and-apply-latest` can now bootstrap an unknown local group state from DS Welcome stream when `--group-state` does not exist (requires `--group-id`, `--base-member-keypackage`, and `--receiver-private-file`).
 - Build metadata-enveloped proposals from `ClientGroupState` files.
-- Build a commit + path update from queued pending proposals (`create-commit`), write commit/path envelopes to disk, apply the commit locally, clear pending proposals, and increment the local epoch.
+- Build a commit + path update from queued pending proposals (`create-commit`), write commit/path envelopes to disk, generate a Welcome payload when Add proposals are present, apply the commit locally, clear pending proposals, and increment the local epoch.
+- Submit commit transport now supports optional Welcome payload upload (`submit-commit --welcome-file ...`), and DS group-message listing accepts `kind=welcome`.
 - Apply received commit/path envelopes on receivers (`apply-received-commit`) with metadata checks (`group_id`, `epoch`, `sender_leaf`) and optional path-secret derivation.
 - Inspect epoch key-schedule outputs for demos with `show-derived-secrets` (handshake/application/exporter and optional root secret).
 - Epoch transitions now also advance persisted key-schedule state (`KeyScheduleState`) using commit-context inputs.
@@ -339,11 +393,12 @@ Group bootstrap notes:
 Joiner onboarding notes:
 - `join-from-commit` expects base pre-commit members via `--base-member-keypackage` (ordered by leaf index before the add commit).
 - If `--own-leaf` is omitted, the CLI tries to infer it by matching receiver private key to a leaf public key after commit apply.
-- RFC 9420 `Welcome` message handling is not implemented yet; current onboarding is commit/path-update based (`join-from-commit` in CLI, `join-from-latest` in UI gateway).
+- Welcome generation and transport are implemented; CLI has `join-from-welcome`, and UI `join-from-latest` now performs Welcome-first onboarding with commit/path material matching and Welcome validation.
 
 Sync notes:
 - `fetch-and-apply-latest` requires a DS account state in `--state` for request signing.
 - It applies only commits matching the local epoch sequence and stops on gaps.
+- For unknown groups, it can auto-bootstrap from Welcome before normal commit/path apply; when no decryptable Welcome is found, non-watch mode fails closed.
 - Sync now validates commit envelope metadata strictly (`group_id`, `epoch`, `sender_leaf`) before apply and skips malformed/non-matching records.
 - DS commit/path message IDs are sorted, deduplicated, and sanitized before processing.
 - Path updates are selected by metadata match to the commit (not only by neighboring message ID).

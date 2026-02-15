@@ -1,27 +1,17 @@
-use x25519_dalek::{PublicKey as X25519Pub, StaticSecret as X25519Priv};
-use ml_kem::{
-    MlKem768,
-    EncapsulationKey,
-    DecapsulationKey,
-    Ciphertext,
-    Decapsulate,
-    Encapsulate,
-    KeyExport,
-};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Key, Nonce,
 };
+use ed25519_dalek::{
+    Signature as EdSig, Signer, SigningKey as EdSecret, Verifier, VerifyingKey as EdPublic,
+};
+use ml_dsa::{EncodedSignature, MlDsa65}; // Dilithium3 (NIST Level 3)
+use ml_kem::{
+    Ciphertext, Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey, KeyExport, MlKem768,
+};
 use rand_core::{CryptoRng, Rng};
 use sha3::{Digest, Sha3_256};
-use ed25519_dalek::{
-    SigningKey as EdSecret,
-    VerifyingKey as EdPublic,
-    Signature as EdSig,
-    Signer,
-    Verifier,
-};
-use ml_dsa::{MlDsa65}; // Dilithium3 (NIST Level 3)
+use x25519_dalek::{PublicKey as X25519Pub, StaticSecret as X25519Priv};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 // --- HYBRID KEM (Encryption) ---
@@ -48,7 +38,7 @@ impl HybridPublicKey {
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct HybridPrivateKey {
     pub classic: X25519Priv,
-    #[zeroize(skip)] 
+    #[zeroize(skip)]
     pub pq: KyberPriv,
 }
 
@@ -95,23 +85,8 @@ pub fn hybrid_kem_decapsulate(
 }
 
 /// Encrypt a 32-byte path secret with HPKE-style context binding.
-pub fn encrypt_path_secret(
-    shared_secret: &[u8],
-    aad: &[u8],
-    path_secret: &[u8; 32],
-) -> Vec<u8> {
-    let (key_bytes, nonce_bytes) = derive_aead_key_nonce(shared_secret, aad);
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(&key_bytes));
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    cipher
-        .encrypt(
-            nonce,
-            Payload {
-                msg: path_secret,
-                aad,
-            },
-        )
-        .expect("path secret encryption failed")
+pub fn encrypt_path_secret(shared_secret: &[u8], aad: &[u8], path_secret: &[u8; 32]) -> Vec<u8> {
+    encrypt_hpke_payload(shared_secret, aad, path_secret)
 }
 
 /// Decrypt a 32-byte path secret with HPKE-style context binding.
@@ -120,10 +95,41 @@ pub fn decrypt_path_secret(
     aad: &[u8],
     ciphertext: &[u8],
 ) -> Option<[u8; 32]> {
+    let plaintext = decrypt_hpke_payload(shared_secret, aad, ciphertext)?;
+    if plaintext.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&plaintext);
+    Some(out)
+}
+
+/// Encrypt an arbitrary payload with the same HPKE-style key/nonce derivation.
+pub fn encrypt_hpke_payload(shared_secret: &[u8], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
     let (key_bytes, nonce_bytes) = derive_aead_key_nonce(shared_secret, aad);
     let cipher = ChaCha20Poly1305::new(Key::from_slice(&key_bytes));
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let plaintext = cipher
+    cipher
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .expect("hpke payload encryption failed")
+}
+
+/// Decrypt an arbitrary payload with the same HPKE-style key/nonce derivation.
+pub fn decrypt_hpke_payload(
+    shared_secret: &[u8],
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> Option<Vec<u8>> {
+    let (key_bytes, nonce_bytes) = derive_aead_key_nonce(shared_secret, aad);
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(&key_bytes));
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    cipher
         .decrypt(
             nonce,
             Payload {
@@ -131,13 +137,7 @@ pub fn decrypt_path_secret(
                 aad,
             },
         )
-        .ok()?;
-    if plaintext.len() != 32 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&plaintext);
-    Some(out)
+        .ok()
 }
 
 fn hybrid_kdf(classic: &[u8], pq: &[u8], context: &[u8]) -> [u8; 32] {
@@ -187,7 +187,7 @@ pub struct HybridSignPubKey {
     pub pq: DilithiumPublic,
 }
 
-#[derive(Clone)] 
+#[derive(Clone)]
 pub struct HybridSignPrivKey {
     pub classic: EdSecret,
     pub pq: DilithiumSecret,
@@ -199,7 +199,7 @@ impl HybridSignPrivKey {
         let classic_sig = self.classic.sign(message);
         // try_sign ensures we handle potential RNG failures
         let pq_sig = self.pq.try_sign(message).expect("Dilithium signing failed");
-        
+
         HybridSignature {
             classic: classic_sig,
             pq: pq_sig,
@@ -228,6 +228,25 @@ impl HybridSignature {
         out.extend_from_slice(&self.classic.to_bytes());
         out.extend_from_slice(&self.pq.encode());
         out
+    }
+
+    /// Decode the hybrid signature (Ed25519 || ML-DSA).
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 64 {
+            return None;
+        }
+        let mut classic = [0u8; 64];
+        classic.copy_from_slice(&bytes[..64]);
+        let classic_sig = EdSig::from_bytes(&classic);
+
+        let pq_bytes = &bytes[64..];
+        let pq_enc: EncodedSignature<MlDsa65> = pq_bytes.try_into().ok()?;
+        let pq_sig = ml_dsa::Signature::<MlDsa65>::decode(&pq_enc)?;
+
+        Some(Self {
+            classic: classic_sig,
+            pq: pq_sig,
+        })
     }
 }
 
@@ -318,8 +337,8 @@ mod tests {
         let payload = encrypt_path_secret(&shared_enc, context, &path_secret);
 
         let shared_dec = hybrid_kem_decapsulate(&private_key, &ct, context);
-        let decrypted = decrypt_path_secret(&shared_dec, context, &payload)
-            .expect("decrypt failed");
+        let decrypted =
+            decrypt_path_secret(&shared_dec, context, &payload).expect("decrypt failed");
 
         assert_eq!(shared_enc, shared_dec);
         assert_eq!(decrypted, path_secret);
@@ -353,5 +372,38 @@ mod tests {
         let shared_bad = hybrid_kem_decapsulate(&private_key, &ct, ctx_bad);
         assert_ne!(shared_enc, shared_bad);
         assert!(decrypt_path_secret(&shared_bad, ctx_bad, &payload).is_none());
+    }
+
+    #[test]
+    fn hpke_payload_roundtrip_and_tamper_rejection() {
+        let mut rng = TestRng(0x1234567812345678);
+
+        let classic_priv = X25519Priv::from([5u8; 32]);
+        let classic_pub = X25519Pub::from(&classic_priv);
+        let kyber_priv = KyberPriv::from_seed(Seed::from([6u8; 64]));
+        let kyber_pub = kyber_priv.encapsulation_key().clone();
+
+        let public_key = HybridPublicKey {
+            classic: classic_pub,
+            pq: kyber_pub,
+        };
+        let private_key = HybridPrivateKey {
+            classic: classic_priv,
+            pq: kyber_priv,
+        };
+
+        let context = b"welcome-group-secrets";
+        let plaintext = b"group-secrets-payload".to_vec();
+
+        let (ct, shared_enc) = hybrid_kem_encapsulate(&mut rng, &public_key, context);
+        let ciphertext = encrypt_hpke_payload(&shared_enc, context, &plaintext);
+        let shared_dec = hybrid_kem_decapsulate(&private_key, &ct, context);
+        let decrypted =
+            decrypt_hpke_payload(&shared_dec, context, &ciphertext).expect("decrypt payload");
+        assert_eq!(decrypted, plaintext);
+
+        let mut tampered = ciphertext;
+        tampered[0] ^= 0x01;
+        assert!(decrypt_hpke_payload(&shared_dec, context, &tampered).is_none());
     }
 }

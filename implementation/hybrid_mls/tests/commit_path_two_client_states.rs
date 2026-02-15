@@ -149,9 +149,12 @@ fn apply_real_commit_and_path_update_across_two_client_states() {
 
     let mut tree_after_proposals = alice_state.ratchet_tree.clone();
     let alice_node = RatchetTree::leaf_to_node_index(0);
-    tree_after_proposals.nodes[alice_node] = Node::Leaf(leaf_from_key_package(&alice_update.key_package));
+    tree_after_proposals.nodes[alice_node] =
+        Node::Leaf(leaf_from_key_package(&alice_update.key_package));
 
-    let direct_path = tree_after_proposals.direct_path(0).expect("sender direct path");
+    let direct_path = tree_after_proposals
+        .direct_path(0)
+        .expect("sender direct path");
     let path: Vec<ParentUpdate> = direct_path
         .iter()
         .map(|_| ParentUpdate {
