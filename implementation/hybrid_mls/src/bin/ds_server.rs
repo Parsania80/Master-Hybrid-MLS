@@ -99,7 +99,13 @@ mod tests {
         out
     }
 
-    async fn start_test_server(state: ApiState) -> (std::net::SocketAddr, oneshot::Sender<()>, JoinHandle<Result<(), std::io::Error>>) {
+    async fn start_test_server(
+        state: ApiState,
+    ) -> (
+        std::net::SocketAddr,
+        oneshot::Sender<()>,
+        JoinHandle<Result<(), std::io::Error>>,
+    ) {
         let app = http::router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -173,8 +179,7 @@ mod tests {
         let password = "secret";
         let classic_pub_b64 = STANDARD.encode(classic_pk.as_bytes());
         let pq_pub_b64 = STANDARD.encode(pq_pk.encode());
-        let sign_input =
-            register_signing_input(username, password, &classic_pub_b64, &pq_pub_b64);
+        let sign_input = register_signing_input(username, password, &classic_pub_b64, &pq_pub_b64);
         let signature = STANDARD.encode(signer.sign(&sign_input).to_bytes());
 
         let body = serde_json::json!({

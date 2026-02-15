@@ -10,6 +10,7 @@ pub enum MessageKind {
     Proposal,
     Commit,
     PathUpdate,
+    Welcome,
     Application,
     Other,
 }
@@ -20,6 +21,7 @@ impl MessageKind {
             MessageKind::Proposal => "proposal",
             MessageKind::Commit => "commit",
             MessageKind::PathUpdate => "path_update",
+            MessageKind::Welcome => "welcome",
             MessageKind::Application => "application",
             MessageKind::Other => "other",
         }
@@ -30,6 +32,7 @@ impl MessageKind {
             "proposal" => MessageKind::Proposal,
             "commit" => MessageKind::Commit,
             "path_update" => MessageKind::PathUpdate,
+            "welcome" => MessageKind::Welcome,
             "application" => MessageKind::Application,
             _ => MessageKind::Other,
         }
@@ -148,9 +151,13 @@ impl Storage {
     }
 
     pub fn load_message(&self, id: i64) -> Result<Option<Vec<u8>>, StorageError> {
-        let mut stmt = self.conn.prepare("SELECT path FROM messages WHERE id = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM messages WHERE id = ?1")?;
         let mut rows = stmt.query(params![id])?;
-        let Some(row) = rows.next()? else { return Ok(None) };
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
         let path: String = row.get(0)?;
         let data = fs::read(path)?;
         Ok(Some(data))
@@ -207,17 +214,18 @@ impl Storage {
                      ORDER BY created_at DESC, id DESC
                      LIMIT ?3",
                 )?;
-                let rows = stmt.query_map(params![group_id, kind.as_str(), limit as i64], |row| {
-                    let kind_str: String = row.get(2)?;
-                    Ok(StoredMessage {
-                        id: row.get(0)?,
-                        group_id: row.get(1)?,
-                        kind: MessageKind::from_str(&kind_str),
-                        size: row.get::<_, i64>(3)? as u64,
-                        created_at: row.get(4)?,
-                        path: PathBuf::from(row.get::<_, String>(5)?),
-                    })
-                })?;
+                let rows =
+                    stmt.query_map(params![group_id, kind.as_str(), limit as i64], |row| {
+                        let kind_str: String = row.get(2)?;
+                        Ok(StoredMessage {
+                            id: row.get(0)?,
+                            group_id: row.get(1)?,
+                            kind: MessageKind::from_str(&kind_str),
+                            size: row.get::<_, i64>(3)? as u64,
+                            created_at: row.get(4)?,
+                            path: PathBuf::from(row.get::<_, String>(5)?),
+                        })
+                    })?;
                 for row in rows {
                     out.push(row?);
                 }
@@ -278,11 +286,13 @@ impl Storage {
         group_id: &str,
         kind: MessageKind,
     ) -> Result<Option<Vec<u8>>, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT path FROM messages WHERE id = ?1 AND group_id = ?2 AND kind = ?3",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM messages WHERE id = ?1 AND group_id = ?2 AND kind = ?3")?;
         let mut rows = stmt.query(params![id, group_id, kind.as_str()])?;
-        let Some(row) = rows.next()? else { return Ok(None) };
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
         let path: String = row.get(0)?;
         let data = fs::read(path)?;
         Ok(Some(data))
@@ -293,11 +303,13 @@ impl Storage {
         id: i64,
         group_id: &str,
     ) -> Result<Option<(MessageKind, Vec<u8>)>, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT kind, path FROM messages WHERE id = ?1 AND group_id = ?2",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT kind, path FROM messages WHERE id = ?1 AND group_id = ?2")?;
         let mut rows = stmt.query(params![id, group_id])?;
-        let Some(row) = rows.next()? else { return Ok(None) };
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
         let kind_str: String = row.get(0)?;
         let path: String = row.get(1)?;
         let data = fs::read(path)?;
@@ -325,11 +337,13 @@ impl Storage {
         &self,
         username: &str,
     ) -> Result<Option<(Vec<u8>, Vec<u8>)>, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT classic_pub, pq_pub FROM users WHERE username = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT classic_pub, pq_pub FROM users WHERE username = ?1")?;
         let mut rows = stmt.query(params![username])?;
-        let Some(row) = rows.next()? else { return Ok(None) };
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
         let classic: Vec<u8> = row.get(0)?;
         let pq: Vec<u8> = row.get(1)?;
         Ok(Some((classic, pq)))
@@ -339,11 +353,13 @@ impl Storage {
         &self,
         username: &str,
     ) -> Result<Option<(Vec<u8>, Vec<u8>)>, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT password_hash, salt FROM users WHERE username = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT password_hash, salt FROM users WHERE username = ?1")?;
         let mut rows = stmt.query(params![username])?;
-        let Some(row) = rows.next()? else { return Ok(None) };
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
         let password_hash: Vec<u8> = row.get(0)?;
         let salt: Vec<u8> = row.get(1)?;
         Ok(Some((password_hash, salt)))
@@ -364,15 +380,14 @@ impl Storage {
         Ok(())
     }
 
-    pub fn get_session(
-        &self,
-        token: &str,
-    ) -> Result<Option<(String, i64)>, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT username, expires_at FROM sessions WHERE token = ?1",
-        )?;
+    pub fn get_session(&self, token: &str) -> Result<Option<(String, i64)>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT username, expires_at FROM sessions WHERE token = ?1")?;
         let mut rows = stmt.query(params![token])?;
-        let Some(row) = rows.next()? else { return Ok(None) };
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
         let username: String = row.get(0)?;
         let expires_at: i64 = row.get(1)?;
         Ok(Some((username, expires_at)))
@@ -382,11 +397,13 @@ impl Storage {
         &self,
         token: &str,
     ) -> Result<Option<(String, i64, i64)>, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT username, created_at, expires_at FROM sessions WHERE token = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT username, created_at, expires_at FROM sessions WHERE token = ?1")?;
         let mut rows = stmt.query(params![token])?;
-        let Some(row) = rows.next()? else { return Ok(None) };
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
         let username: String = row.get(0)?;
         let created_at: i64 = row.get(1)?;
         let expires_at: i64 = row.get(2)?;
@@ -394,14 +411,16 @@ impl Storage {
     }
 
     pub fn delete_session(&mut self, token: &str) -> Result<(), StorageError> {
-        self.conn.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
+        self.conn
+            .execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
         Ok(())
     }
 
     pub fn delete_sessions_for_user(&mut self, username: &str) -> Result<u64, StorageError> {
-        let deleted = self
-            .conn
-            .execute("DELETE FROM sessions WHERE username = ?1", params![username])?;
+        let deleted = self.conn.execute(
+            "DELETE FROM sessions WHERE username = ?1",
+            params![username],
+        )?;
         Ok(deleted as u64)
     }
 
@@ -456,25 +475,20 @@ impl Storage {
         Ok(())
     }
 
-    pub fn get_key_package(
-        &self,
-        username: &str,
-    ) -> Result<Option<(Vec<u8>, i64)>, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT payload, created_at FROM keypackages WHERE username = ?1",
-        )?;
+    pub fn get_key_package(&self, username: &str) -> Result<Option<(Vec<u8>, i64)>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT payload, created_at FROM keypackages WHERE username = ?1")?;
         let mut rows = stmt.query(params![username])?;
-        let Some(row) = rows.next()? else { return Ok(None) };
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
         let payload: Vec<u8> = row.get(0)?;
         let created_at: i64 = row.get(1)?;
         Ok(Some((payload, created_at)))
     }
 
-    pub fn count_by_kind(
-        &self,
-        group_id: &str,
-        kind: MessageKind,
-    ) -> Result<u64, StorageError> {
+    pub fn count_by_kind(&self, group_id: &str, kind: MessageKind) -> Result<u64, StorageError> {
         let mut stmt = self.conn.prepare(
             "SELECT COALESCE(COUNT(*), 0) FROM messages WHERE group_id = ?1 AND kind = ?2",
         )?;
@@ -487,9 +501,9 @@ impl Storage {
         group_id: &str,
         kind: MessageKind,
     ) -> Result<u64, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, path, size FROM messages WHERE group_id = ?1 AND kind = ?2",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, size FROM messages WHERE group_id = ?1 AND kind = ?2")?;
         let rows = stmt.query_map(params![group_id, kind.as_str()], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -502,7 +516,8 @@ impl Storage {
         for row in rows {
             let (id, path, _size) = row?;
             let _ = fs::remove_file(path);
-            self.conn.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
+            self.conn
+                .execute("DELETE FROM messages WHERE id = ?1", params![id])?;
             deleted += 1;
         }
         Ok(deleted)
@@ -513,7 +528,8 @@ impl Storage {
         while total > self.max_bytes {
             if let Some((id, path, size)) = self.oldest_message()? {
                 let _ = fs::remove_file(&path);
-                self.conn.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
+                self.conn
+                    .execute("DELETE FROM messages WHERE id = ?1", params![id])?;
                 total = total.saturating_sub(size);
             } else {
                 break;
@@ -523,7 +539,9 @@ impl Storage {
     }
 
     fn total_size(&self) -> Result<u64, StorageError> {
-        let mut stmt = self.conn.prepare("SELECT COALESCE(SUM(size), 0) FROM messages")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT COALESCE(SUM(size), 0) FROM messages")?;
         let total: i64 = stmt.query_row([], |row| row.get(0))?;
         Ok(total as u64)
     }
@@ -535,13 +553,14 @@ impl Storage {
              LIMIT 1",
         )?;
         let mut rows = stmt.query([])?;
-        let Some(row) = rows.next()? else { return Ok(None) };
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
         let id: i64 = row.get(0)?;
         let path: String = row.get(1)?;
         let size: i64 = row.get(2)?;
         Ok(Some((id, PathBuf::from(path), size as u64)))
     }
-
 }
 
 fn now_unix() -> i64 {
@@ -554,7 +573,13 @@ fn now_unix() -> i64 {
 fn sanitize(value: &str) -> String {
     value
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

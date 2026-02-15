@@ -1,4 +1,5 @@
 use crate::key_schedule::{tree_snapshot_hash, EpochDerivedSecrets, KeyScheduleState};
+use crate::transcript::{derive_confirmation_tag, TranscriptState};
 use crate::tree::{Proposal, RatchetTree};
 use std::fs;
 use std::path::Path;
@@ -7,7 +8,8 @@ use thiserror::Error;
 const CLIENT_STATE_VERSION_V1: u8 = 1;
 const CLIENT_STATE_VERSION_V2: u8 = 2;
 const CLIENT_STATE_VERSION_V3: u8 = 3;
-const CLIENT_STATE_VERSION: u8 = CLIENT_STATE_VERSION_V3;
+const CLIENT_STATE_VERSION_V4: u8 = 4;
+const CLIENT_STATE_VERSION: u8 = CLIENT_STATE_VERSION_V4;
 const MAX_RECENT_APPLIED_COMMITS: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -20,6 +22,7 @@ pub struct ClientGroupState {
     pub last_applied_commit_id: Option<i64>,
     pub recent_applied_commit_ids: Vec<i64>,
     pub key_schedule: KeyScheduleState,
+    pub transcript_state: TranscriptState,
 }
 
 #[derive(Debug, Error)]
@@ -31,10 +34,15 @@ pub enum ClientStateError {
 }
 
 impl ClientGroupState {
-    pub fn new(group_id: impl Into<String>, ratchet_tree: RatchetTree, own_leaf_index: usize) -> Self {
+    pub fn new(
+        group_id: impl Into<String>,
+        ratchet_tree: RatchetTree,
+        own_leaf_index: usize,
+    ) -> Self {
         let group_id = group_id.into();
         let tree_hash = current_tree_hash(&ratchet_tree);
         let key_schedule = KeyScheduleState::new(&group_id, tree_hash);
+        let transcript_state = TranscriptState::new(&group_id, tree_hash);
         Self {
             group_id,
             ratchet_tree,
@@ -44,6 +52,7 @@ impl ClientGroupState {
             last_applied_commit_id: None,
             recent_applied_commit_ids: Vec::new(),
             key_schedule,
+            transcript_state,
         }
     }
 
@@ -94,6 +103,33 @@ impl ClientGroupState {
     }
 
     pub fn advance_epoch_with_context(&mut self, commit_context: Option<&[u8]>) {
+        self.advance_epoch_with_context_and_confirmation(commit_context, None);
+    }
+
+    pub fn advance_epoch_with_context_and_confirmation(
+        &mut self,
+        commit_context: Option<&[u8]>,
+        confirmation_tag: Option<&[u8; 32]>,
+    ) {
+        if let Some(context) = commit_context {
+            let predicted_confirmed = self
+                .transcript_state
+                .predict_confirmed_after_commit(context);
+            self.epoch = self.epoch.saturating_add(1);
+            self.sync_key_schedule_epoch(commit_context);
+
+            let derived_tag = match confirmation_tag {
+                Some(tag) => Some(*tag),
+                None => self
+                    .key_schedule
+                    .root_secret_for_epoch(self.epoch)
+                    .map(|root| derive_confirmation_tag(&root, &predicted_confirmed)),
+            };
+            let _ = self
+                .transcript_state
+                .apply_commit(context, derived_tag.as_ref());
+            return;
+        }
         self.epoch = self.epoch.saturating_add(1);
         self.sync_key_schedule_epoch(commit_context);
     }
@@ -111,6 +147,22 @@ impl ClientGroupState {
             return Err("key schedule epoch does not match group epoch");
         }
         Ok(())
+    }
+
+    pub fn predict_confirmed_transcript_after_commit(
+        &self,
+        commit_context: &[u8],
+    ) -> [u8; 32] {
+        self.transcript_state
+            .predict_confirmed_after_commit(commit_context)
+    }
+
+    pub fn confirmed_transcript_hash(&self) -> [u8; 32] {
+        self.transcript_state.confirmed_transcript_hash()
+    }
+
+    pub fn interim_transcript_hash(&self) -> [u8; 32] {
+        self.transcript_state.interim_transcript_hash()
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -138,6 +190,7 @@ impl ClientGroupState {
             encode_i64(&mut out, *id);
         }
         encode_bytes(&mut out, &self.key_schedule.encode());
+        encode_bytes(&mut out, &self.transcript_state.encode());
         out
     }
 
@@ -147,6 +200,7 @@ impl ClientGroupState {
         if version != CLIENT_STATE_VERSION_V1
             && version != CLIENT_STATE_VERSION_V2
             && version != CLIENT_STATE_VERSION_V3
+            && version != CLIENT_STATE_VERSION_V4
         {
             return None;
         }
@@ -163,8 +217,34 @@ impl ClientGroupState {
             pending_proposals.push(decoder.read_bytes()?);
         }
 
-        let (last_applied_commit_id, recent_applied_commit_ids, key_schedule) =
-            if version == CLIENT_STATE_VERSION_V3 {
+        let (
+            last_applied_commit_id,
+            recent_applied_commit_ids,
+            key_schedule,
+            transcript_state,
+        ) = if version == CLIENT_STATE_VERSION_V4 {
+            let has_last = decoder.read_u8()?;
+            let last_applied_commit_id = match has_last {
+                0 => None,
+                1 => Some(decoder.read_i64()?),
+                _ => return None,
+            };
+            let replay_count = decoder.read_u32()? as usize;
+            let mut recent = Vec::with_capacity(replay_count);
+            for _ in 0..replay_count {
+                recent.push(decoder.read_i64()?);
+            }
+            let key_schedule_bytes = decoder.read_bytes()?;
+            let key_schedule = KeyScheduleState::decode(&key_schedule_bytes)?;
+            let transcript_bytes = decoder.read_bytes()?;
+            let transcript_state = TranscriptState::decode(&transcript_bytes)?;
+            (
+                last_applied_commit_id,
+                recent,
+                key_schedule,
+                transcript_state,
+            )
+        } else if version == CLIENT_STATE_VERSION_V3 {
                 let has_last = decoder.read_u8()?;
                 let last_applied_commit_id = match has_last {
                     0 => None,
@@ -178,7 +258,18 @@ impl ClientGroupState {
                 }
                 let key_schedule_bytes = decoder.read_bytes()?;
                 let key_schedule = KeyScheduleState::decode(&key_schedule_bytes)?;
-                (last_applied_commit_id, recent, key_schedule)
+                let transcript_state = TranscriptState::bootstrap_legacy(
+                    &group_id,
+                    current_tree_hash(&ratchet_tree),
+                    epoch,
+                    &[],
+                );
+                (
+                    last_applied_commit_id,
+                    recent,
+                    key_schedule,
+                    transcript_state,
+                )
             } else if version == CLIENT_STATE_VERSION_V2 {
                 let has_last = decoder.read_u8()?;
                 let last_applied_commit_id = match has_last {
@@ -191,13 +282,36 @@ impl ClientGroupState {
                 for _ in 0..replay_count {
                     recent.push(decoder.read_i64()?);
                 }
-                let key_schedule =
-                    KeyScheduleState::bootstrap_to_epoch(&group_id, epoch, current_tree_hash(&ratchet_tree));
-                (last_applied_commit_id, recent, key_schedule)
+                let key_schedule = KeyScheduleState::bootstrap_to_epoch(
+                    &group_id,
+                    epoch,
+                    current_tree_hash(&ratchet_tree),
+                );
+                let transcript_state = TranscriptState::bootstrap_legacy(
+                    &group_id,
+                    current_tree_hash(&ratchet_tree),
+                    epoch,
+                    &[],
+                );
+                (
+                    last_applied_commit_id,
+                    recent,
+                    key_schedule,
+                    transcript_state,
+                )
             } else {
-                let key_schedule =
-                    KeyScheduleState::bootstrap_to_epoch(&group_id, epoch, current_tree_hash(&ratchet_tree));
-                (None, Vec::new(), key_schedule)
+                let key_schedule = KeyScheduleState::bootstrap_to_epoch(
+                    &group_id,
+                    epoch,
+                    current_tree_hash(&ratchet_tree),
+                );
+                let transcript_state = TranscriptState::bootstrap_legacy(
+                    &group_id,
+                    current_tree_hash(&ratchet_tree),
+                    epoch,
+                    &[],
+                );
+                (None, Vec::new(), key_schedule, transcript_state)
             };
 
         if decoder.remaining() != 0 {
@@ -213,8 +327,9 @@ impl ClientGroupState {
             last_applied_commit_id,
             recent_applied_commit_ids,
             key_schedule,
+            transcript_state,
         };
-        if version == CLIENT_STATE_VERSION_V3 {
+        if version == CLIENT_STATE_VERSION_V3 || version == CLIENT_STATE_VERSION_V4 {
             if decoded.ensure_key_schedule_consistency().is_err() {
                 return None;
             }
@@ -247,9 +362,12 @@ impl ClientGroupState {
             self.key_schedule =
                 KeyScheduleState::bootstrap_to_epoch(&self.group_id, self.epoch, tree_hash);
         } else {
-            let _ = self
-                .key_schedule
-                .ensure_epoch(self.epoch, &self.group_id, tree_hash, commit_context);
+            let _ = self.key_schedule.ensure_epoch(
+                self.epoch,
+                &self.group_id,
+                tree_hash,
+                commit_context,
+            );
         }
     }
 }
@@ -460,7 +578,9 @@ mod tests {
         let decoded = ClientGroupState::decode(&encoded).expect("decode state");
         assert_eq!(decoded, state);
 
-        let decoded_props = decoded.decoded_pending_proposals().expect("decode proposals");
+        let decoded_props = decoded
+            .decoded_pending_proposals()
+            .expect("decode proposals");
         assert_eq!(decoded_props.len(), 1);
         assert_eq!(decoded_props[0].encode(), proposal.encode());
     }
@@ -515,13 +635,19 @@ mod tests {
         }
         state.mark_applied_commit_id(MAX_RECENT_APPLIED_COMMITS as i64 + 20);
 
-        assert_eq!(state.recent_applied_commit_ids.len(), MAX_RECENT_APPLIED_COMMITS);
+        assert_eq!(
+            state.recent_applied_commit_ids.len(),
+            MAX_RECENT_APPLIED_COMMITS
+        );
         assert_eq!(
             state.last_applied_commit_id,
             Some(MAX_RECENT_APPLIED_COMMITS as i64 + 20)
         );
         assert!(state.has_applied_commit_id(5));
-        assert!(!state.recent_applied_commit_ids.windows(2).any(|w| w[0] == w[1]));
+        assert!(!state
+            .recent_applied_commit_ids
+            .windows(2)
+            .any(|w| w[0] == w[1]));
     }
 
     #[test]

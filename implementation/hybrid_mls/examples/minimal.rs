@@ -1,6 +1,4 @@
-use hybrid_mls::crypto::{
-    HybridPrivateKey, HybridPublicKey, HybridSignPrivKey, HybridSignPubKey,
-};
+use hybrid_mls::crypto::{HybridPrivateKey, HybridPublicKey, HybridSignPrivKey, HybridSignPubKey};
 use hybrid_mls::tree::{Commit, KeyPackage, LeafNode, ParentUpdate, Proposal, RatchetTree};
 use ml_dsa::{KeyGen, MlDsa65};
 use ml_kem::Seed;

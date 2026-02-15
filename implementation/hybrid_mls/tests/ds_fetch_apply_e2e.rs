@@ -1,23 +1,22 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use hybrid_mls::client_state::ClientGroupState;
+use hybrid_mls::crypto::HybridSignPrivKey;
 use hybrid_mls::ds::config::StorageConfig;
 use hybrid_mls::ds::http::{self, ApiState};
 use hybrid_mls::envelope::PathUpdateEnvelope;
 use hybrid_mls::tree::{Node, RatchetTree};
+use ed25519_dalek::{SecretKey as EdSecretKey, SigningKey as EdSigningKey};
+use ml_dsa::{EncodedSigningKey, MlDsa65};
 use serde_json::Value;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-fn run_ds_client(
-    bin: &str,
-    base_url: &str,
-    state_path: &Path,
-    args: &[String],
-) -> String {
+fn run_ds_client(bin: &str, base_url: &str, state_path: &Path, args: &[String]) -> String {
     let output = Command::new(bin)
         .arg("--base-url")
         .arg(base_url)
@@ -151,10 +150,7 @@ fn encode_malformed_path_update_envelope_with_metadata(
     out
 }
 
-fn corrupt_classic_secret_key_in_state(
-    original_state: &Path,
-    corrupted_state: &Path,
-) {
+fn corrupt_classic_secret_key_in_state(original_state: &Path, corrupted_state: &Path) {
     let bytes = fs::read(original_state).expect("read state");
     let mut json: Value = serde_json::from_slice(&bytes).expect("parse state json");
     let bad_secret = STANDARD.encode([0u8; 32]);
@@ -166,10 +162,7 @@ fn corrupt_classic_secret_key_in_state(
     .expect("write corrupted state");
 }
 
-fn tamper_group_state_key_schedule_epoch(
-    group_state_file: &Path,
-    tampered_epoch: u64,
-) {
+fn tamper_group_state_key_schedule_epoch(group_state_file: &Path, tampered_epoch: u64) {
     let mut state = ClientGroupState::load_from_file(group_state_file)
         .expect("load group state for epoch tamper");
     state.key_schedule.current_epoch = tampered_epoch;
@@ -190,6 +183,320 @@ fn tamper_group_state_key_schedule_parent_link(group_state_file: &Path) {
     state
         .save_to_file(group_state_file)
         .expect("write parent-link-tampered group state");
+}
+
+struct WelcomeBootstrapFixture {
+    base: PathBuf,
+    work: PathBuf,
+    base_url: String,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    server: JoinHandle<Result<(), std::io::Error>>,
+    client_bin: &'static str,
+    alice_state: PathBuf,
+    bob_state: PathBuf,
+    alice_kp: PathBuf,
+    bob_kp: PathBuf,
+    bob_recv: PathBuf,
+    welcome_file: PathBuf,
+    bob_unknown_group_state: PathBuf,
+    group_id: String,
+}
+
+async fn setup_unknown_group_welcome_fixture(
+    label: &str,
+    group_id: &str,
+    tamper_welcome_before_submit: bool,
+) -> WelcomeBootstrapFixture {
+    let (state, base) = temp_state(label);
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let alice_state = work.join("alice.json");
+    let bob_state = work.join("bob.json");
+    let alice_kem = work.join("alice-kem.json");
+    let bob_kem = work.join("bob-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let bob_kp = work.join("bob.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let bob_recv = work.join("bob.recv.json");
+    let alice_group_state = work.join("alice-group-state.bin");
+    let bob_unknown_group_state = work.join("bob-unknown-group-state.bin");
+    let bob_from_ds = work.join("bob-from-ds.kp");
+    let add_proposal = work.join("add-bob.proposal.bin");
+    let commit_file = work.join("add-bob.commit.bin");
+    let path_file = work.join("add-bob.path.bin");
+    let welcome_file = work.join("add-bob.welcome.bin");
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "register".to_string(),
+            "--username".to_string(),
+            "alice".to_string(),
+            "--password".to_string(),
+            "secret".to_string(),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "register".to_string(),
+            "--username".to_string(),
+            "bob".to_string(),
+            "--password".to_string(),
+            "secret".to_string(),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keygen".to_string(),
+            "--out".to_string(),
+            to_s(&alice_kem),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keypackage-export".to_string(),
+            "--kem-file".to_string(),
+            to_s(&alice_kem),
+            "--keypackage-out".to_string(),
+            to_s(&alice_kp),
+            "--receiver-private-out".to_string(),
+            to_s(&alice_recv),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "keygen".to_string(),
+            "--out".to_string(),
+            to_s(&bob_kem),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "keypackage-export".to_string(),
+            "--kem-file".to_string(),
+            to_s(&bob_kem),
+            "--keypackage-out".to_string(),
+            to_s(&bob_kp),
+            "--receiver-private-out".to_string(),
+            to_s(&bob_recv),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "publish-key-package".to_string(),
+            "--keypackage-file".to_string(),
+            to_s(&bob_kp),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&alice_group_state),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "fetch-key-package".to_string(),
+            "--target".to_string(),
+            "bob".to_string(),
+            "--out".to_string(),
+            to_s(&bob_from_ds),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-add-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_state),
+            "--keypackage-file".to_string(),
+            to_s(&bob_from_ds),
+            "--out".to_string(),
+            to_s(&add_proposal),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&add_proposal),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-commit".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_state),
+            "--commit-out".to_string(),
+            to_s(&commit_file),
+            "--path-update-out".to_string(),
+            to_s(&path_file),
+            "--welcome-out".to_string(),
+            to_s(&welcome_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    if tamper_welcome_before_submit {
+        let mut tampered = fs::read(&welcome_file).expect("read welcome bytes for tamper");
+        assert!(!tampered.is_empty(), "welcome file should not be empty");
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x80;
+        fs::write(&welcome_file, tampered).expect("write tampered welcome bytes");
+    }
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&commit_file),
+            "--path-update-file".to_string(),
+            to_s(&path_file),
+            "--welcome-file".to_string(),
+            to_s(&welcome_file),
+        ],
+    );
+
+    WelcomeBootstrapFixture {
+        base,
+        work,
+        base_url,
+        shutdown_tx: Some(shutdown_tx),
+        server,
+        client_bin,
+        alice_state,
+        bob_state,
+        alice_kp,
+        bob_kp,
+        bob_recv,
+        welcome_file,
+        bob_unknown_group_state,
+        group_id: group_id.to_string(),
+    }
+}
+
+fn fetch_message_signing_input_for_test(username: &str, group_id: &str, message_id: i64) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"message_fetch|");
+    out.extend_from_slice(username.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(group_id.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(message_id.to_string().as_bytes());
+    out
+}
+
+fn signing_key_from_state_file(state_path: &Path) -> (String, String, HybridSignPrivKey) {
+    let state_json: Value =
+        serde_json::from_slice(&fs::read(state_path).expect("read state file")).expect("parse state file");
+    let username = state_json["username"]
+        .as_str()
+        .expect("state username")
+        .to_string();
+    let session_id = state_json["session_id"]
+        .as_str()
+        .expect("state session_id")
+        .to_string();
+    let classic_sk_b64 = state_json["classic_sk_b64"]
+        .as_str()
+        .expect("state classic_sk_b64");
+    let pq_sk_b64 = state_json["pq_sk_b64"].as_str().expect("state pq_sk_b64");
+
+    let classic_bytes = STANDARD
+        .decode(classic_sk_b64)
+        .expect("decode classic signing key");
+    assert_eq!(classic_bytes.len(), 32, "classic signing key must be 32 bytes");
+    let mut classic_secret: EdSecretKey = [0u8; 32];
+    classic_secret.copy_from_slice(&classic_bytes);
+    let classic = EdSigningKey::from_bytes(&classic_secret);
+
+    let pq_bytes = STANDARD.decode(pq_sk_b64).expect("decode pq signing key");
+    let encoded: EncodedSigningKey<MlDsa65> =
+        pq_bytes.as_slice().try_into().expect("parse pq signing key");
+    let pq = ml_dsa::SigningKey::<MlDsa65>::decode(&encoded);
+
+    (username, session_id, HybridSignPrivKey { classic, pq })
+}
+
+fn sign_message_b64_with_large_stack(priv_key: HybridSignPrivKey, message: Vec<u8>) -> String {
+    let handle = thread::Builder::new()
+        .name("e2e-hybrid-sign".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || STANDARD.encode(priv_key.sign(&message).to_bytes()))
+        .expect("spawn signer thread");
+    handle.join().expect("join signer thread")
+}
+
+async fn teardown_welcome_bootstrap_fixture(mut fixture: WelcomeBootstrapFixture) {
+    if let Some(tx) = fixture.shutdown_tx.take() {
+        let _ = tx.send(());
+    }
+    let result = fixture.server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+    let _ = fs::remove_dir_all(fixture.base);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -429,7 +736,10 @@ async fn fetch_and_apply_latest_is_ds_backed_and_replay_safe() {
     assert!(loaded_once.has_applied_commit_id(commit_id));
     let bob_leaf_node = RatchetTree::leaf_to_node_index(1);
     assert!(
-        matches!(loaded_once.ratchet_tree.nodes.get(bob_leaf_node), Some(Node::Leaf(_))),
+        matches!(
+            loaded_once.ratchet_tree.nodes.get(bob_leaf_node),
+            Some(Node::Leaf(_))
+        ),
         "bob leaf should exist after sync"
     );
 
@@ -726,6 +1036,793 @@ async fn strict_receiver_policy_rejects_missing_path_update() {
     }
 
     let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn submit_commit_with_welcome_lists_welcome_kind_end_to_end() {
+    let (state, base) = temp_state("welcome-list-e2e");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let alice_state = work.join("alice.json");
+    let bob_state = work.join("bob.json");
+    let alice_kem = work.join("alice-kem.json");
+    let bob_kem = work.join("bob-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let bob_kp = work.join("bob.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let bob_recv = work.join("bob.recv.json");
+    let alice_group_state = work.join("alice-group-state.bin");
+    let bob_from_ds = work.join("bob-from-ds.kp");
+    let add_proposal = work.join("add-bob.proposal.bin");
+    let commit_file = work.join("add-bob.commit.bin");
+    let path_file = work.join("add-bob.path.bin");
+    let welcome_file = work.join("add-bob.welcome.bin");
+    let bob_join_state = work.join("bob-join-from-welcome.bin");
+    let bob_join_derived = work.join("bob-join-from-welcome.derived.json");
+    let group_id = "group-welcome-e2e";
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "register".to_string(),
+            "--username".to_string(),
+            "alice".to_string(),
+            "--password".to_string(),
+            "secret".to_string(),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "register".to_string(),
+            "--username".to_string(),
+            "bob".to_string(),
+            "--password".to_string(),
+            "secret".to_string(),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keygen".to_string(),
+            "--out".to_string(),
+            to_s(&alice_kem),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keypackage-export".to_string(),
+            "--kem-file".to_string(),
+            to_s(&alice_kem),
+            "--keypackage-out".to_string(),
+            to_s(&alice_kp),
+            "--receiver-private-out".to_string(),
+            to_s(&alice_recv),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "keygen".to_string(),
+            "--out".to_string(),
+            to_s(&bob_kem),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "keypackage-export".to_string(),
+            "--kem-file".to_string(),
+            to_s(&bob_kem),
+            "--keypackage-out".to_string(),
+            to_s(&bob_kp),
+            "--receiver-private-out".to_string(),
+            to_s(&bob_recv),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "publish-key-package".to_string(),
+            "--keypackage-file".to_string(),
+            to_s(&bob_kp),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&alice_group_state),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "fetch-key-package".to_string(),
+            "--target".to_string(),
+            "bob".to_string(),
+            "--out".to_string(),
+            to_s(&bob_from_ds),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-add-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_state),
+            "--keypackage-file".to_string(),
+            to_s(&bob_from_ds),
+            "--out".to_string(),
+            to_s(&add_proposal),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&add_proposal),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-commit".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_state),
+            "--commit-out".to_string(),
+            to_s(&commit_file),
+            "--path-update-out".to_string(),
+            to_s(&path_file),
+            "--welcome-out".to_string(),
+            to_s(&welcome_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+
+    let welcome_len = fs::metadata(&welcome_file)
+        .expect("welcome file metadata")
+        .len();
+    assert!(welcome_len > 0, "welcome file must not be empty");
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&commit_file),
+            "--path-update-file".to_string(),
+            to_s(&path_file),
+            "--welcome-file".to_string(),
+            to_s(&welcome_file),
+        ],
+    );
+
+    let welcome_list_output = run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "list-messages".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--limit".to_string(),
+            "10".to_string(),
+            "--kind".to_string(),
+            "welcome".to_string(),
+        ],
+    );
+    let welcome_list_json = parse_json_from_ds_client_output(&welcome_list_output);
+    let messages = welcome_list_json["messages"]
+        .as_array()
+        .expect("messages array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "welcome list output: {welcome_list_output}"
+    );
+    assert_eq!(
+        messages[0]["kind"].as_str(),
+        Some("welcome"),
+        "welcome list output: {welcome_list_output}"
+    );
+    assert_eq!(
+        messages[0]["size"].as_u64(),
+        Some(welcome_len),
+        "welcome list output: {welcome_list_output}"
+    );
+    assert!(
+        messages[0]["id"].as_str().is_some(),
+        "welcome list output: {welcome_list_output}"
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "join-from-welcome".to_string(),
+            "--base-member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--commit-file".to_string(),
+            to_s(&commit_file),
+            "--path-update-file".to_string(),
+            to_s(&path_file),
+            "--welcome-file".to_string(),
+            to_s(&welcome_file),
+            "--receiver-private-file".to_string(),
+            to_s(&bob_recv),
+            "--out".to_string(),
+            to_s(&bob_join_state),
+            "--derived-out".to_string(),
+            to_s(&bob_join_derived),
+            "--force".to_string(),
+        ],
+    );
+    let bob_joined = ClientGroupState::load_from_file(&bob_join_state)
+        .expect("load bob join-from-welcome state");
+    assert_eq!(bob_joined.group_id, group_id);
+    assert_eq!(bob_joined.epoch, 1);
+    assert_eq!(bob_joined.own_leaf_index, 1);
+    let bob_leaf_node = RatchetTree::leaf_to_node_index(1);
+    assert!(
+        matches!(
+            bob_joined.ratchet_tree.nodes.get(bob_leaf_node),
+            Some(Node::Leaf(_))
+        ),
+        "bob leaf should exist after join-from-welcome"
+    );
+    let derived_json: Value = serde_json::from_slice(
+        &fs::read(&bob_join_derived).expect("read bob join-from-welcome derived json"),
+    )
+    .expect("parse bob join-from-welcome derived json");
+    assert!(
+        derived_json["joiner_secret_b64"].as_str().is_some(),
+        "derived json must include joiner_secret_b64"
+    );
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn welcome_payload_is_stable_across_ds_submit_and_fetch_roundtrip() {
+    let fixture = setup_unknown_group_welcome_fixture(
+        "welcome-roundtrip-stability",
+        "group-welcome-roundtrip-stability",
+        false,
+    )
+    .await;
+
+    let local_welcome = fs::read(&fixture.welcome_file).expect("read local welcome payload");
+    assert!(!local_welcome.is_empty(), "local welcome payload must not be empty");
+
+    let list_output = run_ds_client(
+        fixture.client_bin,
+        &fixture.base_url,
+        &fixture.alice_state,
+        &[
+            "list-messages".to_string(),
+            "--group-id".to_string(),
+            fixture.group_id.clone(),
+            "--limit".to_string(),
+            "10".to_string(),
+            "--kind".to_string(),
+            "welcome".to_string(),
+        ],
+    );
+    let list_json = parse_json_from_ds_client_output(&list_output);
+    let welcome_id_str = list_json["messages"]
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("id"))
+        .and_then(|id| id.as_str())
+        .expect("welcome message id from list");
+    let welcome_id = welcome_id_str
+        .parse::<i64>()
+        .expect("welcome message id must parse as i64");
+
+    let (username, session_id, signing_key) = signing_key_from_state_file(&fixture.alice_state);
+    let sign_input =
+        fetch_message_signing_input_for_test(&username, &fixture.group_id, welcome_id);
+    let signature = sign_message_b64_with_large_stack(signing_key, sign_input);
+    let query = serde_urlencoded::to_string([
+        ("username", username.as_str()),
+        ("session_id", session_id.as_str()),
+        ("signature", signature.as_str()),
+    ])
+    .expect("encode fetch query");
+    let fetch_url = format!(
+        "{}/v1/groups/{}/messages/{}?{}",
+        fixture.base_url, fixture.group_id, welcome_id, query
+    );
+    let fetch_resp = reqwest::Client::new()
+        .get(fetch_url)
+        .send()
+        .await
+        .expect("fetch welcome message");
+    assert_eq!(fetch_resp.status(), reqwest::StatusCode::OK);
+    let fetch_json: Value = fetch_resp.json().await.expect("parse fetch response json");
+    assert_eq!(fetch_json["kind"].as_str(), Some("welcome"));
+    let fetched_welcome_b64 = fetch_json["message_bytes"]
+        .as_str()
+        .expect("fetched welcome message_bytes");
+    let fetched_welcome = STANDARD
+        .decode(fetched_welcome_b64)
+        .expect("decode fetched welcome bytes");
+
+    assert_eq!(
+        fetched_welcome, local_welcome,
+        "welcome payload bytes changed across DS submit/fetch roundtrip"
+    );
+
+    teardown_welcome_bootstrap_fixture(fixture).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fetch_and_apply_latest_bootstraps_unknown_group_from_welcome() {
+    let (state, base) = temp_state("welcome-auto-bootstrap-e2e");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let alice_state = work.join("alice.json");
+    let bob_state = work.join("bob.json");
+    let alice_kem = work.join("alice-kem.json");
+    let bob_kem = work.join("bob-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let bob_kp = work.join("bob.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let bob_recv = work.join("bob.recv.json");
+    let alice_group_state = work.join("alice-group-state.bin");
+    let bob_unknown_group_state = work.join("bob-unknown-group-state.bin");
+    let bob_from_ds = work.join("bob-from-ds.kp");
+    let add_proposal = work.join("add-bob.proposal.bin");
+    let commit_file = work.join("add-bob.commit.bin");
+    let path_file = work.join("add-bob.path.bin");
+    let welcome_file = work.join("add-bob.welcome.bin");
+    let group_id = "group-welcome-auto-bootstrap";
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "register".to_string(),
+            "--username".to_string(),
+            "alice".to_string(),
+            "--password".to_string(),
+            "secret".to_string(),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "register".to_string(),
+            "--username".to_string(),
+            "bob".to_string(),
+            "--password".to_string(),
+            "secret".to_string(),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keygen".to_string(),
+            "--out".to_string(),
+            to_s(&alice_kem),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keypackage-export".to_string(),
+            "--kem-file".to_string(),
+            to_s(&alice_kem),
+            "--keypackage-out".to_string(),
+            to_s(&alice_kp),
+            "--receiver-private-out".to_string(),
+            to_s(&alice_recv),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "keygen".to_string(),
+            "--out".to_string(),
+            to_s(&bob_kem),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "keypackage-export".to_string(),
+            "--kem-file".to_string(),
+            to_s(&bob_kem),
+            "--keypackage-out".to_string(),
+            to_s(&bob_kp),
+            "--receiver-private-out".to_string(),
+            to_s(&bob_recv),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "publish-key-package".to_string(),
+            "--keypackage-file".to_string(),
+            to_s(&bob_kp),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&alice_group_state),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "fetch-key-package".to_string(),
+            "--target".to_string(),
+            "bob".to_string(),
+            "--out".to_string(),
+            to_s(&bob_from_ds),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-add-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_state),
+            "--keypackage-file".to_string(),
+            to_s(&bob_from_ds),
+            "--out".to_string(),
+            to_s(&add_proposal),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&add_proposal),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-commit".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_state),
+            "--commit-out".to_string(),
+            to_s(&commit_file),
+            "--path-update-out".to_string(),
+            to_s(&path_file),
+            "--welcome-out".to_string(),
+            to_s(&welcome_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&commit_file),
+            "--path-update-file".to_string(),
+            to_s(&path_file),
+            "--welcome-file".to_string(),
+            to_s(&welcome_file),
+        ],
+    );
+
+    let sync_output = run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&bob_unknown_group_state),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--base-member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--receiver-private-file".to_string(),
+            to_s(&bob_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+    );
+    assert!(
+        sync_output.contains("bootstrapped unknown group state via welcome"),
+        "sync output:\n{sync_output}"
+    );
+
+    let bob_joined = ClientGroupState::load_from_file(&bob_unknown_group_state)
+        .expect("load auto-bootstrapped bob state");
+    assert_eq!(bob_joined.group_id, group_id);
+    assert_eq!(bob_joined.epoch, 1);
+    assert_eq!(bob_joined.own_leaf_index, 1);
+    let bob_leaf_node = RatchetTree::leaf_to_node_index(1);
+    assert!(
+        matches!(
+            bob_joined.ratchet_tree.nodes.get(bob_leaf_node),
+            Some(Node::Leaf(_))
+        ),
+        "bob leaf should exist after auto welcome bootstrap"
+    );
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_bootstrap_rejects_wrong_base_members() {
+    let fixture = setup_unknown_group_welcome_fixture(
+        "welcome-auto-bootstrap-wrong-base",
+        "group-welcome-auto-bootstrap-wrong-base",
+        false,
+    )
+    .await;
+
+    let output = run_ds_client_expect_fail(
+        fixture.client_bin,
+        &fixture.base_url,
+        &fixture.bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&fixture.bob_unknown_group_state),
+            "--group-id".to_string(),
+            fixture.group_id.clone(),
+            "--base-member-keypackage".to_string(),
+            to_s(&fixture.bob_kp),
+            "--receiver-private-file".to_string(),
+            to_s(&fixture.bob_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "could not bootstrap unknown group",
+    );
+    assert!(
+        output.contains("could not bootstrap unknown group"),
+        "unexpected bootstrap failure output:\n{output}"
+    );
+    assert!(
+        !fixture.bob_unknown_group_state.exists(),
+        "group state must not be created when base members are wrong"
+    );
+
+    teardown_welcome_bootstrap_fixture(fixture).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_bootstrap_rejects_wrong_receiver_private_key() {
+    let fixture = setup_unknown_group_welcome_fixture(
+        "welcome-auto-bootstrap-wrong-recv",
+        "group-welcome-auto-bootstrap-wrong-recv",
+        false,
+    )
+    .await;
+
+    let bob_wrong_kem = fixture.work.join("bob-wrong-kem.json");
+    let bob_wrong_kp = fixture.work.join("bob-wrong.kp");
+    let bob_wrong_recv = fixture.work.join("bob-wrong.recv.json");
+
+    run_ds_client(
+        fixture.client_bin,
+        &fixture.base_url,
+        &fixture.bob_state,
+        &[
+            "keygen".to_string(),
+            "--out".to_string(),
+            to_s(&bob_wrong_kem),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        fixture.client_bin,
+        &fixture.base_url,
+        &fixture.bob_state,
+        &[
+            "keypackage-export".to_string(),
+            "--kem-file".to_string(),
+            to_s(&bob_wrong_kem),
+            "--keypackage-out".to_string(),
+            to_s(&bob_wrong_kp),
+            "--receiver-private-out".to_string(),
+            to_s(&bob_wrong_recv),
+            "--force".to_string(),
+        ],
+    );
+
+    let output = run_ds_client_expect_fail(
+        fixture.client_bin,
+        &fixture.base_url,
+        &fixture.bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&fixture.bob_unknown_group_state),
+            "--group-id".to_string(),
+            fixture.group_id.clone(),
+            "--base-member-keypackage".to_string(),
+            to_s(&fixture.alice_kp),
+            "--receiver-private-file".to_string(),
+            to_s(&bob_wrong_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "could not bootstrap unknown group",
+    );
+    assert!(
+        output.contains("could not bootstrap unknown group"),
+        "unexpected bootstrap failure output:\n{output}"
+    );
+    assert!(
+        !fixture.bob_unknown_group_state.exists(),
+        "group state must not be created when receiver private key is wrong"
+    );
+
+    teardown_welcome_bootstrap_fixture(fixture).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_bootstrap_rejects_tampered_welcome_payload() {
+    let fixture = setup_unknown_group_welcome_fixture(
+        "welcome-auto-bootstrap-tampered",
+        "group-welcome-auto-bootstrap-tampered",
+        true,
+    )
+    .await;
+
+    let output = run_ds_client_expect_fail(
+        fixture.client_bin,
+        &fixture.base_url,
+        &fixture.bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&fixture.bob_unknown_group_state),
+            "--group-id".to_string(),
+            fixture.group_id.clone(),
+            "--base-member-keypackage".to_string(),
+            to_s(&fixture.alice_kp),
+            "--receiver-private-file".to_string(),
+            to_s(&fixture.bob_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "could not bootstrap unknown group",
+    );
+    assert!(
+        output.contains("could not bootstrap unknown group"),
+        "unexpected bootstrap failure output:\n{output}"
+    );
+    assert!(
+        !fixture.bob_unknown_group_state.exists(),
+        "group state must not be created when welcome is tampered"
+    );
+
+    teardown_welcome_bootstrap_fixture(fixture).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1217,11 +2314,7 @@ async fn three_member_commit_chain_sync_converges_with_path_updates() {
         ],
     );
 
-    for (client_state, own_leaf) in [
-        (&alice_state, "0"),
-        (&bob_state, "1"),
-        (&carol_state, "2"),
-    ] {
+    for (client_state, own_leaf) in [(&alice_state, "0"), (&bob_state, "1"), (&carol_state, "2")] {
         let out = if own_leaf == "0" {
             &alice_group_state
         } else if own_leaf == "1" {
@@ -1450,9 +2543,11 @@ async fn three_member_commit_chain_sync_converges_with_path_updates() {
         "carol sync 2 output:\n{carol_sync_2}"
     );
 
-    let alice_loaded = ClientGroupState::load_from_file(&alice_group_state).expect("load alice state");
+    let alice_loaded =
+        ClientGroupState::load_from_file(&alice_group_state).expect("load alice state");
     let bob_loaded = ClientGroupState::load_from_file(&bob_group_state).expect("load bob state");
-    let carol_loaded = ClientGroupState::load_from_file(&carol_group_state).expect("load carol state");
+    let carol_loaded =
+        ClientGroupState::load_from_file(&carol_group_state).expect("load carol state");
     assert_eq!(alice_loaded.epoch, 2);
     assert_eq!(bob_loaded.epoch, 2);
     assert_eq!(carol_loaded.epoch, 2);
@@ -1463,7 +2558,10 @@ async fn three_member_commit_chain_sync_converges_with_path_updates() {
     for leaf in 0..3usize {
         let node_idx = RatchetTree::leaf_to_node_index(leaf);
         assert!(
-            matches!(alice_loaded.ratchet_tree.nodes.get(node_idx), Some(Node::Leaf(_))),
+            matches!(
+                alice_loaded.ratchet_tree.nodes.get(node_idx),
+                Some(Node::Leaf(_))
+            ),
             "leaf {leaf} missing in final tree"
         );
     }
@@ -2631,7 +3729,8 @@ async fn tampered_path_update_payload_with_valid_metadata_triggers_strict_receiv
     let mut path_env =
         PathUpdateEnvelope::decode(&valid_path_bytes).expect("decode valid path update envelope");
     assert!(
-        !path_env.path_update.ciphertexts.is_empty() && !path_env.path_update.ciphertexts[0].is_empty(),
+        !path_env.path_update.ciphertexts.is_empty()
+            && !path_env.path_update.ciphertexts[0].is_empty(),
         "expected non-empty path ciphertext structure"
     );
     path_env.path_update.ciphertexts[0][0].payload[0] ^= 0x80;
@@ -3351,8 +4450,8 @@ async fn forward_secrecy_ds_sync_stale_receiver_private_fails_after_rotation() {
         "old key sync output:\n{old_key_sync}"
     );
 
-    let bob_old_after =
-        ClientGroupState::load_from_file(&bob_old_receiver_state).expect("load bob old receiver state");
+    let bob_old_after = ClientGroupState::load_from_file(&bob_old_receiver_state)
+        .expect("load bob old receiver state");
     assert_eq!(bob_old_after.epoch, 1);
 
     let new_key_sync = run_ds_client(
@@ -3376,8 +4475,8 @@ async fn forward_secrecy_ds_sync_stale_receiver_private_fails_after_rotation() {
 
     let alice_final =
         ClientGroupState::load_from_file(&alice_group_state).expect("load alice final state");
-    let bob_new_after =
-        ClientGroupState::load_from_file(&bob_new_receiver_state).expect("load bob new receiver state");
+    let bob_new_after = ClientGroupState::load_from_file(&bob_new_receiver_state)
+        .expect("load bob new receiver state");
     assert_eq!(bob_new_after.epoch, 2);
     assert_eq!(alice_final.epoch, 2);
     assert_eq!(bob_new_after.ratchet_tree, alice_final.ratchet_tree);
@@ -4287,7 +5386,8 @@ async fn pcs_ds_sync_recovers_after_compromised_member_self_update() {
         ClientGroupState::load_from_file(&bob_compromised_state).expect("load compromised state");
     let recovered_loaded =
         ClientGroupState::load_from_file(&bob_recovered_state).expect("load recovered state");
-    let alice_loaded = ClientGroupState::load_from_file(&alice_group_state).expect("load alice state");
+    let alice_loaded =
+        ClientGroupState::load_from_file(&alice_group_state).expect("load alice state");
 
     assert_eq!(compromised_loaded.epoch, 2);
     assert!(compromised_loaded.last_applied_commit_id.is_some());
@@ -5259,12 +6359,8 @@ async fn misuse_malformed_commit_with_valid_metadata_is_skipped_without_blocking
         ],
     );
 
-    let malformed = encode_malformed_commit_envelope_with_metadata(
-        group_id,
-        0,
-        0,
-        &[0x13, 0x37, 0xAA, 0xBB],
-    );
+    let malformed =
+        encode_malformed_commit_envelope_with_metadata(group_id, 0, 0, &[0x13, 0x37, 0xAA, 0xBB]);
     fs::write(&malformed_commit_file, malformed).expect("write malformed commit");
     run_ds_client(
         client_bin,
