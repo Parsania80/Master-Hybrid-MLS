@@ -65,6 +65,18 @@ pub enum Proposal {
     Remove {
         leaf_index: usize,
     },
+    PreSharedKey {
+        psk_id: Vec<u8>,
+    },
+    ReInit {
+        group_id: String,
+        version: u16,
+        cipher_suite: u16,
+        extensions: Vec<u8>,
+    },
+    GroupContextExtensions {
+        extensions: Vec<u8>,
+    },
 }
 
 /// Commit object applying a batch of proposals plus a path update by the sender.
@@ -95,6 +107,15 @@ pub enum CommitValidationError {
     DuplicateAdd,
     DuplicateUpdate,
     DuplicateRemove,
+    DuplicatePreSharedKey,
+    DuplicateReInit,
+    DuplicateGroupContextExtensions,
+    EmptyPreSharedKeyId,
+    EmptyReInitGroupId,
+    MixedReInitProposalSet,
+    ReInitAndGroupContextExtensionsConflict,
+    UnsupportedReInitVersion { version: u16 },
+    UnsupportedReInitCipherSuite { cipher_suite: u16 },
     UpdateAndRemoveConflict,
     UpdateOutOfBounds { leaf_index: usize },
     RemoveOutOfBounds { leaf_index: usize },
@@ -199,6 +220,26 @@ impl Proposal {
                 encode_u8(&mut out, PROPOSAL_REMOVE);
                 encode_u32(&mut out, *leaf_index as u32);
             }
+            Proposal::PreSharedKey { psk_id } => {
+                encode_u8(&mut out, PROPOSAL_PSK);
+                encode_bytes(&mut out, psk_id);
+            }
+            Proposal::ReInit {
+                group_id,
+                version,
+                cipher_suite,
+                extensions,
+            } => {
+                encode_u8(&mut out, PROPOSAL_REINIT);
+                encode_bytes(&mut out, group_id.as_bytes());
+                encode_u16(&mut out, *version);
+                encode_u16(&mut out, *cipher_suite);
+                encode_bytes(&mut out, extensions);
+            }
+            Proposal::GroupContextExtensions { extensions } => {
+                encode_u8(&mut out, PROPOSAL_GROUP_CONTEXT_EXTENSIONS);
+                encode_bytes(&mut out, extensions);
+            }
         }
         out
     }
@@ -225,6 +266,26 @@ impl Proposal {
             PROPOSAL_REMOVE => {
                 let leaf_index = decoder.read_u32()? as usize;
                 Proposal::Remove { leaf_index }
+            }
+            PROPOSAL_PSK => {
+                let psk_id = decoder.read_bytes()?;
+                Proposal::PreSharedKey { psk_id }
+            }
+            PROPOSAL_REINIT => {
+                let group_id = String::from_utf8(decoder.read_bytes()?).ok()?;
+                let version = decoder.read_u16()?;
+                let cipher_suite = decoder.read_u16()?;
+                let extensions = decoder.read_bytes()?;
+                Proposal::ReInit {
+                    group_id,
+                    version,
+                    cipher_suite,
+                    extensions,
+                }
+            }
+            PROPOSAL_GROUP_CONTEXT_EXTENSIONS => {
+                let extensions = decoder.read_bytes()?;
+                Proposal::GroupContextExtensions { extensions }
             }
             _ => return None,
         };
@@ -645,6 +706,9 @@ impl RatchetTree {
                 Proposal::Remove { leaf_index } => {
                     self.remove_leaf(*leaf_index)?;
                 }
+                Proposal::PreSharedKey { .. } => {}
+                Proposal::ReInit { .. } => {}
+                Proposal::GroupContextExtensions { .. } => {}
             }
         }
 
@@ -786,6 +850,9 @@ impl RatchetTree {
         let mut add_count = 0usize;
         let mut updates = HashSet::new();
         let mut removes = HashSet::new();
+        let mut psk_ids = HashSet::new();
+        let mut reinit_count = 0usize;
+        let mut group_context_extensions_count = 0usize;
 
         for proposal in &commit.proposals {
             match proposal {
@@ -815,7 +882,52 @@ impl RatchetTree {
                         return Err(CommitValidationError::DuplicateRemove);
                     }
                 }
+                Proposal::PreSharedKey { psk_id } => {
+                    if psk_id.is_empty() {
+                        return Err(CommitValidationError::EmptyPreSharedKeyId);
+                    }
+                    if !psk_ids.insert(psk_id.clone()) {
+                        return Err(CommitValidationError::DuplicatePreSharedKey);
+                    }
+                }
+                Proposal::ReInit {
+                    group_id,
+                    version,
+                    cipher_suite,
+                    ..
+                } => {
+                    reinit_count += 1;
+                    if reinit_count > 1 {
+                        return Err(CommitValidationError::DuplicateReInit);
+                    }
+                    if group_id.is_empty() {
+                        return Err(CommitValidationError::EmptyReInitGroupId);
+                    }
+                    if *version != REINIT_SUPPORTED_MLS_VERSION {
+                        return Err(CommitValidationError::UnsupportedReInitVersion {
+                            version: *version,
+                        });
+                    }
+                    if *cipher_suite != REINIT_SUPPORTED_CIPHER_SUITE {
+                        return Err(CommitValidationError::UnsupportedReInitCipherSuite {
+                            cipher_suite: *cipher_suite,
+                        });
+                    }
+                }
+                Proposal::GroupContextExtensions { .. } => {
+                    group_context_extensions_count += 1;
+                    if group_context_extensions_count > 1 {
+                        return Err(CommitValidationError::DuplicateGroupContextExtensions);
+                    }
+                }
             }
+        }
+
+        if reinit_count > 0 && group_context_extensions_count > 0 {
+            return Err(CommitValidationError::ReInitAndGroupContextExtensionsConflict);
+        }
+        if reinit_count > 0 && commit.proposals.len() > 1 {
+            return Err(CommitValidationError::MixedReInitProposalSet);
         }
 
         for leaf_index in updates {
@@ -1207,6 +1319,11 @@ const NODE_TYPE_BLANK: u8 = 3;
 const PROPOSAL_ADD: u8 = 1;
 const PROPOSAL_UPDATE: u8 = 2;
 const PROPOSAL_REMOVE: u8 = 3;
+const PROPOSAL_PSK: u8 = 4;
+const PROPOSAL_REINIT: u8 = 5;
+const PROPOSAL_GROUP_CONTEXT_EXTENSIONS: u8 = 6;
+const REINIT_SUPPORTED_MLS_VERSION: u16 = 1;
+const REINIT_SUPPORTED_CIPHER_SUITE: u16 = 0x0001;
 
 fn hash_bytes(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha3_256::new();
@@ -1310,6 +1427,10 @@ fn encode_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
+fn encode_u16(out: &mut Vec<u8>, value: u16) {
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
 fn decode_u32_vec(decoder: &mut Decoder<'_>) -> Option<Vec<u32>> {
     let len = decoder.read_u32()? as usize;
     let mut out = Vec::with_capacity(len);
@@ -1395,6 +1516,16 @@ impl<'a> Decoder<'a> {
         buf.copy_from_slice(&self.data[self.pos..self.pos + 4]);
         self.pos += 4;
         Some(u32::from_be_bytes(buf))
+    }
+
+    fn read_u16(&mut self) -> Option<u16> {
+        if self.remaining() < 2 {
+            return None;
+        }
+        let mut buf = [0u8; 2];
+        buf.copy_from_slice(&self.data[self.pos..self.pos + 2]);
+        self.pos += 2;
+        Some(u16::from_be_bytes(buf))
     }
 
     fn read_u8(&mut self) -> Option<u8> {
@@ -2093,13 +2224,313 @@ mod tests {
     }
 
     #[test]
+    fn proposal_encode_decode_roundtrip_pre_shared_key() {
+        let proposal = Proposal::PreSharedKey {
+            psk_id: b"psk-ref-01".to_vec(),
+        };
+        let encoded = proposal.encode();
+        let decoded = Proposal::decode(&encoded).expect("decode pre-shared-key proposal");
+        match decoded {
+            Proposal::PreSharedKey { psk_id } => assert_eq!(psk_id, b"psk-ref-01"),
+            other => panic!("expected PreSharedKey proposal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_commit_rejects_empty_pre_shared_key_id() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(62)]);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::PreSharedKey { psk_id: Vec::new() }],
+            path: Vec::new(),
+        };
+
+        let result = tree.validate_commit(&commit);
+        assert_eq!(result, Err(CommitValidationError::EmptyPreSharedKeyId));
+    }
+
+    #[test]
+    fn validate_commit_rejects_duplicate_pre_shared_key_ids() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(63)]);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![
+                Proposal::PreSharedKey {
+                    psk_id: b"shared-psk".to_vec(),
+                },
+                Proposal::PreSharedKey {
+                    psk_id: b"shared-psk".to_vec(),
+                },
+            ],
+            path: Vec::new(),
+        };
+
+        let result = tree.validate_commit(&commit);
+        assert_eq!(result, Err(CommitValidationError::DuplicatePreSharedKey));
+    }
+
+    #[test]
+    fn apply_commit_with_pre_shared_key_only_keeps_tree_shape() {
+        let mut tree = RatchetTree::from_leaves(vec![make_leaf(64)]);
+        let before = tree.clone();
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::PreSharedKey {
+                psk_id: b"psk-for-next-epoch".to_vec(),
+            }],
+            path: Vec::new(),
+        };
+
+        tree.apply_commit(&commit)
+            .expect("apply pre-shared-key commit");
+        assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn proposal_encode_decode_roundtrip_reinit() {
+        let proposal = Proposal::ReInit {
+            group_id: "group-v2".to_string(),
+            version: 1,
+            cipher_suite: 0x0001,
+            extensions: vec![1, 2, 3, 4],
+        };
+        let encoded = proposal.encode();
+        let decoded = Proposal::decode(&encoded).expect("decode reinit proposal");
+        match decoded {
+            Proposal::ReInit {
+                group_id,
+                version,
+                cipher_suite,
+                extensions,
+            } => {
+                assert_eq!(group_id, "group-v2");
+                assert_eq!(version, 1);
+                assert_eq!(cipher_suite, 0x0001);
+                assert_eq!(extensions, vec![1, 2, 3, 4]);
+            }
+            other => panic!("expected ReInit proposal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_commit_rejects_duplicate_reinit() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(65)]);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![
+                Proposal::ReInit {
+                    group_id: "group-v2-a".to_string(),
+                    version: 1,
+                    cipher_suite: 0x0001,
+                    extensions: Vec::new(),
+                },
+                Proposal::ReInit {
+                    group_id: "group-v2-b".to_string(),
+                    version: 1,
+                    cipher_suite: 0x0001,
+                    extensions: Vec::new(),
+                },
+            ],
+            path: Vec::new(),
+        };
+
+        let result = tree.validate_commit(&commit);
+        assert_eq!(result, Err(CommitValidationError::DuplicateReInit));
+    }
+
+    #[test]
+    fn validate_commit_rejects_mixed_reinit_proposal_set() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(66)]);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![
+                Proposal::ReInit {
+                    group_id: "group-v2".to_string(),
+                    version: 1,
+                    cipher_suite: 0x0001,
+                    extensions: Vec::new(),
+                },
+                Proposal::PreSharedKey {
+                    psk_id: b"psk-mixed".to_vec(),
+                },
+            ],
+            path: Vec::new(),
+        };
+
+        let result = tree.validate_commit(&commit);
+        assert_eq!(result, Err(CommitValidationError::MixedReInitProposalSet));
+    }
+
+    #[test]
+    fn validate_commit_rejects_reinit_with_empty_group_id() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(67)]);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::ReInit {
+                group_id: String::new(),
+                version: 1,
+                cipher_suite: 0x0001,
+                extensions: Vec::new(),
+            }],
+            path: Vec::new(),
+        };
+
+        let result = tree.validate_commit(&commit);
+        assert_eq!(result, Err(CommitValidationError::EmptyReInitGroupId));
+    }
+
+    #[test]
+    fn validate_commit_rejects_reinit_with_unsupported_version() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(68)]);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::ReInit {
+                group_id: "group-v2".to_string(),
+                version: 2,
+                cipher_suite: 0x0001,
+                extensions: Vec::new(),
+            }],
+            path: Vec::new(),
+        };
+
+        let result = tree.validate_commit(&commit);
+        assert_eq!(
+            result,
+            Err(CommitValidationError::UnsupportedReInitVersion { version: 2 })
+        );
+    }
+
+    #[test]
+    fn validate_commit_rejects_reinit_with_unsupported_cipher_suite() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(69)]);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::ReInit {
+                group_id: "group-v2".to_string(),
+                version: 1,
+                cipher_suite: 0x9999,
+                extensions: Vec::new(),
+            }],
+            path: Vec::new(),
+        };
+
+        let result = tree.validate_commit(&commit);
+        assert_eq!(
+            result,
+            Err(CommitValidationError::UnsupportedReInitCipherSuite {
+                cipher_suite: 0x9999,
+            })
+        );
+    }
+
+    #[test]
+    fn apply_commit_with_reinit_only_keeps_tree_shape() {
+        let mut tree = RatchetTree::from_leaves(vec![make_leaf(70)]);
+        let before = tree.clone();
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::ReInit {
+                group_id: "group-v2".to_string(),
+                version: 1,
+                cipher_suite: 0x0001,
+                extensions: Vec::new(),
+            }],
+            path: Vec::new(),
+        };
+
+        tree.apply_commit(&commit).expect("apply reinit commit");
+        assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn proposal_encode_decode_roundtrip_group_context_extensions() {
+        let proposal = Proposal::GroupContextExtensions {
+            extensions: vec![0xA1, 0xB2, 0xC3],
+        };
+        let encoded = proposal.encode();
+        let decoded = Proposal::decode(&encoded).expect("decode group-context-extensions");
+        match decoded {
+            Proposal::GroupContextExtensions { extensions } => {
+                assert_eq!(extensions, vec![0xA1, 0xB2, 0xC3]);
+            }
+            other => panic!("expected GroupContextExtensions proposal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_commit_rejects_duplicate_group_context_extensions() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(75)]);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![
+                Proposal::GroupContextExtensions {
+                    extensions: vec![0x01],
+                },
+                Proposal::GroupContextExtensions {
+                    extensions: vec![0x02],
+                },
+            ],
+            path: Vec::new(),
+        };
+
+        let result = tree.validate_commit(&commit);
+        assert_eq!(
+            result,
+            Err(CommitValidationError::DuplicateGroupContextExtensions)
+        );
+    }
+
+    #[test]
+    fn validate_commit_rejects_reinit_and_group_context_extensions_conflict() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(76)]);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![
+                Proposal::ReInit {
+                    group_id: "group-v2".to_string(),
+                    version: 1,
+                    cipher_suite: 0x0001,
+                    extensions: Vec::new(),
+                },
+                Proposal::GroupContextExtensions {
+                    extensions: vec![0x01, 0x02],
+                },
+            ],
+            path: Vec::new(),
+        };
+
+        let result = tree.validate_commit(&commit);
+        assert_eq!(
+            result,
+            Err(CommitValidationError::ReInitAndGroupContextExtensionsConflict)
+        );
+    }
+
+    #[test]
+    fn apply_commit_with_group_context_extensions_only_keeps_tree_shape() {
+        let mut tree = RatchetTree::from_leaves(vec![make_leaf(77)]);
+        let before = tree.clone();
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::GroupContextExtensions {
+                extensions: vec![0x10, 0x20],
+            }],
+            path: Vec::new(),
+        };
+
+        tree.apply_commit(&commit)
+            .expect("apply group-context-extensions commit");
+        assert_eq!(tree, before);
+    }
+
+    #[test]
     fn commit_encode_decode_roundtrip_without_path_update() {
-        let leaf0 = make_leaf(60);
-        let leaf1 = make_leaf(61);
+        let leaf0 = make_leaf(71);
+        let leaf1 = make_leaf(72);
         let mut tree = RatchetTree::from_leaves(vec![leaf0, leaf1]);
 
-        let update_kp = make_key_package(62);
-        let parent_path = parent_updates_for(&tree, 0, 63);
+        let update_kp = make_key_package(73);
+        let parent_path = parent_updates_for(&tree, 0, 74);
         let commit = Commit {
             sender: 0,
             proposals: vec![Proposal::Update {

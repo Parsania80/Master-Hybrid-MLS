@@ -1,5 +1,6 @@
+use crate::authenticated_content::derive_membership_key;
 use crate::key_schedule::{tree_snapshot_hash, EpochDerivedSecrets, KeyScheduleState};
-use crate::transcript::{derive_confirmation_tag, TranscriptState};
+use crate::transcript::{derive_confirmation_key, derive_confirmation_tag, TranscriptState};
 use crate::tree::{Proposal, RatchetTree};
 use std::fs;
 use std::path::Path;
@@ -9,7 +10,8 @@ const CLIENT_STATE_VERSION_V1: u8 = 1;
 const CLIENT_STATE_VERSION_V2: u8 = 2;
 const CLIENT_STATE_VERSION_V3: u8 = 3;
 const CLIENT_STATE_VERSION_V4: u8 = 4;
-const CLIENT_STATE_VERSION: u8 = CLIENT_STATE_VERSION_V4;
+const CLIENT_STATE_VERSION_V5: u8 = 5;
+const CLIENT_STATE_VERSION: u8 = CLIENT_STATE_VERSION_V5;
 const MAX_RECENT_APPLIED_COMMITS: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -21,6 +23,7 @@ pub struct ClientGroupState {
     pub pending_proposals: Vec<Vec<u8>>,
     pub last_applied_commit_id: Option<i64>,
     pub recent_applied_commit_ids: Vec<i64>,
+    pub group_context_extensions: Vec<u8>,
     pub key_schedule: KeyScheduleState,
     pub transcript_state: TranscriptState,
 }
@@ -51,6 +54,7 @@ impl ClientGroupState {
             pending_proposals: Vec::new(),
             last_applied_commit_id: None,
             recent_applied_commit_ids: Vec::new(),
+            group_context_extensions: Vec::new(),
             key_schedule,
             transcript_state,
         }
@@ -122,8 +126,11 @@ impl ClientGroupState {
                 Some(tag) => Some(*tag),
                 None => self
                     .key_schedule
-                    .root_secret_for_epoch(self.epoch)
-                    .map(|root| derive_confirmation_tag(&root, &predicted_confirmed)),
+                    .chain_secrets_for_epoch(self.epoch)
+                    .map(|chain| {
+                        let confirmation_key = derive_confirmation_key(&chain.epoch_secret);
+                        derive_confirmation_tag(&confirmation_key, &predicted_confirmed)
+                    }),
             };
             let _ = self
                 .transcript_state
@@ -149,10 +156,7 @@ impl ClientGroupState {
         Ok(())
     }
 
-    pub fn predict_confirmed_transcript_after_commit(
-        &self,
-        commit_context: &[u8],
-    ) -> [u8; 32] {
+    pub fn predict_confirmed_transcript_after_commit(&self, commit_context: &[u8]) -> [u8; 32] {
         self.transcript_state
             .predict_confirmed_after_commit(commit_context)
     }
@@ -163,6 +167,44 @@ impl ClientGroupState {
 
     pub fn interim_transcript_hash(&self) -> [u8; 32] {
         self.transcript_state.interim_transcript_hash()
+    }
+
+    pub fn membership_key_for_epoch(&self, epoch: u64) -> Option<[u8; 32]> {
+        self.key_schedule
+            .chain_secrets_for_epoch(epoch)
+            .map(|chain| derive_membership_key(&chain.epoch_secret))
+    }
+
+    pub fn confirmation_key_for_epoch(&self, epoch: u64) -> Option<[u8; 32]> {
+        self.key_schedule
+            .chain_secrets_for_epoch(epoch)
+            .map(|chain| derive_confirmation_key(&chain.epoch_secret))
+    }
+
+    pub fn sender_data_key_for_epoch(&self, epoch: u64) -> Option<[u8; 32]> {
+        self.key_schedule
+            .derive_secrets_for_epoch(&self.group_id, epoch)
+            .map(|derived| derived.sender_data_key)
+    }
+
+    pub fn current_membership_key(&self) -> Option<[u8; 32]> {
+        self.membership_key_for_epoch(self.epoch)
+    }
+
+    pub fn current_confirmation_key(&self) -> Option<[u8; 32]> {
+        self.confirmation_key_for_epoch(self.epoch)
+    }
+
+    pub fn current_sender_data_key(&self) -> Option<[u8; 32]> {
+        self.sender_data_key_for_epoch(self.epoch)
+    }
+
+    pub fn apply_group_context_extensions_from_proposals(&mut self, proposals: &[Proposal]) {
+        for proposal in proposals {
+            if let Proposal::GroupContextExtensions { extensions } = proposal {
+                self.group_context_extensions = extensions.clone();
+            }
+        }
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -191,6 +233,7 @@ impl ClientGroupState {
         }
         encode_bytes(&mut out, &self.key_schedule.encode());
         encode_bytes(&mut out, &self.transcript_state.encode());
+        encode_bytes(&mut out, &self.group_context_extensions);
         out
     }
 
@@ -201,6 +244,7 @@ impl ClientGroupState {
             && version != CLIENT_STATE_VERSION_V2
             && version != CLIENT_STATE_VERSION_V3
             && version != CLIENT_STATE_VERSION_V4
+            && version != CLIENT_STATE_VERSION_V5
         {
             return None;
         }
@@ -222,7 +266,32 @@ impl ClientGroupState {
             recent_applied_commit_ids,
             key_schedule,
             transcript_state,
-        ) = if version == CLIENT_STATE_VERSION_V4 {
+            group_context_extensions,
+        ) = if version == CLIENT_STATE_VERSION_V5 {
+            let has_last = decoder.read_u8()?;
+            let last_applied_commit_id = match has_last {
+                0 => None,
+                1 => Some(decoder.read_i64()?),
+                _ => return None,
+            };
+            let replay_count = decoder.read_u32()? as usize;
+            let mut recent = Vec::with_capacity(replay_count);
+            for _ in 0..replay_count {
+                recent.push(decoder.read_i64()?);
+            }
+            let key_schedule_bytes = decoder.read_bytes()?;
+            let key_schedule = KeyScheduleState::decode(&key_schedule_bytes)?;
+            let transcript_bytes = decoder.read_bytes()?;
+            let transcript_state = TranscriptState::decode(&transcript_bytes)?;
+            let group_context_extensions = decoder.read_bytes()?;
+            (
+                last_applied_commit_id,
+                recent,
+                key_schedule,
+                transcript_state,
+                group_context_extensions,
+            )
+        } else if version == CLIENT_STATE_VERSION_V4 {
             let has_last = decoder.read_u8()?;
             let last_applied_commit_id = match has_last {
                 0 => None,
@@ -243,76 +312,79 @@ impl ClientGroupState {
                 recent,
                 key_schedule,
                 transcript_state,
+                Vec::new(),
             )
         } else if version == CLIENT_STATE_VERSION_V3 {
-                let has_last = decoder.read_u8()?;
-                let last_applied_commit_id = match has_last {
-                    0 => None,
-                    1 => Some(decoder.read_i64()?),
-                    _ => return None,
-                };
-                let replay_count = decoder.read_u32()? as usize;
-                let mut recent = Vec::with_capacity(replay_count);
-                for _ in 0..replay_count {
-                    recent.push(decoder.read_i64()?);
-                }
-                let key_schedule_bytes = decoder.read_bytes()?;
-                let key_schedule = KeyScheduleState::decode(&key_schedule_bytes)?;
-                let transcript_state = TranscriptState::bootstrap_legacy(
-                    &group_id,
-                    current_tree_hash(&ratchet_tree),
-                    epoch,
-                    &[],
-                );
-                (
-                    last_applied_commit_id,
-                    recent,
-                    key_schedule,
-                    transcript_state,
-                )
-            } else if version == CLIENT_STATE_VERSION_V2 {
-                let has_last = decoder.read_u8()?;
-                let last_applied_commit_id = match has_last {
-                    0 => None,
-                    1 => Some(decoder.read_i64()?),
-                    _ => return None,
-                };
-                let replay_count = decoder.read_u32()? as usize;
-                let mut recent = Vec::with_capacity(replay_count);
-                for _ in 0..replay_count {
-                    recent.push(decoder.read_i64()?);
-                }
-                let key_schedule = KeyScheduleState::bootstrap_to_epoch(
-                    &group_id,
-                    epoch,
-                    current_tree_hash(&ratchet_tree),
-                );
-                let transcript_state = TranscriptState::bootstrap_legacy(
-                    &group_id,
-                    current_tree_hash(&ratchet_tree),
-                    epoch,
-                    &[],
-                );
-                (
-                    last_applied_commit_id,
-                    recent,
-                    key_schedule,
-                    transcript_state,
-                )
-            } else {
-                let key_schedule = KeyScheduleState::bootstrap_to_epoch(
-                    &group_id,
-                    epoch,
-                    current_tree_hash(&ratchet_tree),
-                );
-                let transcript_state = TranscriptState::bootstrap_legacy(
-                    &group_id,
-                    current_tree_hash(&ratchet_tree),
-                    epoch,
-                    &[],
-                );
-                (None, Vec::new(), key_schedule, transcript_state)
+            let has_last = decoder.read_u8()?;
+            let last_applied_commit_id = match has_last {
+                0 => None,
+                1 => Some(decoder.read_i64()?),
+                _ => return None,
             };
+            let replay_count = decoder.read_u32()? as usize;
+            let mut recent = Vec::with_capacity(replay_count);
+            for _ in 0..replay_count {
+                recent.push(decoder.read_i64()?);
+            }
+            let key_schedule_bytes = decoder.read_bytes()?;
+            let key_schedule = KeyScheduleState::decode(&key_schedule_bytes)?;
+            let transcript_state = TranscriptState::bootstrap_legacy(
+                &group_id,
+                current_tree_hash(&ratchet_tree),
+                epoch,
+                &[],
+            );
+            (
+                last_applied_commit_id,
+                recent,
+                key_schedule,
+                transcript_state,
+                Vec::new(),
+            )
+        } else if version == CLIENT_STATE_VERSION_V2 {
+            let has_last = decoder.read_u8()?;
+            let last_applied_commit_id = match has_last {
+                0 => None,
+                1 => Some(decoder.read_i64()?),
+                _ => return None,
+            };
+            let replay_count = decoder.read_u32()? as usize;
+            let mut recent = Vec::with_capacity(replay_count);
+            for _ in 0..replay_count {
+                recent.push(decoder.read_i64()?);
+            }
+            let key_schedule = KeyScheduleState::bootstrap_to_epoch(
+                &group_id,
+                epoch,
+                current_tree_hash(&ratchet_tree),
+            );
+            let transcript_state = TranscriptState::bootstrap_legacy(
+                &group_id,
+                current_tree_hash(&ratchet_tree),
+                epoch,
+                &[],
+            );
+            (
+                last_applied_commit_id,
+                recent,
+                key_schedule,
+                transcript_state,
+                Vec::new(),
+            )
+        } else {
+            let key_schedule = KeyScheduleState::bootstrap_to_epoch(
+                &group_id,
+                epoch,
+                current_tree_hash(&ratchet_tree),
+            );
+            let transcript_state = TranscriptState::bootstrap_legacy(
+                &group_id,
+                current_tree_hash(&ratchet_tree),
+                epoch,
+                &[],
+            );
+            (None, Vec::new(), key_schedule, transcript_state, Vec::new())
+        };
 
         if decoder.remaining() != 0 {
             return None;
@@ -326,10 +398,14 @@ impl ClientGroupState {
             pending_proposals,
             last_applied_commit_id,
             recent_applied_commit_ids,
+            group_context_extensions,
             key_schedule,
             transcript_state,
         };
-        if version == CLIENT_STATE_VERSION_V3 || version == CLIENT_STATE_VERSION_V4 {
+        if version == CLIENT_STATE_VERSION_V3
+            || version == CLIENT_STATE_VERSION_V4
+            || version == CLIENT_STATE_VERSION_V5
+        {
             if decoded.ensure_key_schedule_consistency().is_err() {
                 return None;
             }
@@ -565,6 +641,33 @@ mod tests {
         out
     }
 
+    fn encode_v4_state_for_test(state: &ClientGroupState) -> Vec<u8> {
+        let mut out = Vec::new();
+        encode_u8(&mut out, CLIENT_STATE_VERSION_V4);
+        encode_bytes(&mut out, state.group_id.as_bytes());
+        encode_u64(&mut out, state.epoch);
+        encode_u32(&mut out, state.own_leaf_index as u32);
+        encode_bytes(&mut out, &state.ratchet_tree.encode());
+        encode_u32(&mut out, state.pending_proposals.len() as u32);
+        for proposal in &state.pending_proposals {
+            encode_bytes(&mut out, proposal);
+        }
+        match state.last_applied_commit_id {
+            Some(value) => {
+                encode_u8(&mut out, 1);
+                encode_i64(&mut out, value);
+            }
+            None => encode_u8(&mut out, 0),
+        }
+        encode_u32(&mut out, state.recent_applied_commit_ids.len() as u32);
+        for id in &state.recent_applied_commit_ids {
+            encode_i64(&mut out, *id);
+        }
+        encode_bytes(&mut out, &state.key_schedule.encode());
+        encode_bytes(&mut out, &state.transcript_state.encode());
+        out
+    }
+
     #[test]
     fn client_group_state_encode_decode_roundtrip() {
         let tree = RatchetTree::from_leaves(vec![make_leaf(1), make_leaf(2)]);
@@ -719,6 +822,77 @@ mod tests {
         assert_ne!(epoch0.handshake_secret, epoch1.handshake_secret);
         assert_ne!(epoch0.application_secret, epoch1.application_secret);
         assert_ne!(epoch0.exporter_secret, epoch1.exporter_secret);
+    }
+
+    #[test]
+    fn current_membership_key_rotates_across_epoch_advance() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(13)]);
+        let mut state = ClientGroupState::new("group-membership", tree, 0);
+        let key0 = state
+            .current_membership_key()
+            .expect("membership key epoch 0");
+
+        state.advance_epoch_with_context(Some(b"commit-membership-1"));
+        let key1 = state
+            .current_membership_key()
+            .expect("membership key epoch 1");
+
+        assert_ne!(key0, key1);
+    }
+
+    #[test]
+    fn current_confirmation_and_sender_data_keys_rotate_across_epoch_advance() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(15)]);
+        let mut state = ClientGroupState::new("group-stage-keys", tree, 0);
+        let confirmation0 = state
+            .current_confirmation_key()
+            .expect("confirmation key epoch 0");
+        let sender_data0 = state
+            .current_sender_data_key()
+            .expect("sender-data key epoch 0");
+
+        state.advance_epoch_with_context(Some(b"commit-stage-1"));
+        let confirmation1 = state
+            .current_confirmation_key()
+            .expect("confirmation key epoch 1");
+        let sender_data1 = state
+            .current_sender_data_key()
+            .expect("sender-data key epoch 1");
+
+        assert_ne!(confirmation0, confirmation1);
+        assert_ne!(sender_data0, sender_data1);
+        assert_ne!(confirmation0, sender_data0);
+    }
+
+    #[test]
+    fn apply_group_context_extensions_from_proposals_updates_state() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(14)]);
+        let mut state = ClientGroupState::new("group-gce", tree, 0);
+        assert!(state.group_context_extensions.is_empty());
+
+        let proposals = vec![
+            Proposal::PreSharedKey {
+                psk_id: b"psk-ref".to_vec(),
+            },
+            Proposal::GroupContextExtensions {
+                extensions: vec![0xAA, 0xBB, 0xCC],
+            },
+        ];
+        state.apply_group_context_extensions_from_proposals(&proposals);
+        assert_eq!(state.group_context_extensions, vec![0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn decode_v4_state_defaults_group_context_extensions() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(15)]);
+        let mut state = ClientGroupState::new("group-v4", tree, 0);
+        state.set_epoch(2);
+        state.group_context_extensions = vec![0x01, 0x02];
+
+        let bytes = encode_v4_state_for_test(&state);
+        let decoded = ClientGroupState::decode(&bytes).expect("decode v4 state");
+        assert_eq!(decoded.epoch, 2);
+        assert!(decoded.group_context_extensions.is_empty());
     }
 
     #[test]

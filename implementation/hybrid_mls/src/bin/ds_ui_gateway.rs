@@ -32,12 +32,13 @@ use hybrid_mls::authenticated_content::{
 use hybrid_mls::client_state::ClientGroupState;
 use hybrid_mls::crypto::{
     decrypt_hpke_payload, encrypt_hpke_payload, HybridPrivateKey, HybridPublicKey,
-    HybridSignPrivKey, HybridSignPubKey,
-    KyberPriv,
+    HybridSignPrivKey, HybridSignPubKey, KyberPriv,
 };
 use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
 use hybrid_mls::key_schedule::tree_snapshot_hash;
-use hybrid_mls::transcript::{derive_confirmation_tag, verify_confirmation_tag};
+use hybrid_mls::transcript::{
+    derive_confirmation_key, derive_confirmation_tag, verify_confirmation_tag,
+};
 use hybrid_mls::tree::{
     Commit, KeyPackage, LeafNode, Node, ParentUpdate, PathUpdate, Proposal, RatchetTree,
 };
@@ -3988,6 +3989,9 @@ fn apply_proposals_preview(tree: &mut RatchetTree, proposals: &[Proposal]) -> Re
                 let node_index = RatchetTree::leaf_to_node_index(*leaf_index);
                 tree.nodes[node_index] = Node::Blank;
             }
+            Proposal::PreSharedKey { .. } => {}
+            Proposal::ReInit { .. } => {}
+            Proposal::GroupContextExtensions { .. } => {}
         }
     }
     Ok(())
@@ -4130,37 +4134,53 @@ fn build_welcome_for_commit(
     tree_after_commit
         .apply_commit(commit)
         .ok_or_else(|| "failed to preview commit tree for welcome generation".to_string())?;
+    let mut projected_group_context_extensions = state.group_context_extensions.clone();
+    for proposal in &commit.proposals {
+        if let Proposal::GroupContextExtensions { extensions } = proposal {
+            projected_group_context_extensions = extensions.clone();
+        }
+    }
     let next_epoch = state.epoch.saturating_add(1);
     let commit_context = commit.encode();
     let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
 
     let mut key_schedule = state.key_schedule.clone();
-    let root_secret = key_schedule.ensure_epoch(
+    let _ = key_schedule.ensure_epoch(
         next_epoch,
         &state.group_id,
         tree_hash,
         Some(&commit_context),
     );
+    let chain = key_schedule
+        .chain_secrets_for_epoch(next_epoch)
+        .ok_or_else(|| "missing key-schedule chain secrets for welcome epoch".to_string())?;
 
     let confirmed_transcript_hash =
         state.predict_confirmed_transcript_after_commit(&commit_context);
-    let confirmation_tag = derive_confirmation_tag(&root_secret, &confirmed_transcript_hash);
+    let confirmation_key = derive_confirmation_key(&chain.epoch_secret);
+    let confirmation_tag = derive_confirmation_tag(&confirmation_key, &confirmed_transcript_hash);
     let group_info = GroupInfo {
         group_id: state.group_id.clone(),
         epoch: next_epoch,
         tree_hash,
         confirmed_transcript_hash,
         signer_leaf: commit.sender as u32,
-        extensions: Vec::new(),
+        extensions: projected_group_context_extensions.clone(),
         confirmation_tag,
         signature: hash32_with_label(
             b"WELCOME-GROUP-INFO-SIGNATURE",
-            &[state.group_id.as_bytes(), &commit_context, &tree_hash],
+            &[
+                state.group_id.as_bytes(),
+                &commit_context,
+                &tree_hash,
+                &projected_group_context_extensions,
+                &chain.commit_secret,
+            ],
         )
         .to_vec(),
     };
     let encrypted_group_info = encrypt_hpke_payload(
-        &root_secret,
+        &chain.welcome_secret,
         &welcome_group_info_context(&state.group_id, next_epoch, commit.sender),
         &group_info.encode(),
     );
@@ -4174,15 +4194,7 @@ fn build_welcome_for_commit(
         }
         let key_ref_hash = hash32_with_label(b"WELCOME-KEYPACKAGE-REF", &[&key_package.encode()]);
         let group_secrets = GroupSecrets {
-            joiner_secret: hash32_with_label(
-                b"WELCOME-JOINER-SECRET",
-                &[
-                    &root_secret,
-                    state.group_id.as_bytes(),
-                    &next_epoch.to_be_bytes(),
-                    &key_ref_hash,
-                ],
-            ),
+            joiner_secret: chain.joiner_secret,
             path_secret,
             psk_ids: Vec::new(),
         };
@@ -4269,6 +4281,7 @@ fn build_join_state_from_commit_material(
         .ratchet_tree
         .apply_commit(&commit.commit)
         .ok_or_else(|| "failed to apply selected Add commit to base member tree".to_string())?;
+    group_state.apply_group_context_extensions_from_proposals(&commit.commit.proposals);
 
     let receiver_public = hybrid_public_from_private(receiver_private);
     let own_leaf_index =
@@ -4317,9 +4330,10 @@ fn validate_welcome_for_joiner(
         .proposals
         .iter()
         .filter_map(|proposal| match proposal {
-            Proposal::Add(key_package) => {
-                Some(hash32_with_label(b"WELCOME-KEYPACKAGE-REF", &[&key_package.encode()]))
-            }
+            Proposal::Add(key_package) => Some(hash32_with_label(
+                b"WELCOME-KEYPACKAGE-REF",
+                &[&key_package.encode()],
+            )),
             _ => None,
         })
         .collect();
@@ -4340,8 +4354,9 @@ fn validate_welcome_for_joiner(
             break;
         }
     }
-    let group_secrets = matched
-        .ok_or_else(|| "welcome does not contain decryptable GroupSecrets for this joiner".to_string())?;
+    let group_secrets = matched.ok_or_else(|| {
+        "welcome does not contain decryptable GroupSecrets for this joiner".to_string()
+    })?;
 
     if let Some(path_secret) = group_secrets.path_secret {
         let derived_first = derived
@@ -4353,12 +4368,19 @@ fn validate_welcome_for_joiner(
         }
     }
 
-    let root_secret = group_state
+    let chain = group_state
         .key_schedule
-        .root_secret_for_epoch(group_state.epoch)
-        .ok_or_else(|| "missing key schedule root secret for welcome epoch".to_string())?;
+        .chain_secrets_for_epoch(group_state.epoch)
+        .ok_or_else(|| "missing key schedule chain secrets for welcome epoch".to_string())?;
+    if group_secrets.joiner_secret != chain.joiner_secret {
+        return Err(
+            "welcome GroupSecrets.joiner_secret mismatch against local key schedule chain"
+                .to_string(),
+        );
+    }
+
     let group_info_bytes = decrypt_hpke_payload(
-        &root_secret,
+        &chain.welcome_secret,
         &welcome_group_info_context(
             &group_state.group_id,
             group_state.epoch,
@@ -4392,8 +4414,9 @@ fn validate_welcome_for_joiner(
             "welcome confirmed_transcript_hash mismatch against local transcript state".to_string(),
         );
     }
+    let confirmation_key = derive_confirmation_key(&chain.epoch_secret);
     if !verify_confirmation_tag(
-        &root_secret,
+        &confirmation_key,
         &group_info.confirmed_transcript_hash,
         &group_info.confirmation_tag,
     ) {
@@ -4404,6 +4427,11 @@ fn validate_welcome_for_joiner(
     let expected_tree_hash = tree_snapshot_hash(&group_state.ratchet_tree.encode());
     if group_info.tree_hash != expected_tree_hash {
         return Err("welcome tree hash mismatch against reconstructed tree".to_string());
+    }
+    if group_info.extensions != group_state.group_context_extensions {
+        return Err(
+            "welcome group extensions mismatch against reconstructed group context".to_string(),
+        );
     }
 
     Ok(group_secrets)
@@ -4804,6 +4832,7 @@ async fn fetch_and_apply_latest_once(
                 .apply_commit(&commit_env.commit)
                 .ok_or_else(|| "failed to apply commit during sync".to_string())?;
         }
+        group_state.apply_group_context_extensions_from_proposals(&commit_env.commit.proposals);
 
         group_state.clear_pending_proposals();
         group_state.advance_epoch_with_context(Some(&commit_bytes));
@@ -4862,6 +4891,7 @@ async fn action_commit_from_pending(
         .ratchet_tree
         .apply_commit(&commit)
         .ok_or_else(|| "failed to apply generated commit to local state".to_string())?;
+    group_state.apply_group_context_extensions_from_proposals(&commit.proposals);
     group_state.clear_pending_proposals();
     group_state.advance_epoch_with_context(Some(&commit_context));
     ensure_group_state_consistency(&group_state, "commit-from-pending apply")?;

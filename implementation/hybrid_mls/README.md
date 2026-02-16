@@ -9,18 +9,28 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 
 **Status**
 - Progress tracking is maintained in `PROJECT.md`.
-- Current implementation priority is RFC 9420 `Welcome` message flow (hybrid adaptation) before further UI/admin feature expansion.
+- Current implementation priority is Part 10 RFC hardening (post-Welcome), with proposal-family expansion now in progress.
 - RFC compliance note: beyond Welcome, remaining work includes full MLS wire framing, transcript/confirmation/membership authentication pipeline, full proposal set, and deeper RFC key-schedule alignment.
 - Post-Welcome RFC hardening tasks are tracked in `PROJECT.md` Part 10.
+- `PreSharedKey` proposal support is now implemented in the tree/commit model (`Proposal::PreSharedKey { psk_id }`) with encode/decode and validation coverage.
+- `ReInit` proposal support is now implemented in the tree/commit model (`Proposal::ReInit { group_id, version, cipher_suite, extensions }`) with compatibility/validation checks and DS-backed sync coverage.
+- `GroupContextExtensions` proposal support is now implemented in the tree/commit model (`Proposal::GroupContextExtensions { extensions }`) with validation and DS-backed mixed-batch sync coverage.
+- Key schedule Task 10 is now in progress with a fuller per-epoch chain: `commit_secret -> joiner_secret -> welcome_secret -> epoch_secret -> root_secret`.
+- Welcome flow now uses chain secrets explicitly: committer writes `GroupSecrets.joiner_secret` from key-schedule `joiner_secret`, encrypts `GroupInfo` with `welcome_secret`, and includes `commit_secret` in GroupInfo signature input; joiner validates these against local chain state.
+- Stage-key derivation now has explicit helpers for `confirmation_key`, `membership_key`, and `sender_data_key` derived from `epoch_secret` (`src/stage_keys.rs`), and deterministic vectors pin these outputs for drift detection.
+- DS-backed integration coverage now includes stage-key stability across persisted state reload + `fetch-and-apply-latest` replay/no-op sync behavior.
 
 **Architecture**
 - `src/crypto.rs` implements hybrid KEM, hybrid signatures, serialization helpers, and HPKE-style path secret encryption.
 - `src/tree.rs` implements the ratchet tree, parent hashes, node resolution, proposals/commits, and path update logic.
 - `src/key_schedule.rs` implements persisted epoch-secret tree state used to track per-epoch root secrets and derive epoch-level handshake/application/exporter secrets.
+- `src/key_schedule.rs` now also persists and exposes chain secrets per epoch (`commit`, `joiner`, `welcome`, `epoch`, `root`) with backward decode compatibility for older key-schedule state payloads.
+- `src/stage_keys.rs` implements explicit per-epoch stage-key helpers (`confirmation_key`, `membership_key`, `sender_data_key`) derived from `epoch_secret` for tag/sender-data alignment work.
 - `src/mls_wire.rs` implements RFC-style wire model skeletons for `MlsMessage`, `PublicMessage`, and `PrivateMessage` with strict framing/codec checks.
 - `src/authenticated_content.rs` implements `AuthenticatedContent` framing/signature scaffolding over `PublicMessage`, including sign/verify, strict codecs, and envelope conversion helpers.
+- Membership tag verification is now implemented in authenticated-content scaffolding (`derive_membership_key`, `derive_membership_tag`, `verify_with_membership_tag`) with canonical signature input that excludes membership-tag bytes from signature material; membership key derivation now uses key-schedule `epoch_secret` stage input.
 - `src/transcript.rs` implements confirmed/interim transcript hash state and update helpers for proposal/commit-driven transcript progression.
-- Confirmation-tag verification is now wired into Welcome handling: sender computes `GroupInfo.confirmation_tag` from `(epoch root secret, confirmed transcript hash)` and joiner validates it during Welcome processing.
+- Confirmation-tag verification is now wired into Welcome handling: sender computes `GroupInfo.confirmation_tag` from `(confirmation_key, confirmed transcript hash)` where `confirmation_key` is derived from key-schedule `epoch_secret`, and joiner validates it during Welcome processing.
 - `src/welcome.rs` implements RFC-style Welcome wire structures/codecs (`Welcome`, `EncryptedGroupSecrets`, `GroupSecrets`, `GroupInfo`) with strict decode behavior.
 - `src/welcome.rs` now also provides hybrid HPKE-style Welcome secret protection (`EncryptedGroupSecrets::encrypt_for_recipient` / `decrypt_group_secrets`) bound to group+epoch+key-ref context.
 - Committer flows now generate Welcome payloads when a commit includes `Add` proposals (`ds_client create-commit` and UI `commit-from-pending`).
@@ -105,6 +115,10 @@ It also includes malformed proposal payload sync-impact coverage: malformed prop
 It now includes a CLI-driven Welcome transport integration case: submit commit+path+welcome and verify DS `list-messages --kind welcome` returns the stored Welcome record.
 It now includes a DS-backed Welcome payload stability test that verifies submit/fetch round-trip returns byte-identical Welcome payloads.
 It now includes negative auto-bootstrap coverage for Welcome-first sync: wrong base members, wrong receiver private key, and tampered Welcome payload are all rejected.
+It now includes DS-backed mixed-proposal-batch coverage for `PreSharedKey` commits: `Update+PSK` and `Remove+PSK` commit batches are submitted over HTTP and applied via `fetch-and-apply-latest`.
+It now includes a DS-backed `ReInit` proposal flow test where a `ReInit` commit is created, submitted, and synced/applied end-to-end.
+It now includes a DS-backed mixed-proposal-batch `Update+GroupContextExtensions` flow that verifies receiver convergence and persisted group-context extensions update.
+It now includes DS-backed negative proposal-matrix coverage for invalid commit proposal sets: duplicate `GroupContextExtensions`, `ReInit+GroupContextExtensions` conflict, duplicate `ReInit`, and unsupported `ReInit` params (version/cipher suite) are rejected on receiver sync/apply.
 
 Deterministic key-schedule vectors (fixed inputs/expected outputs):
 ```bash
@@ -132,6 +146,7 @@ Authenticated content tests:
 cargo test --lib authenticated_content::tests
 ```
 These cover `AuthenticatedContent` sign/verify, round-trip codec behavior, tamper/trailing-byte rejection, and hash behavior (authenticated-content hash with payload-hash fallback).
+They now also cover membership-tag generation/verification and tamper rejection.
 
 Transcript pipeline tests:
 ```bash
@@ -320,7 +335,7 @@ Conceptual steps:
 
 **Delivery Service Client CLI (New)**
 The CLI is a prototype tool to register users, submit proposals/commits, and fetch messages from the DS.
-Client-side `ClientGroupState` persistence is now available in `src/client_state.rs` (group id, ratchet tree, epoch, own leaf index, pending proposals).
+Client-side `ClientGroupState` persistence is now available in `src/client_state.rs` (group id, ratchet tree, epoch, own leaf index, pending proposals, and persisted `group_context_extensions`).
 Wire-format metadata envelopes are now available in `src/envelope.rs` for proposal/commit/path payloads (`group_id`, `epoch`, `sender_leaf`).
 Client group persistence now includes `KeyScheduleState` (epoch-secret nodes + current epoch root secret) and upgrades automatically from older state formats.
 `KeyScheduleState` now derives `EpochDerivedSecrets` (`handshake_secret`, `application_secret`, `exporter_secret`) per epoch with label-separated MLS-style inputs.
@@ -364,7 +379,7 @@ The client stores signing keys in `ds-client.json` by default and can now:
 - Build a commit + path update from queued pending proposals (`create-commit`), write commit/path envelopes to disk, generate a Welcome payload when Add proposals are present, apply the commit locally, clear pending proposals, and increment the local epoch.
 - Submit commit transport now supports optional Welcome payload upload (`submit-commit --welcome-file ...`), and DS group-message listing accepts `kind=welcome`.
 - Apply received commit/path envelopes on receivers (`apply-received-commit`) with metadata checks (`group_id`, `epoch`, `sender_leaf`) and optional path-secret derivation.
-- Inspect epoch key-schedule outputs for demos with `show-derived-secrets` (handshake/application/exporter and optional root secret).
+- Inspect epoch key-schedule outputs for demos with `show-derived-secrets` (chain + epoch fields: commit/joiner/welcome/epoch/handshake/application/exporter and optional root secret).
 - Epoch transitions now also advance persisted key-schedule state (`KeyScheduleState`) using commit-context inputs.
 This is for development only.
 
