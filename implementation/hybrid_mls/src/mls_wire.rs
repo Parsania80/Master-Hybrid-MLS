@@ -124,7 +124,9 @@ impl MlsMessage {
         }
 
         let body = match wire {
-            WireFormat::PublicMessage => MlsMessageBody::Public(PublicMessage::decode(&body_bytes)?),
+            WireFormat::PublicMessage => {
+                MlsMessageBody::Public(PublicMessage::decode(&body_bytes)?)
+            }
             WireFormat::PrivateMessage => {
                 MlsMessageBody::Private(PrivateMessage::decode(&body_bytes)?)
             }

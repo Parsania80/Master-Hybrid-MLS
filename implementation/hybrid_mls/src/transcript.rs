@@ -1,5 +1,7 @@
 use sha3::{Digest, Sha3_256};
 
+pub use crate::stage_keys::derive_confirmation_key;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TranscriptState {
     confirmed_transcript_hash: [u8; 32],
@@ -10,10 +12,14 @@ const TRANSCRIPT_STATE_VERSION: u8 = 1;
 
 impl TranscriptState {
     pub fn new(group_id: &str, tree_hash: [u8; 32]) -> Self {
-        let confirmed_transcript_hash =
-            transcript_hash(b"MLS-TRANSCRIPT-INIT-CONFIRMED", &[group_id.as_bytes(), &tree_hash]);
-        let interim_transcript_hash =
-            transcript_hash(b"MLS-TRANSCRIPT-INIT-INTERIM", &[&confirmed_transcript_hash]);
+        let confirmed_transcript_hash = transcript_hash(
+            b"MLS-TRANSCRIPT-INIT-CONFIRMED",
+            &[group_id.as_bytes(), &tree_hash],
+        );
+        let interim_transcript_hash = transcript_hash(
+            b"MLS-TRANSCRIPT-INIT-INTERIM",
+            &[&confirmed_transcript_hash],
+        );
         Self {
             confirmed_transcript_hash,
             interim_transcript_hash,
@@ -102,21 +108,21 @@ impl TranscriptState {
 }
 
 pub fn derive_confirmation_tag(
-    epoch_root_secret: &[u8; 32],
+    confirmation_key: &[u8; 32],
     confirmed_transcript_hash: &[u8; 32],
 ) -> [u8; 32] {
     transcript_hash(
         b"MLS-CONFIRMATION-TAG",
-        &[epoch_root_secret, confirmed_transcript_hash],
+        &[confirmation_key, confirmed_transcript_hash],
     )
 }
 
 pub fn verify_confirmation_tag(
-    expected_epoch_root_secret: &[u8; 32],
+    expected_confirmation_key: &[u8; 32],
     confirmed_transcript_hash: &[u8; 32],
     received_confirmation_tag: &[u8; 32],
 ) -> bool {
-    derive_confirmation_tag(expected_epoch_root_secret, confirmed_transcript_hash)
+    derive_confirmation_tag(expected_confirmation_key, confirmed_transcript_hash)
         == *received_confirmation_tag
 }
 
@@ -189,13 +195,18 @@ mod tests {
 
     #[test]
     fn confirmation_tag_derive_and_verify() {
-        let root = [0x33u8; 32];
+        let epoch_secret = [0x33u8; 32];
+        let confirmation_key = derive_confirmation_key(&epoch_secret);
         let confirmed = [0x44u8; 32];
-        let tag = derive_confirmation_tag(&root, &confirmed);
-        assert!(verify_confirmation_tag(&root, &confirmed, &tag));
+        let tag = derive_confirmation_tag(&confirmation_key, &confirmed);
+        assert!(verify_confirmation_tag(&confirmation_key, &confirmed, &tag));
 
         let mut tampered = tag;
         tampered[0] ^= 0x80;
-        assert!(!verify_confirmation_tag(&root, &confirmed, &tampered));
+        assert!(!verify_confirmation_tag(
+            &confirmation_key,
+            &confirmed,
+            &tampered
+        ));
     }
 }

@@ -3,6 +3,7 @@ use sha3::{Digest, Sha3_256};
 use crate::crypto::{HybridSignPrivKey, HybridSignPubKey, HybridSignature};
 use crate::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
 use crate::mls_wire::{MlsMessage, PublicMessage, WireFormat, MLS_PROTOCOL_VERSION};
+pub use crate::stage_keys::derive_membership_key;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedContentTbs {
@@ -18,10 +19,21 @@ pub struct AuthenticatedContent {
 
 impl AuthenticatedContentTbs {
     pub fn encode(&self) -> Vec<u8> {
+        self.encode_with_membership_tag(self.public_message.membership_tag.as_deref())
+    }
+
+    pub fn encode_for_signature(&self) -> Vec<u8> {
+        self.encode_with_membership_tag(None)
+    }
+
+    fn encode_with_membership_tag(&self, membership_tag: Option<&[u8]>) -> Vec<u8> {
+        let mut public_message = self.public_message.clone();
+        public_message.membership_tag = membership_tag.map(|tag| tag.to_vec());
+
         let mut out = Vec::new();
         encode_u16(&mut out, MLS_PROTOCOL_VERSION);
         encode_u8(&mut out, self.wire_format as u8);
-        encode_bytes(&mut out, &self.public_message.encode());
+        encode_bytes(&mut out, &public_message.encode());
         out
     }
 
@@ -64,9 +76,41 @@ impl AuthenticatedContent {
         Self { tbs, signature }
     }
 
+    pub fn sign_with_membership_tag(
+        mut tbs: AuthenticatedContentTbs,
+        signer: &HybridSignPrivKey,
+        membership_key: &[u8; 32],
+    ) -> Self {
+        tbs.public_message.membership_tag = None;
+        let signature = signer.sign(&authenticated_content_signing_input(&tbs));
+        let tag = derive_membership_tag(membership_key, &tbs, &signature);
+        tbs.public_message.membership_tag = Some(tag.to_vec());
+        Self { tbs, signature }
+    }
+
     pub fn verify(&self, pub_key: &HybridSignPubKey) -> bool {
         self.signature
             .verify(pub_key, &authenticated_content_signing_input(&self.tbs))
+    }
+
+    pub fn verify_with_membership_tag(
+        &self,
+        pub_key: &HybridSignPubKey,
+        membership_key: &[u8; 32],
+    ) -> bool {
+        if !self.verify(pub_key) {
+            return false;
+        }
+        let Some(tag_bytes) = self.tbs.public_message.membership_tag.as_ref() else {
+            return false;
+        };
+        if tag_bytes.len() != 32 {
+            return false;
+        }
+        let mut received = [0u8; 32];
+        received.copy_from_slice(tag_bytes);
+        let expected = derive_membership_tag(membership_key, &self.tbs, &self.signature);
+        expected == received
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -152,7 +196,7 @@ pub fn hash_payload_fallback(bytes: &[u8]) -> [u8; 32] {
 fn hash_authenticated_content_tbs(tbs: &AuthenticatedContentTbs) -> [u8; 32] {
     let mut hasher = Sha3_256::new();
     hasher.update(b"DS-AUTHENTICATED-CONTENT");
-    hasher.update(tbs.encode());
+    hasher.update(tbs.encode_for_signature());
     let digest = hasher.finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&digest);
@@ -162,7 +206,23 @@ fn hash_authenticated_content_tbs(tbs: &AuthenticatedContentTbs) -> [u8; 32] {
 fn authenticated_content_signing_input(tbs: &AuthenticatedContentTbs) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"MLS 1.0 AuthenticatedContent|");
-    out.extend_from_slice(&tbs.encode());
+    out.extend_from_slice(&tbs.encode_for_signature());
+    out
+}
+
+pub fn derive_membership_tag(
+    membership_key: &[u8; 32],
+    tbs: &AuthenticatedContentTbs,
+    signature: &HybridSignature,
+) -> [u8; 32] {
+    let mut hasher = Sha3_256::new();
+    hasher.update(b"MLS-MEMBERSHIP-TAG");
+    hasher.update(membership_key);
+    hasher.update(tbs.encode_for_signature());
+    hasher.update(signature.to_bytes());
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
     out
 }
 
@@ -289,7 +349,56 @@ mod tests {
             .to_proposal_envelope()
             .expect("recover proposal envelope");
         assert_eq!(recovered.encode(), proposal.encode());
-        assert_eq!(decoded.to_mls_message().wire_format(), WireFormat::PublicMessage);
+        assert_eq!(
+            decoded.to_mls_message().wire_format(),
+            WireFormat::PublicMessage
+        );
+    }
+
+    #[test]
+    fn authenticated_content_membership_tag_roundtrip() {
+        let commit = CommitEnvelope {
+            group_id: "group-membership".to_string(),
+            epoch: 2,
+            sender_leaf: 0,
+            commit: crate::tree::Commit {
+                sender: 0,
+                proposals: vec![Proposal::Remove { leaf_index: 1 }],
+                path: Vec::new(),
+            },
+        };
+        let tbs = tbs_from_commit_envelope(&commit);
+        let (signing, verify_key) = test_signing_keys();
+        let membership_key = derive_membership_key(&[0x44u8; 32]);
+        let content =
+            AuthenticatedContent::sign_with_membership_tag(tbs, &signing, &membership_key);
+
+        assert!(content.verify(&verify_key));
+        assert!(content.verify_with_membership_tag(&verify_key, &membership_key));
+    }
+
+    #[test]
+    fn authenticated_content_membership_tag_rejects_tamper() {
+        let proposal = ProposalEnvelope {
+            group_id: "group-membership".to_string(),
+            epoch: 3,
+            sender_leaf: 1,
+            proposal: Proposal::Remove { leaf_index: 2 },
+        };
+        let tbs = tbs_from_proposal_envelope(&proposal);
+        let (signing, verify_key) = test_signing_keys();
+        let membership_key = derive_membership_key(&[0x66u8; 32]);
+        let mut content =
+            AuthenticatedContent::sign_with_membership_tag(tbs, &signing, &membership_key);
+
+        assert!(content.verify_with_membership_tag(&verify_key, &membership_key));
+        content
+            .tbs
+            .public_message
+            .membership_tag
+            .as_mut()
+            .expect("membership tag exists")[0] ^= 0x80;
+        assert!(!content.verify_with_membership_tag(&verify_key, &membership_key));
     }
 
     #[test]

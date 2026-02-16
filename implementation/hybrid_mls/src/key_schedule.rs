@@ -1,17 +1,38 @@
 use sha3::{Digest, Sha3_256};
 
-const KEY_SCHEDULE_STATE_VERSION: u8 = 1;
+use crate::stage_keys::derive_epoch_stage_keys;
+
+const KEY_SCHEDULE_STATE_VERSION_V1: u8 = 1;
+const KEY_SCHEDULE_STATE_VERSION_V2: u8 = 2;
+const KEY_SCHEDULE_STATE_VERSION: u8 = KEY_SCHEDULE_STATE_VERSION_V2;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EpochSecretNode {
     pub epoch: u64,
     pub parent_epoch: Option<u64>,
+    pub commit_secret: [u8; 32],
+    pub joiner_secret: [u8; 32],
+    pub welcome_secret: [u8; 32],
+    pub epoch_secret: [u8; 32],
+    pub root_secret: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EpochChainSecrets {
+    pub epoch: u64,
+    pub commit_secret: [u8; 32],
+    pub joiner_secret: [u8; 32],
+    pub welcome_secret: [u8; 32],
+    pub epoch_secret: [u8; 32],
     pub root_secret: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EpochDerivedSecrets {
     pub epoch: u64,
+    pub confirmation_key: [u8; 32],
+    pub membership_key: [u8; 32],
+    pub sender_data_key: [u8; 32],
     pub handshake_secret: [u8; 32],
     pub application_secret: [u8; 32],
     pub exporter_secret: [u8; 32],
@@ -31,14 +52,18 @@ impl KeyScheduleState {
             group_id.as_bytes(),
             &[group_id.as_bytes(), &tree_hash],
         );
-        let epoch0 = derive_epoch_root_secret(&init_secret, group_id, 0, &tree_hash, None);
+        let epoch0 = derive_epoch_chain_secrets(&init_secret, group_id, 0, &tree_hash, None);
         Self {
             current_epoch: 0,
             init_secret,
             epoch_secret_nodes: vec![EpochSecretNode {
                 epoch: 0,
                 parent_epoch: None,
-                root_secret: epoch0,
+                commit_secret: epoch0.commit_secret,
+                joiner_secret: epoch0.joiner_secret,
+                welcome_secret: epoch0.welcome_secret,
+                epoch_secret: epoch0.epoch_secret,
+                root_secret: epoch0.root_secret,
             }],
         }
     }
@@ -65,12 +90,29 @@ impl KeyScheduleState {
         group_id: &str,
         epoch: u64,
     ) -> Option<EpochDerivedSecrets> {
-        let root_secret = self.root_secret_for_epoch(epoch)?;
-        Some(derive_epoch_secrets(&root_secret, group_id, epoch))
+        let node = self
+            .epoch_secret_nodes
+            .iter()
+            .find(|node| node.epoch == epoch)?;
+        Some(derive_epoch_secrets(&node.epoch_secret, group_id, epoch))
     }
 
     pub fn derive_current_epoch_secrets(&self, group_id: &str) -> Option<EpochDerivedSecrets> {
         self.derive_secrets_for_epoch(group_id, self.current_epoch)
+    }
+
+    pub fn chain_secrets_for_epoch(&self, epoch: u64) -> Option<EpochChainSecrets> {
+        self.epoch_secret_nodes
+            .iter()
+            .find(|node| node.epoch == epoch)
+            .map(|node| EpochChainSecrets {
+                epoch,
+                commit_secret: node.commit_secret,
+                joiner_secret: node.joiner_secret,
+                welcome_secret: node.welcome_secret,
+                epoch_secret: node.epoch_secret,
+                root_secret: node.root_secret,
+            })
     }
 
     pub fn is_well_formed(&self) -> bool {
@@ -117,7 +159,7 @@ impl KeyScheduleState {
         while self.current_epoch < target_epoch {
             let previous_root = self.current_root_secret().unwrap_or(self.init_secret);
             let next_epoch = self.current_epoch.saturating_add(1);
-            let next_root = derive_epoch_root_secret(
+            let next_chain = derive_epoch_chain_secrets(
                 &previous_root,
                 group_id,
                 next_epoch,
@@ -128,7 +170,11 @@ impl KeyScheduleState {
             self.epoch_secret_nodes.push(EpochSecretNode {
                 epoch: next_epoch,
                 parent_epoch: Some(self.current_epoch),
-                root_secret: next_root,
+                commit_secret: next_chain.commit_secret,
+                joiner_secret: next_chain.joiner_secret,
+                welcome_secret: next_chain.welcome_secret,
+                epoch_secret: next_chain.epoch_secret,
+                root_secret: next_chain.root_secret,
             });
             self.current_epoch = next_epoch;
         }
@@ -152,6 +198,10 @@ impl KeyScheduleState {
                 }
                 None => encode_u8(&mut out, 0),
             }
+            out.extend_from_slice(&node.commit_secret);
+            out.extend_from_slice(&node.joiner_secret);
+            out.extend_from_slice(&node.welcome_secret);
+            out.extend_from_slice(&node.epoch_secret);
             out.extend_from_slice(&node.root_secret);
         }
 
@@ -160,7 +210,8 @@ impl KeyScheduleState {
 
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let mut decoder = Decoder::new(bytes);
-        if decoder.read_u8()? != KEY_SCHEDULE_STATE_VERSION {
+        let version = decoder.read_u8()?;
+        if version != KEY_SCHEDULE_STATE_VERSION_V1 && version != KEY_SCHEDULE_STATE_VERSION_V2 {
             return None;
         }
 
@@ -179,10 +230,33 @@ impl KeyScheduleState {
                 1 => Some(decoder.read_u64()?),
                 _ => return None,
             };
-            let root_secret = decoder.read_array_32()?;
+            let (commit_secret, joiner_secret, welcome_secret, epoch_secret, root_secret) =
+                if version == KEY_SCHEDULE_STATE_VERSION_V2 {
+                    (
+                        decoder.read_array_32()?,
+                        decoder.read_array_32()?,
+                        decoder.read_array_32()?,
+                        decoder.read_array_32()?,
+                        decoder.read_array_32()?,
+                    )
+                } else {
+                    let root_secret = decoder.read_array_32()?;
+                    let legacy = derive_legacy_chain_from_root(&root_secret, epoch);
+                    (
+                        legacy.commit_secret,
+                        legacy.joiner_secret,
+                        legacy.welcome_secret,
+                        legacy.epoch_secret,
+                        root_secret,
+                    )
+                };
             epoch_secret_nodes.push(EpochSecretNode {
                 epoch,
                 parent_epoch,
+                commit_secret,
+                joiner_secret,
+                welcome_secret,
+                epoch_secret,
                 root_secret,
             });
         }
@@ -214,7 +288,7 @@ pub fn tree_snapshot_hash(tree_bytes: &[u8]) -> [u8; 32] {
 }
 
 pub fn derive_epoch_secrets(
-    root_secret: &[u8; 32],
+    epoch_secret: &[u8; 32],
     group_id: &str,
     epoch: u64,
 ) -> EpochDerivedSecrets {
@@ -222,30 +296,38 @@ pub fn derive_epoch_secrets(
     epoch_bytes.copy_from_slice(&epoch.to_be_bytes());
     let context = group_id.as_bytes();
 
-    let handshake_secret = labeled_hash(b"handshake secret", context, &[root_secret, &epoch_bytes]);
-    let application_secret =
-        labeled_hash(b"application secret", context, &[root_secret, &epoch_bytes]);
-    let exporter_secret = labeled_hash(b"exporter secret", context, &[root_secret, &epoch_bytes]);
+    let stage_keys = derive_epoch_stage_keys(epoch_secret);
+    let handshake_secret =
+        labeled_hash(b"handshake secret", context, &[epoch_secret, &epoch_bytes]);
+    let application_secret = labeled_hash(
+        b"application secret",
+        context,
+        &[epoch_secret, &epoch_bytes],
+    );
+    let exporter_secret = labeled_hash(b"exporter secret", context, &[epoch_secret, &epoch_bytes]);
 
     EpochDerivedSecrets {
         epoch,
+        confirmation_key: stage_keys.confirmation_key,
+        membership_key: stage_keys.membership_key,
+        sender_data_key: stage_keys.sender_data_key,
         handshake_secret,
         application_secret,
         exporter_secret,
     }
 }
 
-fn derive_epoch_root_secret(
+fn derive_epoch_chain_secrets(
     previous_root_secret: &[u8; 32],
     group_id: &str,
     epoch: u64,
     tree_hash: &[u8; 32],
     commit_context: Option<&[u8]>,
-) -> [u8; 32] {
+) -> EpochChainSecrets {
     let mut epoch_bytes = [0u8; 8];
     epoch_bytes.copy_from_slice(&epoch.to_be_bytes());
-    labeled_hash(
-        b"epoch root secret",
+    let commit_secret = labeled_hash(
+        b"commit secret",
         group_id.as_bytes(),
         &[
             previous_root_secret,
@@ -253,7 +335,71 @@ fn derive_epoch_root_secret(
             tree_hash,
             commit_context.unwrap_or(&[]),
         ],
-    )
+    );
+    let joiner_secret = labeled_hash(
+        b"joiner secret",
+        group_id.as_bytes(),
+        &[previous_root_secret, &commit_secret, &epoch_bytes],
+    );
+    let welcome_secret = labeled_hash(
+        b"welcome secret",
+        group_id.as_bytes(),
+        &[&joiner_secret, tree_hash, commit_context.unwrap_or(&[])],
+    );
+    let epoch_secret = labeled_hash(
+        b"epoch secret",
+        group_id.as_bytes(),
+        &[&joiner_secret, tree_hash, &epoch_bytes],
+    );
+    let root_secret = labeled_hash(
+        b"epoch root secret",
+        group_id.as_bytes(),
+        &[&epoch_secret, &welcome_secret, &epoch_bytes],
+    );
+
+    EpochChainSecrets {
+        epoch,
+        commit_secret,
+        joiner_secret,
+        welcome_secret,
+        epoch_secret,
+        root_secret,
+    }
+}
+
+fn derive_legacy_chain_from_root(root_secret: &[u8; 32], epoch: u64) -> EpochChainSecrets {
+    let mut epoch_bytes = [0u8; 8];
+    epoch_bytes.copy_from_slice(&epoch.to_be_bytes());
+
+    let commit_secret = labeled_hash(
+        b"legacy commit secret",
+        b"legacy-key-schedule",
+        &[root_secret, &epoch_bytes],
+    );
+    let joiner_secret = labeled_hash(
+        b"legacy joiner secret",
+        b"legacy-key-schedule",
+        &[root_secret, &epoch_bytes],
+    );
+    let welcome_secret = labeled_hash(
+        b"legacy welcome secret",
+        b"legacy-key-schedule",
+        &[root_secret, &epoch_bytes],
+    );
+    let epoch_secret = labeled_hash(
+        b"legacy epoch secret",
+        b"legacy-key-schedule",
+        &[root_secret, &epoch_bytes],
+    );
+
+    EpochChainSecrets {
+        epoch,
+        commit_secret,
+        joiner_secret,
+        welcome_secret,
+        epoch_secret,
+        root_secret: *root_secret,
+    }
 }
 
 fn labeled_hash(label: &[u8], context: &[u8], parts: &[&[u8]]) -> [u8; 32] {
@@ -403,6 +549,9 @@ mod tests {
         assert_ne!(secrets.handshake_secret, secrets.application_secret);
         assert_ne!(secrets.handshake_secret, secrets.exporter_secret);
         assert_ne!(secrets.application_secret, secrets.exporter_secret);
+        assert_ne!(secrets.confirmation_key, secrets.membership_key);
+        assert_ne!(secrets.confirmation_key, secrets.sender_data_key);
+        assert_ne!(secrets.membership_key, secrets.sender_data_key);
     }
 
     #[test]
@@ -420,6 +569,9 @@ mod tests {
         assert_ne!(epoch0.handshake_secret, epoch1.handshake_secret);
         assert_ne!(epoch0.application_secret, epoch1.application_secret);
         assert_ne!(epoch0.exporter_secret, epoch1.exporter_secret);
+        assert_ne!(epoch0.confirmation_key, epoch1.confirmation_key);
+        assert_ne!(epoch0.membership_key, epoch1.membership_key);
+        assert_ne!(epoch0.sender_data_key, epoch1.sender_data_key);
     }
 
     #[test]
@@ -446,6 +598,55 @@ mod tests {
         let state = KeyScheduleState::bootstrap_to_epoch("group-i", 2, tree_hash);
         assert!(state.is_epoch_aligned(2));
         assert!(!state.is_epoch_aligned(1));
+    }
+
+    #[test]
+    fn chain_secrets_for_epoch_are_available_and_distinct() {
+        let tree_hash = tree_snapshot_hash(b"tree-v10");
+        let mut state = KeyScheduleState::new("group-j", tree_hash);
+        state.ensure_epoch(2, "group-j", tree_hash, Some(b"commit-2"));
+
+        let chain = state.chain_secrets_for_epoch(2).expect("chain epoch 2");
+        assert_eq!(chain.epoch, 2);
+        assert_ne!(chain.commit_secret, chain.joiner_secret);
+        assert_ne!(chain.joiner_secret, chain.welcome_secret);
+        assert_ne!(chain.welcome_secret, chain.epoch_secret);
+        assert_ne!(chain.epoch_secret, chain.root_secret);
+    }
+
+    #[test]
+    fn decode_v1_payload_derives_legacy_chain_fields() {
+        let tree_hash = tree_snapshot_hash(b"tree-v11");
+        let mut state = KeyScheduleState::new("group-k", tree_hash);
+        state.ensure_epoch(1, "group-k", tree_hash, Some(b"commit-1"));
+
+        // Build a v1 payload (root_secret only per node) and ensure v2 decoder accepts it.
+        let mut v1 = Vec::new();
+        encode_u8(&mut v1, KEY_SCHEDULE_STATE_VERSION_V1);
+        encode_u64(&mut v1, state.current_epoch);
+        v1.extend_from_slice(&state.init_secret);
+        encode_u32(&mut v1, state.epoch_secret_nodes.len() as u32);
+        for node in &state.epoch_secret_nodes {
+            encode_u64(&mut v1, node.epoch);
+            match node.parent_epoch {
+                Some(parent) => {
+                    encode_u8(&mut v1, 1);
+                    encode_u64(&mut v1, parent);
+                }
+                None => encode_u8(&mut v1, 0),
+            }
+            v1.extend_from_slice(&node.root_secret);
+        }
+
+        let decoded = KeyScheduleState::decode(&v1).expect("decode v1 payload");
+        assert_eq!(decoded.current_epoch, state.current_epoch);
+        assert_eq!(
+            decoded.root_secret_for_epoch(1),
+            state.root_secret_for_epoch(1)
+        );
+        let chain = decoded.chain_secrets_for_epoch(1).expect("chain epoch 1");
+        assert_ne!(chain.commit_secret, [0u8; 32]);
+        assert_ne!(chain.epoch_secret, [0u8; 32]);
     }
 
     fn hex(bytes: &[u8; 32]) -> String {
@@ -475,39 +676,63 @@ mod tests {
         );
         assert_eq!(
             hex(&state.root_secret_for_epoch(0).expect("root0")),
-            "d4a2ba3b7e2101f02579eaf189b0d68619a49a3f801cb94ca8e31ffb27351fe6"
+            "f1f9e85e90d099083e5ce741615efae80b07e12f8d29f3cf673dca0aee438f7f"
         );
         assert_eq!(
             hex(&d0.handshake_secret),
-            "aa54c307e1be9ef80f84009fa472c92a786d27d3f37673f3be9aa6b5e9247e31"
+            "9522945d421806c4e6ae7e5c54830c161cdd97f1368867f8ba84cfe56d47c5ba"
         );
         assert_eq!(
             hex(&d0.application_secret),
-            "d915900693c828c9536b6a8a3d3a173e5a776267764a64a2fb1fed643734b130"
+            "4fd7d517d054f868bb0899b49a7e131b5cc1ece75e9b80091468d56ae8408783"
         );
         assert_eq!(
             hex(&d0.exporter_secret),
-            "62962cf8d0b08e4143ea12fc6d8845ed8e5b84b6c21def2817dbc7a734fe5a29"
+            "abd01a6adcc9059b7fc72d506445a8c3d1458357a89f4b1ebcf59b8f60cab088"
+        );
+        assert_eq!(
+            hex(&d0.confirmation_key),
+            "543fadabcf5ed8c9aa352e3d7b52e5ab34965c1bbb58fdfd17bfa9aed4d48dda"
+        );
+        assert_eq!(
+            hex(&d0.membership_key),
+            "91ae0e1c85cebc977b3d1295934580648f4bfaa7b66ba71ca4f384839d985e04"
+        );
+        assert_eq!(
+            hex(&d0.sender_data_key),
+            "4ca630a2875f182a12a32c6f7184e7029315a0bbf5d487103b3e4722cf084982"
         );
         assert_eq!(
             hex(&state.root_secret_for_epoch(1).expect("root1")),
-            "159a68d413e5c6632763bf70bd7bbf8be10e5687a96c0d075a4254641a81cbd8"
+            "f7179da6831f4ba24ca5402650b78da96a29e97f7591fa2cfa73ec4b8d824e17"
         );
         assert_eq!(
             hex(&state.root_secret_for_epoch(2).expect("root2")),
-            "59de63ac6d94f01dfb02463162950760f402447f5be9635e2583de4dd569db53"
+            "527b0ee420c280382e239c13014495aa0d18ec1c78514eb0435e670abca73907"
         );
         assert_eq!(
             hex(&d2.handshake_secret),
-            "13d65b91130b0f8479a642fc6ec8fd75715d1d4427d6b872a5551874cc744919"
+            "03c9a9520c490e3c53bdf843add05c2d40c2ccfb21f5ba9a4c4791b3e23c1d9c"
         );
         assert_eq!(
             hex(&d2.application_secret),
-            "dea337f36efa4265a7ccdfe6aa5dddf53a87bbef6f8c266a51d9ebbf8f71a356"
+            "7639cf87698f845cab1ca698b0d6980d4932018353dc64270e6ee3819779a262"
         );
         assert_eq!(
             hex(&d2.exporter_secret),
-            "bce09f8ab414734dd27a81ada26cde1cfcef5ef61f45817b112fd51f220ed864"
+            "c6c10a5ae039687ae1e104d6a796db0ea1c0bc1c1dcd39481f0e6bc293a434ee"
+        );
+        assert_eq!(
+            hex(&d2.confirmation_key),
+            "ab2ecab454675943370799e853d0717d055f4aaf5aee3a512a85e8b68fa586f4"
+        );
+        assert_eq!(
+            hex(&d2.membership_key),
+            "0e764544e5e431cd567c39f2339cda72e0db2d821cee12d4523d27003c5484a2"
+        );
+        assert_eq!(
+            hex(&d2.sender_data_key),
+            "426ffd3c25eb869798bb75104ae11e51988a3740509438f6ee2831844ff9f329"
         );
     }
 
@@ -525,19 +750,31 @@ mod tests {
         );
         assert_eq!(
             hex(&state.root_secret_for_epoch(3).expect("root3")),
-            "03a5b4db55b4c622cf8325121353fb530f8d21f2591871ddc53c43480d42cdf9"
+            "6336e929e94630af689e464743e1700476e938cff538e1e898a11ff69bdb7512"
         );
         assert_eq!(
             hex(&d3.handshake_secret),
-            "f619690601d29f4d1a0552dfdacf76558e37cf731f9258d63adc223a03c9e78e"
+            "cc2a4e706046d8dc8270d2088c74bf2838cb85b2dd9064c5eaf19153f04c29d3"
         );
         assert_eq!(
             hex(&d3.application_secret),
-            "7a4e194c4d57acd6bb8baf585f9cc48af35365800c40401d0d800986e818c2f6"
+            "0b0523de96b48fecc4e80a7e06b65ecfd5dafb9d37f7865e704a62e6c30253a6"
         );
         assert_eq!(
             hex(&d3.exporter_secret),
-            "1c8dac88e4e6cd89da33566e5ddafbc110ecceb030265dfb19e75aff48bc77ab"
+            "ebc7bf606ca4e64a73597cc3d724cb5311b0777cbd7bd6e13b1e1c64ead78dc5"
+        );
+        assert_eq!(
+            hex(&d3.confirmation_key),
+            "9625ba97a0f4d47c88746c4b87dfdc4c5fb53e8f6ae9e657911c62e6dc1bd9ce"
+        );
+        assert_eq!(
+            hex(&d3.membership_key),
+            "0c08b5ca7f793a75641a124ac583cdd77fcecd252c35125df8b4c81c6b00ad28"
+        );
+        assert_eq!(
+            hex(&d3.sender_data_key),
+            "2377b9b44c4c938e8c31c5320b0e0fe68d74601e6eec1b08b16a21f1254a9919"
         );
     }
 }

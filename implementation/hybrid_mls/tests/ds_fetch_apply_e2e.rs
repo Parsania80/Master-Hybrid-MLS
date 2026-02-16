@@ -4,13 +4,13 @@ use std::process::Command;
 use std::thread;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use ed25519_dalek::{SecretKey as EdSecretKey, SigningKey as EdSigningKey};
 use hybrid_mls::client_state::ClientGroupState;
 use hybrid_mls::crypto::HybridSignPrivKey;
 use hybrid_mls::ds::config::StorageConfig;
 use hybrid_mls::ds::http::{self, ApiState};
-use hybrid_mls::envelope::PathUpdateEnvelope;
-use hybrid_mls::tree::{Node, RatchetTree};
-use ed25519_dalek::{SecretKey as EdSecretKey, SigningKey as EdSigningKey};
+use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
+use hybrid_mls::tree::{Commit, Node, Proposal, RatchetTree};
 use ml_dsa::{EncodedSigningKey, MlDsa65};
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -183,6 +183,98 @@ fn tamper_group_state_key_schedule_parent_link(group_state_file: &Path) {
     state
         .save_to_file(group_state_file)
         .expect("write parent-link-tampered group state");
+}
+
+fn queue_psk_proposal(group_state_file: &Path, psk_id: &[u8]) {
+    let mut state =
+        ClientGroupState::load_from_file(group_state_file).expect("load group state for psk queue");
+    state.queue_proposal(&Proposal::PreSharedKey {
+        psk_id: psk_id.to_vec(),
+    });
+    state
+        .save_to_file(group_state_file)
+        .expect("save group state with psk proposal");
+}
+
+fn queue_reinit_proposal(
+    group_state_file: &Path,
+    group_id: &str,
+    version: u16,
+    cipher_suite: u16,
+    extensions: &[u8],
+) {
+    let mut state = ClientGroupState::load_from_file(group_state_file)
+        .expect("load group state for reinit queue");
+    state.queue_proposal(&Proposal::ReInit {
+        group_id: group_id.to_string(),
+        version,
+        cipher_suite,
+        extensions: extensions.to_vec(),
+    });
+    state
+        .save_to_file(group_state_file)
+        .expect("save group state with reinit proposal");
+}
+
+fn queue_group_context_extensions_proposal(group_state_file: &Path, extensions: &[u8]) {
+    let mut state = ClientGroupState::load_from_file(group_state_file)
+        .expect("load group state for group-context-extensions queue");
+    state.queue_proposal(&Proposal::GroupContextExtensions {
+        extensions: extensions.to_vec(),
+    });
+    state
+        .save_to_file(group_state_file)
+        .expect("save group state with group-context-extensions proposal");
+}
+
+fn register_and_export_keypackage(
+    client_bin: &str,
+    base_url: &str,
+    state_file: &Path,
+    username: &str,
+    kem_out: &Path,
+    keypackage_out: &Path,
+    receiver_private_out: &Path,
+) {
+    run_ds_client(
+        client_bin,
+        base_url,
+        state_file,
+        &[
+            "register".to_string(),
+            "--username".to_string(),
+            username.to_string(),
+            "--password".to_string(),
+            "secret".to_string(),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        base_url,
+        state_file,
+        &[
+            "keygen".to_string(),
+            "--out".to_string(),
+            to_s(kem_out),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        base_url,
+        state_file,
+        &[
+            "keypackage-export".to_string(),
+            "--kem-file".to_string(),
+            to_s(kem_out),
+            "--keypackage-out".to_string(),
+            to_s(keypackage_out),
+            "--receiver-private-out".to_string(),
+            to_s(receiver_private_out),
+            "--force".to_string(),
+        ],
+    );
 }
 
 struct WelcomeBootstrapFixture {
@@ -436,7 +528,11 @@ async fn setup_unknown_group_welcome_fixture(
     }
 }
 
-fn fetch_message_signing_input_for_test(username: &str, group_id: &str, message_id: i64) -> Vec<u8> {
+fn fetch_message_signing_input_for_test(
+    username: &str,
+    group_id: &str,
+    message_id: i64,
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"message_fetch|");
     out.extend_from_slice(username.as_bytes());
@@ -448,8 +544,8 @@ fn fetch_message_signing_input_for_test(username: &str, group_id: &str, message_
 }
 
 fn signing_key_from_state_file(state_path: &Path) -> (String, String, HybridSignPrivKey) {
-    let state_json: Value =
-        serde_json::from_slice(&fs::read(state_path).expect("read state file")).expect("parse state file");
+    let state_json: Value = serde_json::from_slice(&fs::read(state_path).expect("read state file"))
+        .expect("parse state file");
     let username = state_json["username"]
         .as_str()
         .expect("state username")
@@ -466,14 +562,20 @@ fn signing_key_from_state_file(state_path: &Path) -> (String, String, HybridSign
     let classic_bytes = STANDARD
         .decode(classic_sk_b64)
         .expect("decode classic signing key");
-    assert_eq!(classic_bytes.len(), 32, "classic signing key must be 32 bytes");
+    assert_eq!(
+        classic_bytes.len(),
+        32,
+        "classic signing key must be 32 bytes"
+    );
     let mut classic_secret: EdSecretKey = [0u8; 32];
     classic_secret.copy_from_slice(&classic_bytes);
     let classic = EdSigningKey::from_bytes(&classic_secret);
 
     let pq_bytes = STANDARD.decode(pq_sk_b64).expect("decode pq signing key");
-    let encoded: EncodedSigningKey<MlDsa65> =
-        pq_bytes.as_slice().try_into().expect("parse pq signing key");
+    let encoded: EncodedSigningKey<MlDsa65> = pq_bytes
+        .as_slice()
+        .try_into()
+        .expect("parse pq signing key");
     let pq = ml_dsa::SigningKey::<MlDsa65>::decode(&encoded);
 
     (username, session_id, HybridSignPrivKey { classic, pq })
@@ -1357,7 +1459,10 @@ async fn welcome_payload_is_stable_across_ds_submit_and_fetch_roundtrip() {
     .await;
 
     let local_welcome = fs::read(&fixture.welcome_file).expect("read local welcome payload");
-    assert!(!local_welcome.is_empty(), "local welcome payload must not be empty");
+    assert!(
+        !local_welcome.is_empty(),
+        "local welcome payload must not be empty"
+    );
 
     let list_output = run_ds_client(
         fixture.client_bin,
@@ -1385,8 +1490,7 @@ async fn welcome_payload_is_stable_across_ds_submit_and_fetch_roundtrip() {
         .expect("welcome message id must parse as i64");
 
     let (username, session_id, signing_key) = signing_key_from_state_file(&fixture.alice_state);
-    let sign_input =
-        fetch_message_signing_input_for_test(&username, &fixture.group_id, welcome_id);
+    let sign_input = fetch_message_signing_input_for_test(&username, &fixture.group_id, welcome_id);
     let signature = sign_message_b64_with_large_stack(signing_key, sign_input);
     let query = serde_urlencoded::to_string([
         ("username", username.as_str()),
@@ -1672,6 +1776,114 @@ async fn fetch_and_apply_latest_bootstraps_unknown_group_from_welcome() {
         panic!("server returned error: {err}");
     }
     let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stage_keys_remain_stable_across_reload_and_fetch_apply() {
+    let fixture = setup_unknown_group_welcome_fixture(
+        "stage-key-stability",
+        "group-stage-key-stability",
+        false,
+    )
+    .await;
+
+    let first_sync = run_ds_client(
+        fixture.client_bin,
+        &fixture.base_url,
+        &fixture.bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&fixture.bob_unknown_group_state),
+            "--group-id".to_string(),
+            fixture.group_id.clone(),
+            "--base-member-keypackage".to_string(),
+            to_s(&fixture.alice_kp),
+            "--receiver-private-file".to_string(),
+            to_s(&fixture.bob_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+    );
+    assert!(
+        first_sync.contains("bootstrapped unknown group state via welcome"),
+        "first sync output:\n{first_sync}"
+    );
+    assert!(
+        first_sync.contains("applied_total=1"),
+        "first sync output:\n{first_sync}"
+    );
+
+    let loaded_once = ClientGroupState::load_from_file(&fixture.bob_unknown_group_state)
+        .expect("load bootstrapped group state");
+    assert_eq!(loaded_once.epoch, 1);
+    let derived_once = loaded_once
+        .current_epoch_derived_secrets()
+        .expect("derived secrets after first sync");
+    let confirmation_once = loaded_once
+        .current_confirmation_key()
+        .expect("confirmation key after first sync");
+    let membership_once = loaded_once
+        .current_membership_key()
+        .expect("membership key after first sync");
+    let sender_data_once = loaded_once
+        .current_sender_data_key()
+        .expect("sender-data key after first sync");
+    assert_eq!(confirmation_once, derived_once.confirmation_key);
+    assert_eq!(membership_once, derived_once.membership_key);
+    assert_eq!(sender_data_once, derived_once.sender_data_key);
+
+    let reloaded = ClientGroupState::load_from_file(&fixture.bob_unknown_group_state)
+        .expect("reload group state after first sync");
+    let derived_reloaded = reloaded
+        .current_epoch_derived_secrets()
+        .expect("derived secrets after reload");
+    assert_eq!(
+        derived_once.confirmation_key,
+        derived_reloaded.confirmation_key
+    );
+    assert_eq!(derived_once.membership_key, derived_reloaded.membership_key);
+    assert_eq!(
+        derived_once.sender_data_key,
+        derived_reloaded.sender_data_key
+    );
+
+    let second_sync = run_ds_client(
+        fixture.client_bin,
+        &fixture.base_url,
+        &fixture.bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&fixture.bob_unknown_group_state),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+    );
+    assert!(
+        second_sync.contains("applied_total=0"),
+        "second sync output:\n{second_sync}"
+    );
+
+    let reloaded_after_noop = ClientGroupState::load_from_file(&fixture.bob_unknown_group_state)
+        .expect("reload group state after no-op sync");
+    let derived_after_noop = reloaded_after_noop
+        .current_epoch_derived_secrets()
+        .expect("derived secrets after no-op sync");
+    assert_eq!(
+        derived_reloaded.confirmation_key,
+        derived_after_noop.confirmation_key
+    );
+    assert_eq!(
+        derived_reloaded.membership_key,
+        derived_after_noop.membership_key
+    );
+    assert_eq!(
+        derived_reloaded.sender_data_key,
+        derived_after_noop.sender_data_key
+    );
+
+    teardown_welcome_bootstrap_fixture(fixture).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -7071,6 +7283,1484 @@ async fn misuse_tampered_group_state_parent_link_rejects_second_sync_transition(
         ],
         "corrupt client state",
     );
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mixed_update_and_psk_commit_applies_over_ds() {
+    let (state, base) = temp_state("mixed-update-psk");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let group_id = "group-mixed-update-psk";
+
+    let alice_state = work.join("alice.json");
+    let bob_state = work.join("bob.json");
+    let alice_kem = work.join("alice-kem.json");
+    let bob_kem = work.join("bob-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let bob_kp = work.join("bob.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let bob_recv = work.join("bob.recv.json");
+    let alice_sender_group = work.join("alice-sender.group.bin");
+    let bob_receiver_group = work.join("bob-receiver.group.bin");
+    let alice_v2_kem = work.join("alice-v2-kem.json");
+    let alice_v2_kp = work.join("alice-v2.kp");
+    let alice_v2_recv = work.join("alice-v2.recv.json");
+    let update_proposal = work.join("alice-update.proposal.bin");
+    let commit_file = work.join("mixed-update-psk.commit.bin");
+    let path_file = work.join("mixed-update-psk.path.bin");
+    let psk_id = b"psk-mixed-update-001";
+
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &alice_state,
+        "alice",
+        &alice_kem,
+        &alice_kp,
+        &alice_recv,
+    );
+    register_and_export_keypackage(
+        client_bin, &base_url, &bob_state, "bob", &bob_kem, &bob_kp, &bob_recv,
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&alice_sender_group),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--own-leaf".to_string(),
+            "1".to_string(),
+            "--out".to_string(),
+            to_s(&bob_receiver_group),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keygen".to_string(),
+            "--out".to_string(),
+            to_s(&alice_v2_kem),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keypackage-export".to_string(),
+            "--kem-file".to_string(),
+            to_s(&alice_v2_kem),
+            "--keypackage-out".to_string(),
+            to_s(&alice_v2_kp),
+            "--receiver-private-out".to_string(),
+            to_s(&alice_v2_recv),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-update-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_sender_group),
+            "--keypackage-file".to_string(),
+            to_s(&alice_v2_kp),
+            "--out".to_string(),
+            to_s(&update_proposal),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+            "--target-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&update_proposal),
+        ],
+    );
+
+    queue_psk_proposal(&alice_sender_group, psk_id);
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-commit".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_sender_group),
+            "--commit-out".to_string(),
+            to_s(&commit_file),
+            "--path-update-out".to_string(),
+            to_s(&path_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+
+    let commit_env = CommitEnvelope::decode(&fs::read(&commit_file).expect("read commit envelope"))
+        .expect("decode commit envelope");
+    assert!(
+        commit_env
+            .commit
+            .proposals
+            .iter()
+            .any(|p| matches!(p, Proposal::Update { leaf_index, .. } if *leaf_index == 0)),
+        "mixed commit must include Update proposal"
+    );
+    assert!(
+        commit_env
+            .commit
+            .proposals
+            .iter()
+            .any(|p| matches!(p, Proposal::PreSharedKey { psk_id: id } if id.as_slice() == psk_id)),
+        "mixed commit must include PreSharedKey proposal"
+    );
+
+    let submit_output = run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&commit_file),
+            "--path-update-file".to_string(),
+            to_s(&path_file),
+        ],
+    );
+    let submit_json = parse_json_from_ds_client_output(&submit_output);
+    let commit_id: i64 = submit_json["commit_id"]
+        .as_str()
+        .expect("commit_id str")
+        .parse()
+        .expect("commit_id i64");
+
+    let sync_output = run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&bob_receiver_group),
+            "--receiver-private-file".to_string(),
+            to_s(&bob_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+    );
+    assert!(
+        sync_output.contains("applied_total=1"),
+        "sync output:\n{sync_output}"
+    );
+
+    let alice_after =
+        ClientGroupState::load_from_file(&alice_sender_group).expect("load alice state");
+    let bob_after = ClientGroupState::load_from_file(&bob_receiver_group).expect("load bob state");
+    assert_eq!(alice_after.epoch, 1);
+    assert_eq!(bob_after.epoch, 1);
+    assert_eq!(bob_after.last_applied_commit_id, Some(commit_id));
+    assert_eq!(alice_after.ratchet_tree, bob_after.ratchet_tree);
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mixed_remove_and_psk_commit_applies_over_ds() {
+    let (state, base) = temp_state("mixed-remove-psk");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let group_id = "group-mixed-remove-psk";
+
+    let alice_state = work.join("alice.json");
+    let bob_state = work.join("bob.json");
+    let carol_state = work.join("carol.json");
+    let alice_kem = work.join("alice-kem.json");
+    let bob_kem = work.join("bob-kem.json");
+    let carol_kem = work.join("carol-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let bob_kp = work.join("bob.kp");
+    let carol_kp = work.join("carol.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let bob_recv = work.join("bob.recv.json");
+    let carol_recv = work.join("carol.recv.json");
+    let alice_sender_group = work.join("alice-sender.group.bin");
+    let bob_receiver_group = work.join("bob-receiver.group.bin");
+    let remove_proposal = work.join("remove-carol.proposal.bin");
+    let commit_file = work.join("mixed-remove-psk.commit.bin");
+    let path_file = work.join("mixed-remove-psk.path.bin");
+    let psk_id = b"psk-mixed-remove-001";
+
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &alice_state,
+        "alice",
+        &alice_kem,
+        &alice_kp,
+        &alice_recv,
+    );
+    register_and_export_keypackage(
+        client_bin, &base_url, &bob_state, "bob", &bob_kem, &bob_kp, &bob_recv,
+    );
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &carol_state,
+        "carol",
+        &carol_kem,
+        &carol_kp,
+        &carol_recv,
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--member-keypackage".to_string(),
+            to_s(&carol_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&alice_sender_group),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--member-keypackage".to_string(),
+            to_s(&carol_kp),
+            "--own-leaf".to_string(),
+            "1".to_string(),
+            "--out".to_string(),
+            to_s(&bob_receiver_group),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-remove-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_sender_group),
+            "--remove-leaf".to_string(),
+            "2".to_string(),
+            "--out".to_string(),
+            to_s(&remove_proposal),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&remove_proposal),
+        ],
+    );
+
+    queue_psk_proposal(&alice_sender_group, psk_id);
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-commit".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_sender_group),
+            "--commit-out".to_string(),
+            to_s(&commit_file),
+            "--path-update-out".to_string(),
+            to_s(&path_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+
+    let commit_env = CommitEnvelope::decode(&fs::read(&commit_file).expect("read commit envelope"))
+        .expect("decode commit envelope");
+    assert!(
+        commit_env
+            .commit
+            .proposals
+            .iter()
+            .any(|p| matches!(p, Proposal::Remove { leaf_index } if *leaf_index == 2)),
+        "mixed commit must include Remove proposal"
+    );
+    assert!(
+        commit_env
+            .commit
+            .proposals
+            .iter()
+            .any(|p| matches!(p, Proposal::PreSharedKey { psk_id: id } if id.as_slice() == psk_id)),
+        "mixed commit must include PreSharedKey proposal"
+    );
+
+    let submit_output = run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&commit_file),
+            "--path-update-file".to_string(),
+            to_s(&path_file),
+        ],
+    );
+    let submit_json = parse_json_from_ds_client_output(&submit_output);
+    let commit_id: i64 = submit_json["commit_id"]
+        .as_str()
+        .expect("commit_id str")
+        .parse()
+        .expect("commit_id i64");
+
+    let sync_output = run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&bob_receiver_group),
+            "--receiver-private-file".to_string(),
+            to_s(&bob_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+    );
+    assert!(
+        sync_output.contains("applied_total=1"),
+        "sync output:\n{sync_output}"
+    );
+
+    let alice_after =
+        ClientGroupState::load_from_file(&alice_sender_group).expect("load alice state");
+    let bob_after = ClientGroupState::load_from_file(&bob_receiver_group).expect("load bob state");
+    assert_eq!(alice_after.epoch, 1);
+    assert_eq!(bob_after.epoch, 1);
+    assert_eq!(bob_after.last_applied_commit_id, Some(commit_id));
+    assert_eq!(alice_after.ratchet_tree, bob_after.ratchet_tree);
+
+    let carol_node = RatchetTree::leaf_to_node_index(2);
+    assert!(
+        matches!(
+            bob_after.ratchet_tree.nodes.get(carol_node),
+            Some(Node::Blank)
+        ),
+        "carol leaf must be blank after remove proposal apply"
+    );
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reinit_commit_roundtrip_applies_over_ds() {
+    let (state, base) = temp_state("reinit-roundtrip");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let group_id = "group-reinit-roundtrip";
+
+    let alice_state = work.join("alice.json");
+    let alice_kem = work.join("alice-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let sender_group_state = work.join("alice-sender.group.bin");
+    let receiver_group_state = work.join("alice-receiver.group.bin");
+    let commit_file = work.join("reinit.commit.bin");
+    let path_file = work.join("reinit.path.bin");
+    let reinit_proposal_file = work.join("reinit.proposal.bin");
+
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &alice_state,
+        "alice",
+        &alice_kem,
+        &alice_kp,
+        &alice_recv,
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&sender_group_state),
+            "--force".to_string(),
+        ],
+    );
+    fs::copy(&sender_group_state, &receiver_group_state).expect("copy receiver group state");
+
+    queue_reinit_proposal(
+        &sender_group_state,
+        "group-reinit-next",
+        1,
+        0x0001,
+        b"hybrid-reinit-ext",
+    );
+    let reinit_envelope = ProposalEnvelope {
+        group_id: group_id.to_string(),
+        epoch: 0,
+        sender_leaf: 0,
+        proposal: Proposal::ReInit {
+            group_id: "group-reinit-next".to_string(),
+            version: 1,
+            cipher_suite: 0x0001,
+            extensions: b"hybrid-reinit-ext".to_vec(),
+        },
+    };
+    fs::write(&reinit_proposal_file, reinit_envelope.encode()).expect("write reinit proposal");
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&reinit_proposal_file),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-commit".to_string(),
+            "--group-state".to_string(),
+            to_s(&sender_group_state),
+            "--commit-out".to_string(),
+            to_s(&commit_file),
+            "--path-update-out".to_string(),
+            to_s(&path_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+
+    let commit_env = CommitEnvelope::decode(&fs::read(&commit_file).expect("read commit envelope"))
+        .expect("decode commit envelope");
+    assert!(
+        commit_env.commit.proposals.iter().any(|proposal| {
+            matches!(
+                proposal,
+                Proposal::ReInit {
+                    group_id,
+                    version: 1,
+                    cipher_suite: 0x0001,
+                    ..
+                } if group_id == "group-reinit-next"
+            )
+        }),
+        "commit must contain ReInit proposal"
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&commit_file),
+            "--path-update-file".to_string(),
+            to_s(&path_file),
+        ],
+    );
+
+    let sync_output = run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&receiver_group_state),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+    );
+    assert!(
+        sync_output.contains("applied_total=1"),
+        "sync output:\n{sync_output}"
+    );
+
+    let sender_after =
+        ClientGroupState::load_from_file(&sender_group_state).expect("load sender state");
+    let receiver_after =
+        ClientGroupState::load_from_file(&receiver_group_state).expect("load receiver state");
+    assert_eq!(sender_after.epoch, 1);
+    assert_eq!(receiver_after.epoch, 1);
+    assert_eq!(sender_after.ratchet_tree, receiver_after.ratchet_tree);
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mixed_update_and_group_context_extensions_commit_applies_over_ds() {
+    let (state, base) = temp_state("mixed-update-gce");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let group_id = "group-mixed-update-gce";
+    let expected_extensions = b"gce-ext-v1";
+
+    let alice_state = work.join("alice.json");
+    let bob_state = work.join("bob.json");
+    let alice_kem = work.join("alice-kem.json");
+    let bob_kem = work.join("bob-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let bob_kp = work.join("bob.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let bob_recv = work.join("bob.recv.json");
+    let alice_sender_group = work.join("alice-sender.group.bin");
+    let bob_receiver_group = work.join("bob-receiver.group.bin");
+    let alice_v2_kem = work.join("alice-v2-kem.json");
+    let alice_v2_kp = work.join("alice-v2.kp");
+    let alice_v2_recv = work.join("alice-v2.recv.json");
+    let update_proposal = work.join("alice-update.proposal.bin");
+    let commit_file = work.join("mixed-update-gce.commit.bin");
+    let path_file = work.join("mixed-update-gce.path.bin");
+
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &alice_state,
+        "alice",
+        &alice_kem,
+        &alice_kp,
+        &alice_recv,
+    );
+    register_and_export_keypackage(
+        client_bin, &base_url, &bob_state, "bob", &bob_kem, &bob_kp, &bob_recv,
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&alice_sender_group),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--own-leaf".to_string(),
+            "1".to_string(),
+            "--out".to_string(),
+            to_s(&bob_receiver_group),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keygen".to_string(),
+            "--out".to_string(),
+            to_s(&alice_v2_kem),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keypackage-export".to_string(),
+            "--kem-file".to_string(),
+            to_s(&alice_v2_kem),
+            "--keypackage-out".to_string(),
+            to_s(&alice_v2_kp),
+            "--receiver-private-out".to_string(),
+            to_s(&alice_v2_recv),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-update-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_sender_group),
+            "--keypackage-file".to_string(),
+            to_s(&alice_v2_kp),
+            "--out".to_string(),
+            to_s(&update_proposal),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+            "--target-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&update_proposal),
+        ],
+    );
+
+    queue_group_context_extensions_proposal(&alice_sender_group, expected_extensions);
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-commit".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_sender_group),
+            "--commit-out".to_string(),
+            to_s(&commit_file),
+            "--path-update-out".to_string(),
+            to_s(&path_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+
+    let commit_env = CommitEnvelope::decode(&fs::read(&commit_file).expect("read commit envelope"))
+        .expect("decode commit envelope");
+    assert!(
+        commit_env
+            .commit
+            .proposals
+            .iter()
+            .any(|p| matches!(p, Proposal::Update { leaf_index, .. } if *leaf_index == 0)),
+        "mixed commit must include Update proposal"
+    );
+    assert!(
+        commit_env
+            .commit
+            .proposals
+            .iter()
+            .any(|p| matches!(p, Proposal::GroupContextExtensions { extensions } if extensions.as_slice() == expected_extensions)),
+        "mixed commit must include GroupContextExtensions proposal"
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&commit_file),
+            "--path-update-file".to_string(),
+            to_s(&path_file),
+        ],
+    );
+
+    let sync_output = run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&bob_receiver_group),
+            "--receiver-private-file".to_string(),
+            to_s(&bob_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+    );
+    assert!(
+        sync_output.contains("applied_total=1"),
+        "sync output:\n{sync_output}"
+    );
+
+    let alice_after =
+        ClientGroupState::load_from_file(&alice_sender_group).expect("load alice state");
+    let bob_after = ClientGroupState::load_from_file(&bob_receiver_group).expect("load bob state");
+    assert_eq!(alice_after.epoch, 1);
+    assert_eq!(bob_after.epoch, 1);
+    assert_eq!(alice_after.ratchet_tree, bob_after.ratchet_tree);
+    assert_eq!(alice_after.group_context_extensions, expected_extensions);
+    assert_eq!(bob_after.group_context_extensions, expected_extensions);
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ds_backed_duplicate_group_context_extensions_commit_rejected_on_sync() {
+    let (state, base) = temp_state("dup-gce-reject");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let group_id = "group-dup-gce-reject";
+    let alice_state = work.join("alice.json");
+    let alice_kem = work.join("alice-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let sender_group = work.join("alice-sender.group.bin");
+    let receiver_group = work.join("alice-receiver.group.bin");
+    let valid_update_proposal = work.join("valid-update.proposal.bin");
+    let invalid_commit_file = work.join("invalid-dup-gce.commit.bin");
+
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &alice_state,
+        "alice",
+        &alice_kem,
+        &alice_kp,
+        &alice_recv,
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&sender_group),
+            "--force".to_string(),
+        ],
+    );
+    fs::copy(&sender_group, &receiver_group).expect("copy receiver state");
+
+    // Keep DS proposal queue non-empty so commit policy (min proposals) is satisfied.
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-update-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&sender_group),
+            "--keypackage-file".to_string(),
+            to_s(&alice_kp),
+            "--out".to_string(),
+            to_s(&valid_update_proposal),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+            "--target-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&valid_update_proposal),
+        ],
+    );
+
+    let invalid_commit = CommitEnvelope {
+        group_id: group_id.to_string(),
+        epoch: 0,
+        sender_leaf: 0,
+        commit: Commit {
+            sender: 0,
+            proposals: vec![
+                Proposal::GroupContextExtensions {
+                    extensions: b"ext-a".to_vec(),
+                },
+                Proposal::GroupContextExtensions {
+                    extensions: b"ext-b".to_vec(),
+                },
+            ],
+            path: Vec::new(),
+        },
+    };
+    fs::write(&invalid_commit_file, invalid_commit.encode()).expect("write invalid commit");
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&invalid_commit_file),
+        ],
+    );
+
+    run_ds_client_expect_fail(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&receiver_group),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "failed to apply commit during sync",
+    );
+
+    let receiver_after = ClientGroupState::load_from_file(&receiver_group).expect("load receiver");
+    assert_eq!(receiver_after.epoch, 0);
+    assert_eq!(receiver_after.last_applied_commit_id, None);
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ds_backed_reinit_and_group_context_extensions_conflict_rejected_on_sync() {
+    let (state, base) = temp_state("reinit-gce-conflict-reject");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let group_id = "group-reinit-gce-conflict-reject";
+    let alice_state = work.join("alice.json");
+    let alice_kem = work.join("alice-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let sender_group = work.join("alice-sender.group.bin");
+    let receiver_group = work.join("alice-receiver.group.bin");
+    let valid_update_proposal = work.join("valid-update.proposal.bin");
+    let invalid_commit_file = work.join("invalid-reinit-gce-conflict.commit.bin");
+
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &alice_state,
+        "alice",
+        &alice_kem,
+        &alice_kp,
+        &alice_recv,
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&sender_group),
+            "--force".to_string(),
+        ],
+    );
+    fs::copy(&sender_group, &receiver_group).expect("copy receiver state");
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-update-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&sender_group),
+            "--keypackage-file".to_string(),
+            to_s(&alice_kp),
+            "--out".to_string(),
+            to_s(&valid_update_proposal),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+            "--target-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&valid_update_proposal),
+        ],
+    );
+
+    let invalid_commit = CommitEnvelope {
+        group_id: group_id.to_string(),
+        epoch: 0,
+        sender_leaf: 0,
+        commit: Commit {
+            sender: 0,
+            proposals: vec![
+                Proposal::ReInit {
+                    group_id: "group-v2".to_string(),
+                    version: 1,
+                    cipher_suite: 0x0001,
+                    extensions: Vec::new(),
+                },
+                Proposal::GroupContextExtensions {
+                    extensions: b"ext-v2".to_vec(),
+                },
+            ],
+            path: Vec::new(),
+        },
+    };
+    fs::write(&invalid_commit_file, invalid_commit.encode()).expect("write invalid commit");
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&invalid_commit_file),
+        ],
+    );
+
+    run_ds_client_expect_fail(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&receiver_group),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "failed to apply commit during sync",
+    );
+
+    let receiver_after = ClientGroupState::load_from_file(&receiver_group).expect("load receiver");
+    assert_eq!(receiver_after.epoch, 0);
+    assert_eq!(receiver_after.last_applied_commit_id, None);
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ds_backed_duplicate_reinit_commit_rejected_on_sync() {
+    let (state, base) = temp_state("dup-reinit-reject");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let group_id = "group-dup-reinit-reject";
+    let alice_state = work.join("alice.json");
+    let alice_kem = work.join("alice-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let sender_group = work.join("alice-sender.group.bin");
+    let receiver_group = work.join("alice-receiver.group.bin");
+    let valid_update_proposal = work.join("valid-update.proposal.bin");
+    let invalid_commit_file = work.join("invalid-dup-reinit.commit.bin");
+
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &alice_state,
+        "alice",
+        &alice_kem,
+        &alice_kp,
+        &alice_recv,
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&sender_group),
+            "--force".to_string(),
+        ],
+    );
+    fs::copy(&sender_group, &receiver_group).expect("copy receiver state");
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-update-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&sender_group),
+            "--keypackage-file".to_string(),
+            to_s(&alice_kp),
+            "--out".to_string(),
+            to_s(&valid_update_proposal),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+            "--target-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&valid_update_proposal),
+        ],
+    );
+
+    let invalid_commit = CommitEnvelope {
+        group_id: group_id.to_string(),
+        epoch: 0,
+        sender_leaf: 0,
+        commit: Commit {
+            sender: 0,
+            proposals: vec![
+                Proposal::ReInit {
+                    group_id: "group-v2-a".to_string(),
+                    version: 1,
+                    cipher_suite: 0x0001,
+                    extensions: Vec::new(),
+                },
+                Proposal::ReInit {
+                    group_id: "group-v2-b".to_string(),
+                    version: 1,
+                    cipher_suite: 0x0001,
+                    extensions: Vec::new(),
+                },
+            ],
+            path: Vec::new(),
+        },
+    };
+    fs::write(&invalid_commit_file, invalid_commit.encode()).expect("write invalid commit");
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&invalid_commit_file),
+        ],
+    );
+
+    run_ds_client_expect_fail(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&receiver_group),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "failed to apply commit during sync",
+    );
+
+    let receiver_after = ClientGroupState::load_from_file(&receiver_group).expect("load receiver");
+    assert_eq!(receiver_after.epoch, 0);
+    assert_eq!(receiver_after.last_applied_commit_id, None);
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ds_backed_unsupported_reinit_params_commit_rejected_on_sync() {
+    let (state, base) = temp_state("unsupported-reinit-params-reject");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let group_id = "group-unsupported-reinit-reject";
+    let alice_state = work.join("alice.json");
+    let alice_kem = work.join("alice-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let sender_group = work.join("alice-sender.group.bin");
+    let receiver_group = work.join("alice-receiver.group.bin");
+    let valid_update_proposal = work.join("valid-update.proposal.bin");
+    let invalid_commit_v_file = work.join("invalid-reinit-version.commit.bin");
+    let invalid_commit_cs_file = work.join("invalid-reinit-ciphersuite.commit.bin");
+
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &alice_state,
+        "alice",
+        &alice_kem,
+        &alice_kp,
+        &alice_recv,
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&sender_group),
+            "--force".to_string(),
+        ],
+    );
+    fs::copy(&sender_group, &receiver_group).expect("copy receiver state");
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-update-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&sender_group),
+            "--keypackage-file".to_string(),
+            to_s(&alice_kp),
+            "--out".to_string(),
+            to_s(&valid_update_proposal),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+            "--target-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&valid_update_proposal),
+        ],
+    );
+
+    let invalid_commit_version = CommitEnvelope {
+        group_id: group_id.to_string(),
+        epoch: 0,
+        sender_leaf: 0,
+        commit: Commit {
+            sender: 0,
+            proposals: vec![Proposal::ReInit {
+                group_id: "group-v2".to_string(),
+                version: 2,
+                cipher_suite: 0x0001,
+                extensions: Vec::new(),
+            }],
+            path: Vec::new(),
+        },
+    };
+    fs::write(&invalid_commit_v_file, invalid_commit_version.encode())
+        .expect("write invalid version commit");
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&invalid_commit_v_file),
+        ],
+    );
+
+    run_ds_client_expect_fail(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&receiver_group),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "failed to apply commit during sync",
+    );
+
+    let receiver_after_version =
+        ClientGroupState::load_from_file(&receiver_group).expect("load receiver after version");
+    assert_eq!(receiver_after_version.epoch, 0);
+    assert_eq!(receiver_after_version.last_applied_commit_id, None);
+
+    let invalid_commit_cipher_suite = CommitEnvelope {
+        group_id: group_id.to_string(),
+        epoch: 0,
+        sender_leaf: 0,
+        commit: Commit {
+            sender: 0,
+            proposals: vec![Proposal::ReInit {
+                group_id: "group-v2".to_string(),
+                version: 1,
+                cipher_suite: 0x9999,
+                extensions: Vec::new(),
+            }],
+            path: Vec::new(),
+        },
+    };
+    fs::write(
+        &invalid_commit_cs_file,
+        invalid_commit_cipher_suite.encode(),
+    )
+    .expect("write invalid ciphersuite commit");
+
+    // Refill DS pending proposals to satisfy min-proposals policy for second submit.
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&valid_update_proposal),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&invalid_commit_cs_file),
+        ],
+    );
+
+    run_ds_client_expect_fail(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&receiver_group),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "failed to apply commit during sync",
+    );
+
+    let receiver_after_cipher_suite =
+        ClientGroupState::load_from_file(&receiver_group).expect("load receiver after ciphersuite");
+    assert_eq!(receiver_after_cipher_suite.epoch, 0);
+    assert_eq!(receiver_after_cipher_suite.last_applied_commit_id, None);
 
     let _ = shutdown_tx.send(());
     let result = server.await.expect("join server");
