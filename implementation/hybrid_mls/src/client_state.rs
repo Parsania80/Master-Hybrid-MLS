@@ -1,6 +1,6 @@
-use crate::authenticated_content::derive_membership_key;
 use crate::key_schedule::{tree_snapshot_hash, EpochDerivedSecrets, KeyScheduleState};
-use crate::transcript::{derive_confirmation_key, derive_confirmation_tag, TranscriptState};
+use crate::transcript::derive_confirmation_tag;
+use crate::transcript::TranscriptState;
 use crate::tree::{Proposal, RatchetTree};
 use std::fs;
 use std::path::Path;
@@ -126,10 +126,9 @@ impl ClientGroupState {
                 Some(tag) => Some(*tag),
                 None => self
                     .key_schedule
-                    .chain_secrets_for_epoch(self.epoch)
-                    .map(|chain| {
-                        let confirmation_key = derive_confirmation_key(&chain.epoch_secret);
-                        derive_confirmation_tag(&confirmation_key, &predicted_confirmed)
+                    .derive_secrets_for_epoch(&self.group_id, self.epoch)
+                    .map(|derived| {
+                        derive_confirmation_tag(&derived.confirmation_key, &predicted_confirmed)
                     }),
             };
             let _ = self
@@ -171,14 +170,14 @@ impl ClientGroupState {
 
     pub fn membership_key_for_epoch(&self, epoch: u64) -> Option<[u8; 32]> {
         self.key_schedule
-            .chain_secrets_for_epoch(epoch)
-            .map(|chain| derive_membership_key(&chain.epoch_secret))
+            .derive_secrets_for_epoch(&self.group_id, epoch)
+            .map(|derived| derived.membership_key)
     }
 
     pub fn confirmation_key_for_epoch(&self, epoch: u64) -> Option<[u8; 32]> {
         self.key_schedule
-            .chain_secrets_for_epoch(epoch)
-            .map(|chain| derive_confirmation_key(&chain.epoch_secret))
+            .derive_secrets_for_epoch(&self.group_id, epoch)
+            .map(|derived| derived.confirmation_key)
     }
 
     pub fn sender_data_key_for_epoch(&self, epoch: u64) -> Option<[u8; 32]> {

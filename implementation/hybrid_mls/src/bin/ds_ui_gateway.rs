@@ -25,6 +25,9 @@ use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 use x25519_dalek::{PublicKey as X25519Pub, StaticSecret as X25519Priv};
 
+use hybrid_mls::application_message::{
+    protect_application_message_bytes, unprotect_application_message_bytes,
+};
 use hybrid_mls::authenticated_content::{
     commit_authenticated_content_hash, path_update_authenticated_content_hash,
     proposal_authenticated_content_hash,
@@ -34,11 +37,10 @@ use hybrid_mls::crypto::{
     decrypt_hpke_payload, encrypt_hpke_payload, HybridPrivateKey, HybridPublicKey,
     HybridSignPrivKey, HybridSignPubKey, KyberPriv,
 };
+use hybrid_mls::ds::admin::{derive_admin_key_material, ADMIN_PASSWORD, ADMIN_USERNAME};
 use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
 use hybrid_mls::key_schedule::tree_snapshot_hash;
-use hybrid_mls::transcript::{
-    derive_confirmation_key, derive_confirmation_tag, verify_confirmation_tag,
-};
+use hybrid_mls::transcript::{derive_confirmation_tag, verify_confirmation_tag};
 use hybrid_mls::tree::{
     Commit, KeyPackage, LeafNode, Node, ParentUpdate, PathUpdate, Proposal, RatchetTree,
 };
@@ -362,9 +364,12 @@ fn build_ui_router(ui_state: UiState) -> Router {
         .route("/ui/login", get(ui_login))
         .route("/ui/groups", get(ui_groups))
         .route("/ui/groups/:group_id", get(ui_group_detail))
+        .route("/ui/admin", get(ui_admin))
         .route("/ui/api/register", post(api_register))
         .route("/ui/api/login", post(api_login))
         .route("/ui/api/logout", post(api_logout))
+        .route("/ui/api/admin/users", get(api_admin_users))
+        .route("/ui/api/admin/groups", get(api_admin_groups))
         .route("/ui/api/groups", get(api_groups))
         .route("/ui/api/groups/open", post(api_groups_open))
         .route("/ui/api/groups/remove", post(api_groups_remove))
@@ -464,6 +469,7 @@ async fn ui_login() -> impl IntoResponse {
                         <button class="ghost" type="button" onclick="uiRegister()">Register</button>
                     </div>
                     <div id="auth-status" class="note"></div>
+                    <div class="muted">Bootstrap admin login: `admin` / `admin@123`.</div>
                 </form>
             </section>
         </main>
@@ -574,6 +580,7 @@ async fn ui_groups() -> impl IntoResponse {
             <section class="card">
                 <div class="row">
                     <div id="user-badge" class="note"></div>
+                    <button id="admin-link" class="ghost is-hidden" type="button" onclick="window.location.href='/ui/admin'">Admin Panel</button>
                 </div>
                 <div class="row">
                     <input id="group-input" type="text" placeholder="group-alpha" />
@@ -614,6 +621,14 @@ async fn ui_groups() -> impl IntoResponse {
             return;
           }
           document.getElementById('user-badge').textContent = `Logged in as ${username} (local session cached)`;
+          const adminLink = document.getElementById('admin-link');
+          if (adminLink) {
+            if (username === 'admin') {
+              adminLink.classList.remove('is-hidden');
+            } else {
+              adminLink.classList.add('is-hidden');
+            }
+          }
           const resp = await fetch(`/ui/api/groups?username=${encodeURIComponent(username)}`);
           const data = await resp.json();
           if (!data.ok) {
@@ -851,6 +866,108 @@ async fn ui_groups() -> impl IntoResponse {
         }
         loadGroups();
         uiLoadKeypackages();
+        </script>
+        "#,
+    )
+}
+
+async fn ui_admin() -> impl IntoResponse {
+    ui_shell(
+        "Admin",
+        r#"
+        <div class="top-left">
+            <button class="ghost" type="button" onclick="uiBack('/ui/groups')">Back</button>
+            <button class="ghost" type="button" onclick="window.location.href='/ui/groups'">Groups</button>
+            <button class="ghost" type="button" onclick="uiLogout()">Logout</button>
+        </div>
+        <main class="panel">
+            <section class="hero">
+                <div class="eyebrow">Admin</div>
+                <h1>Global Overview</h1>
+                <p class="muted">Admin-only view of DS users and groups.</p>
+            </section>
+            <section class="card">
+                <div id="admin-badge" class="note"></div>
+                <div class="row">
+                    <button class="primary" type="button" onclick="loadAdmin()">Refresh</button>
+                </div>
+            </section>
+            <section class="card">
+                <div class="title">Users</div>
+                <div id="admin-users" class="list"></div>
+            </section>
+            <section class="card">
+                <div class="title">Groups</div>
+                <div id="admin-groups" class="list"></div>
+            </section>
+        </main>
+        <script>
+        function uiBack(fallbackPath) {
+          if (window.history.length > 1) {
+            window.history.back();
+            return;
+          }
+          window.location.href = fallbackPath;
+        }
+        async function uiLogout() {
+          const username = localStorage.getItem('ui_username');
+          if (username) {
+            await fetch('/ui/api/logout', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({username})
+            });
+          }
+          localStorage.removeItem('ui_username');
+          window.location.href = '/ui/login';
+        }
+        function renderList(listId, rows, emptyLabel) {
+          const node = document.getElementById(listId);
+          if (!rows || rows.length === 0) {
+            node.innerHTML = `<div class="note">${emptyLabel}</div>`;
+            return;
+          }
+          node.innerHTML = rows.join('');
+        }
+        async function loadAdmin() {
+          const username = localStorage.getItem('ui_username');
+          if (!username) {
+            window.location.href = '/ui/login';
+            return;
+          }
+          if (username !== 'admin') {
+            window.location.href = '/ui/groups';
+            return;
+          }
+          document.getElementById('admin-badge').textContent = 'Logged in as admin.';
+          const [usersResp, groupsResp] = await Promise.all([
+            fetch(`/ui/api/admin/users?username=${encodeURIComponent(username)}`),
+            fetch(`/ui/api/admin/groups?username=${encodeURIComponent(username)}`)
+          ]);
+          const usersData = await usersResp.json();
+          const groupsData = await groupsResp.json();
+          if (!usersData.ok) {
+            renderList('admin-users', [`<div class="note">${usersData.error || 'Failed to load users.'}</div>`], 'No users.');
+          } else {
+            const users = usersData.data.users || [];
+            renderList(
+              'admin-users',
+              users.map(user => `<div class="list-item"><div class="title">${user}</div></div>`),
+              'No users.'
+            );
+          }
+          if (!groupsData.ok) {
+            renderList('admin-groups', [`<div class="note">${groupsData.error || 'Failed to load groups.'}</div>`], 'No groups.');
+          } else {
+            const groups = groupsData.data.groups || [];
+            renderList(
+              'admin-groups',
+              groups.map(group => `<div class="list-item"><div><div class="title">${group.group_id}</div><div class="muted">messages: ${group.message_count} • last_at: ${group.last_created_at}</div></div></div>`),
+              'No groups.'
+            );
+          }
+        }
+        loadAdmin();
         </script>
         "#,
     )
@@ -2044,6 +2161,42 @@ async fn api_logout(
     }
 }
 
+async fn api_admin_users(
+    State(state): State<UiState>,
+    Query(query): Query<UserQuery>,
+) -> impl IntoResponse {
+    match ds_list_admin_users(&state, &query.username).await {
+        Ok(value) => Json(ApiResult {
+            ok: true,
+            data: Some(value),
+            error: None,
+        }),
+        Err(err) => Json(ApiResult::<serde_json::Value> {
+            ok: false,
+            data: None,
+            error: Some(err),
+        }),
+    }
+}
+
+async fn api_admin_groups(
+    State(state): State<UiState>,
+    Query(query): Query<UserQuery>,
+) -> impl IntoResponse {
+    match ds_list_admin_groups(&state, &query.username).await {
+        Ok(value) => Json(ApiResult {
+            ok: true,
+            data: Some(value),
+            error: None,
+        }),
+        Err(err) => Json(ApiResult::<serde_json::Value> {
+            ok: false,
+            data: None,
+            error: Some(err),
+        }),
+    }
+}
+
 async fn api_groups(
     State(state): State<UiState>,
     Query(query): Query<UserQuery>,
@@ -3102,6 +3255,15 @@ fn logout_signing_input(username: &str, session_id: &str) -> Vec<u8> {
     out
 }
 
+fn admin_list_signing_input(kind: &str, username: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"admin-list|");
+    out.extend_from_slice(kind.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(username.as_bytes());
+    out
+}
+
 fn proposal_signing_input(username: &str, group_id: &str, proposal: &[u8]) -> Vec<u8> {
     let hash = proposal_authenticated_content_hash(group_id, proposal);
     let mut out = Vec::new();
@@ -3290,6 +3452,12 @@ async fn register_user(
     username: &str,
     password: &str,
 ) -> Result<serde_json::Value, String> {
+    if username == ADMIN_USERNAME {
+        return Err(format!(
+            "admin account is bootstrap-managed; use login with {}/{}",
+            ADMIN_USERNAME, ADMIN_PASSWORD
+        ));
+    }
     let path = state_path(&state.state_dir, username);
     if path.exists() {
         return Err("state already exists; use a different username".to_string());
@@ -3331,6 +3499,9 @@ async fn login_user(
     username: &str,
     password: &str,
 ) -> Result<serde_json::Value, String> {
+    if username == ADMIN_USERNAME {
+        ensure_admin_local_state(state)?;
+    }
     let mut client_state = load_state(state, username)?;
     let signing_key = signing_key_from_state(&client_state)?;
     let sign_input = login_signing_input(username, password);
@@ -3362,6 +3533,25 @@ async fn login_user(
     client_state.session_id = Some(token.to_string());
     save_state(state, &client_state)?;
     Ok(json)
+}
+
+fn ensure_admin_local_state(state: &UiState) -> Result<(), String> {
+    let path = state_path(&state.state_dir, ADMIN_USERNAME);
+    if path.exists() {
+        return Ok(());
+    }
+    let material = run_with_large_stack("ui-admin-keygen", move || {
+        Ok::<_, String>(derive_admin_key_material())
+    })?;
+    let local_state = ClientState {
+        username: ADMIN_USERNAME.to_string(),
+        classic_sk_b64: STANDARD.encode(material.classic_secret),
+        pq_sk_b64: STANDARD.encode(&material.pq_secret),
+        classic_pk_b64: STANDARD.encode(&material.classic_public),
+        pq_pk_b64: STANDARD.encode(&material.pq_public),
+        session_id: None,
+    };
+    save_state(state, &local_state)
 }
 
 async fn logout_user(state: &UiState, username: &str) -> Result<serde_json::Value, String> {
@@ -3397,6 +3587,79 @@ async fn logout_user(state: &UiState, username: &str) -> Result<serde_json::Valu
         serde_json::from_str(&body_text)
             .unwrap_or_else(|_| serde_json::json!({"logged_out": true})),
     )
+}
+
+async fn ds_list_admin_users(state: &UiState, username: &str) -> Result<serde_json::Value, String> {
+    if username != ADMIN_USERNAME {
+        return Err("admin access required".to_string());
+    }
+    let client_state = load_state(state, username)?;
+    let session_id = client_state
+        .session_id
+        .clone()
+        .ok_or_else(|| "missing session_id; login first".to_string())?;
+    let signing_key = signing_key_from_state(&client_state)?;
+    let sign_input = admin_list_signing_input("users", username);
+    let signature = sign_message_b64(signing_key, &sign_input)?;
+
+    let query = serde_urlencoded::to_string([
+        ("username", username.to_string()),
+        ("session_id", session_id),
+        ("signature", signature),
+    ])
+    .map_err(|err| err.to_string())?;
+
+    let url = format!("{}/v1/admin/users?{}", state.base_url, query);
+    let resp = state
+        .client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| format!("admin users failed: {err}"))?;
+    let status = resp.status();
+    let body_text = resp.text().await.map_err(|err| err.to_string())?;
+    if !status.is_success() {
+        return Err(format!("admin users failed: {status} {body_text}"));
+    }
+    serde_json::from_str(&body_text).map_err(|err| err.to_string())
+}
+
+async fn ds_list_admin_groups(
+    state: &UiState,
+    username: &str,
+) -> Result<serde_json::Value, String> {
+    if username != ADMIN_USERNAME {
+        return Err("admin access required".to_string());
+    }
+    let client_state = load_state(state, username)?;
+    let session_id = client_state
+        .session_id
+        .clone()
+        .ok_or_else(|| "missing session_id; login first".to_string())?;
+    let signing_key = signing_key_from_state(&client_state)?;
+    let sign_input = admin_list_signing_input("groups", username);
+    let signature = sign_message_b64(signing_key, &sign_input)?;
+
+    let query = serde_urlencoded::to_string([
+        ("username", username.to_string()),
+        ("session_id", session_id),
+        ("signature", signature),
+    ])
+    .map_err(|err| err.to_string())?;
+
+    let url = format!("{}/v1/admin/groups?{}", state.base_url, query);
+    let resp = state
+        .client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| format!("admin groups failed: {err}"))?;
+    let status = resp.status();
+    let body_text = resp.text().await.map_err(|err| err.to_string())?;
+    if !status.is_success() {
+        return Err(format!("admin groups failed: {status} {body_text}"));
+    }
+    serde_json::from_str(&body_text).map_err(|err| err.to_string())
 }
 
 async fn ds_list_messages(
@@ -3641,7 +3904,33 @@ async fn ds_fetch_app_message(
     if !status.is_success() {
         return Err(format!("fetch app message failed: {status} {body_text}"));
     }
-    serde_json::from_str(&body_text).map_err(|err| err.to_string())
+    let mut json: serde_json::Value =
+        serde_json::from_str(&body_text).map_err(|err| err.to_string())?;
+    if let Some(encoded) = json.get("message_bytes").and_then(|v| v.as_str()) {
+        let payload = STANDARD
+            .decode(encoded)
+            .map_err(|err| format!("decode fetched app payload base64: {err}"))?;
+        let group_state = load_group_state(state, username, group_id)?;
+        match unprotect_application_message_bytes(&group_state, &payload) {
+            Some(opened) => {
+                json["decrypted"] = serde_json::Value::Bool(true);
+                json["sender_leaf"] = serde_json::Value::from(opened.sender_leaf);
+                json["plaintext_b64"] =
+                    serde_json::Value::String(STANDARD.encode(&opened.plaintext));
+                json["plaintext_utf8"] = serde_json::Value::String(
+                    String::from_utf8(opened.plaintext)
+                        .unwrap_or_else(|_| "<non-utf8>".to_string()),
+                );
+            }
+            None => {
+                json["decrypted"] = serde_json::Value::Bool(false);
+                json["decrypt_error"] = serde_json::Value::String(
+                    "message is not a decryptable RFC-style private application message for current group state".to_string(),
+                );
+            }
+        }
+    }
+    Ok(json)
 }
 
 async fn ds_send_app_message(
@@ -3656,8 +3945,15 @@ async fn ds_send_app_message(
         .clone()
         .ok_or_else(|| "missing session_id; login first".to_string())?;
     let signing_key = signing_key_from_state(&client_state)?;
-    let payload = message.as_bytes();
-    let sign_input = app_publish_signing_input(username, group_id, payload);
+    let group_state = load_group_state(state, username, group_id)?;
+    let payload = protect_application_message_bytes(
+        &group_state,
+        group_state.own_leaf_index as u32,
+        message.as_bytes(),
+        b"",
+    )
+    .ok_or_else(|| "failed to protect app message with local group state".to_string())?;
+    let sign_input = app_publish_signing_input(username, group_id, &payload);
     let signature = sign_message_b64(signing_key, &sign_input)?;
 
     let body = serde_json::json!({
@@ -4154,11 +4450,14 @@ fn build_welcome_for_commit(
     let chain = key_schedule
         .chain_secrets_for_epoch(next_epoch)
         .ok_or_else(|| "missing key-schedule chain secrets for welcome epoch".to_string())?;
+    let derived = key_schedule
+        .derive_secrets_for_epoch(&state.group_id, next_epoch)
+        .ok_or_else(|| "missing key-schedule derived secrets for welcome epoch".to_string())?;
 
     let confirmed_transcript_hash =
         state.predict_confirmed_transcript_after_commit(&commit_context);
-    let confirmation_key = derive_confirmation_key(&chain.epoch_secret);
-    let confirmation_tag = derive_confirmation_tag(&confirmation_key, &confirmed_transcript_hash);
+    let confirmation_tag =
+        derive_confirmation_tag(&derived.confirmation_key, &confirmed_transcript_hash);
     let group_info = GroupInfo {
         group_id: state.group_id.clone(),
         epoch: next_epoch,
@@ -4414,9 +4713,12 @@ fn validate_welcome_for_joiner(
             "welcome confirmed_transcript_hash mismatch against local transcript state".to_string(),
         );
     }
-    let confirmation_key = derive_confirmation_key(&chain.epoch_secret);
     if !verify_confirmation_tag(
-        &confirmation_key,
+        &group_state
+            .key_schedule
+            .derive_secrets_for_epoch(&group_state.group_id, group_state.epoch)
+            .ok_or_else(|| "missing key-schedule derived secrets for welcome epoch".to_string())?
+            .confirmation_key,
         &group_info.confirmed_transcript_hash,
         &group_info.confirmation_tag,
     ) {
@@ -5186,6 +5488,7 @@ mod tests {
     use hybrid_mls::ds::config::StorageConfig;
     use hybrid_mls::ds::http::{self as ds_http, ApiState as DsApiState};
     use serde_json::json;
+    use std::future::Future;
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
@@ -5244,8 +5547,27 @@ mod tests {
         serde_json::from_str(&text).expect("parse get json")
     }
 
-    #[tokio::test]
-    async fn ui_add_member_flow_keeps_group_visible_after_relogin() {
+    fn run_async_test_on_large_stack<F>(name: &str, fut: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let handle = std::thread::Builder::new()
+            .name(name.to_string())
+            .stack_size(UI_WORKER_STACK_BYTES)
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build runtime");
+                runtime.block_on(fut);
+            })
+            .expect("spawn large-stack test thread");
+        handle.join().expect("join large-stack test thread");
+    }
+
+    #[test]
+    fn ui_add_member_flow_keeps_group_visible_after_relogin() {
+        run_async_test_on_large_stack("ui-add-member-flow", async move {
         let run_dir = test_run_dir("ui-gateway-e2e");
         let ds_data_dir = run_dir.join("data");
         let ds_db_path = run_dir.join("ds.sqlite");
@@ -5446,5 +5768,119 @@ mod tests {
         ui_handle.abort();
         ds_handle.abort();
         let _ = fs::remove_dir_all(&run_dir);
+        });
+    }
+
+    #[test]
+    fn ui_admin_login_and_global_lists() {
+        run_async_test_on_large_stack("ui-admin-flow", async move {
+        let run_dir = test_run_dir("ui-admin");
+        let ds_data_dir = run_dir.join("data");
+        let ds_db_path = run_dir.join("ds.sqlite");
+        fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+
+        let mut ds_state = DsApiState::default();
+        ds_state.min_proposals_per_commit = 1;
+        ds_state.storage = StorageConfig::new(
+            ds_data_dir.to_string_lossy().as_ref(),
+            ds_db_path.to_string_lossy().as_ref(),
+        );
+        let ds_router = ds_http::router(ds_state);
+        let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+
+        let ui_state_dir = run_dir.join("ui-state");
+        fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+        let ui_state = UiState {
+            base_url: ds_base_url.clone(),
+            state_dir: ui_state_dir.clone(),
+            client: Client::new(),
+        };
+        let ui_router = build_ui_router(ui_state.clone());
+        let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
+
+        let client = Client::new();
+        let group_id = "admin-visible";
+
+        let register = post_json(
+            &client,
+            &format!("{}/ui/api/register", ui_base_url),
+            json!({
+                "username": "parsania",
+                "password": "1234"
+            }),
+        )
+        .await;
+        assert_eq!(register["ok"].as_bool(), Some(true));
+
+        let open_group = post_json(
+            &client,
+            &format!("{}/ui/api/groups/open", ui_base_url),
+            json!({
+                "username": "parsania",
+                "group_id": group_id
+            }),
+        )
+        .await;
+        assert_eq!(open_group["ok"].as_bool(), Some(true));
+
+        let bootstrap = post_json(
+            &client,
+            &format!("{}/ui/api/groups/{}/bootstrap", ui_base_url, group_id),
+            json!({
+                "username": "parsania"
+            }),
+        )
+        .await;
+        assert_eq!(bootstrap["ok"].as_bool(), Some(true));
+
+        let send_message = post_json(
+            &client,
+            &format!("{}/ui/api/groups/{}/app-messages", ui_base_url, group_id),
+            json!({
+                "username": "parsania",
+                "message": "hello from parsania"
+            }),
+        )
+        .await;
+        assert_eq!(send_message["ok"].as_bool(), Some(true));
+
+        let admin_login = post_json(
+            &client,
+            &format!("{}/ui/api/login", ui_base_url),
+            json!({
+                "username": "admin",
+                "password": "admin@123"
+            }),
+        )
+        .await;
+        assert_eq!(admin_login["ok"].as_bool(), Some(true));
+
+        let admin_users = get_json(
+            &client,
+            &format!("{}/ui/api/admin/users?username=admin", ui_base_url),
+        )
+        .await;
+        assert_eq!(admin_users["ok"].as_bool(), Some(true));
+        let users = admin_users["data"]["users"].as_array().expect("users array");
+        assert!(users.iter().any(|u| u.as_str() == Some("admin")));
+        assert!(users.iter().any(|u| u.as_str() == Some("parsania")));
+
+        let admin_groups = get_json(
+            &client,
+            &format!("{}/ui/api/admin/groups?username=admin", ui_base_url),
+        )
+        .await;
+        assert_eq!(admin_groups["ok"].as_bool(), Some(true));
+        let groups = admin_groups["data"]["groups"]
+            .as_array()
+            .expect("groups array");
+        assert!(groups.iter().any(|g| {
+            g.get("group_id").and_then(|x| x.as_str()) == Some(group_id)
+        }));
+
+        ui_handle.abort();
+        ds_handle.abort();
+        let _ = fs::remove_dir_all(&run_dir);
+        });
     }
 }

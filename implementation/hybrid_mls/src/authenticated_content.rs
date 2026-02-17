@@ -302,7 +302,9 @@ mod tests {
     use super::*;
     use ed25519_dalek::{SecretKey as EdSecretKey, SigningKey as EdSigningKey};
     use ml_dsa::{KeyGen, MlDsa65};
-    use rand::rngs::OsRng;
+    use rand::rngs::{OsRng, StdRng};
+    use rand::SeedableRng;
+    use sha3::{Digest, Sha3_256};
 
     use crate::crypto::HybridSignPubKey;
     use crate::tree::Proposal;
@@ -326,6 +328,54 @@ mod tests {
                 pq: pq_pub,
             },
         )
+    }
+
+    fn deterministic_signing_keys() -> (HybridSignPrivKey, HybridSignPubKey) {
+        let secret: EdSecretKey = [0x11u8; 32];
+        let classic_sign = EdSigningKey::from_bytes(&secret);
+        let classic_pub = classic_sign.verifying_key();
+        let mut rng = StdRng::seed_from_u64(0xA11CE55);
+        let kp = MlDsa65::key_gen(&mut rng);
+        let pq_priv = kp.signing_key().clone();
+        let pq_pub = kp.verifying_key().clone();
+
+        (
+            HybridSignPrivKey {
+                classic: classic_sign,
+                pq: pq_priv,
+            },
+            HybridSignPubKey {
+                classic: classic_pub,
+                pq: pq_pub,
+            },
+        )
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn from_hex(hex_str: &str) -> Vec<u8> {
+        assert!(
+            hex_str.len().is_multiple_of(2),
+            "hex fixture must have even length"
+        );
+        let mut out = Vec::with_capacity(hex_str.len() / 2);
+        let bytes = hex_str.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let hi = (bytes[i] as char).to_digit(16).expect("hex hi");
+            let lo = (bytes[i + 1] as char).to_digit(16).expect("hex lo");
+            out.push(((hi << 4) | lo) as u8);
+            i += 2;
+        }
+        out
+    }
+
+    fn sha3_hex(bytes: &[u8]) -> String {
+        let mut hasher = Sha3_256::new();
+        hasher.update(bytes);
+        hex(&hasher.finalize())
     }
 
     #[test]
@@ -450,5 +500,125 @@ mod tests {
         let malformed = vec![0x00, 0x01, 0x02];
         let malformed_hash = proposal_authenticated_content_hash("group-ac", &malformed);
         assert_eq!(malformed_hash, hash_payload_fallback(&malformed));
+    }
+
+    #[test]
+    fn authenticated_content_framing_vector_matches_expected() {
+        let proposal = ProposalEnvelope {
+            group_id: "vector-ac".to_string(),
+            epoch: 9,
+            sender_leaf: 2,
+            proposal: Proposal::Remove { leaf_index: 3 },
+        };
+        let tbs = tbs_from_proposal_envelope(&proposal);
+        let framing_hex = hex(&tbs.encode_for_signature());
+        let signing_input_hash = sha3_hex(&authenticated_content_signing_input(&tbs));
+        assert_eq!(
+            framing_hex,
+            "0001010000002900000009766563746f722d616300000000000000090000000201000000000000000503000000030000"
+        );
+        assert_eq!(
+            signing_input_hash,
+            "9721b5538bd587d9c3935a0e68a454f1ccf5b8cc3e66c195a2bb843eca33d887"
+        );
+    }
+
+    #[test]
+    fn authenticated_content_signature_bytes_vector_matches_expected() {
+        let proposal = ProposalEnvelope {
+            group_id: "vector-ac".to_string(),
+            epoch: 9,
+            sender_leaf: 2,
+            proposal: Proposal::Remove { leaf_index: 3 },
+        };
+        let tbs = tbs_from_proposal_envelope(&proposal);
+        let (signing, verify_key) = deterministic_signing_keys();
+        let content = AuthenticatedContent::sign(tbs.clone(), &signing);
+        assert!(content.verify(&verify_key));
+
+        let signature_bytes = content.signature.to_bytes();
+        let encoded = content.encode();
+        assert_eq!(signature_bytes.len(), 3373);
+        assert_eq!(
+            sha3_hex(&signature_bytes),
+            "cbee9c412d55b28dc00acb86b92e5fc1ac3ec77a4001b1d07b2164c25c48a899"
+        );
+        assert_eq!(
+            sha3_hex(&encoded),
+            "e629784ae5455d8dd42eb723735b993be5dbfcd66983ee487aff36ba2c84a776"
+        );
+
+        let membership_key = derive_membership_key(&[0x55u8; 32]);
+        let tagged =
+            AuthenticatedContent::sign_with_membership_tag(tbs, &signing, &membership_key);
+        assert!(tagged.verify_with_membership_tag(&verify_key, &membership_key));
+        let membership_tag = tagged
+            .tbs
+            .public_message
+            .membership_tag
+            .as_ref()
+            .expect("membership tag");
+        assert_eq!(membership_tag.len(), 32);
+        assert_eq!(
+            hex(membership_tag),
+            "55f35274c6aea4f27a291f7d3550b035b091e6bdc3ba46015ddd136737e1a1e1"
+        );
+    }
+
+    #[test]
+    fn authenticated_content_decode_fixture_untagged_full_bytes() {
+        let fixture = include_bytes!("../tests/vectors/authenticated_content_untagged.bin");
+        let decoded = AuthenticatedContent::decode(fixture).expect("decode fixture");
+        let (_, verify_key) = deterministic_signing_keys();
+        assert!(decoded.verify(&verify_key));
+        assert_eq!(
+            sha3_hex(fixture),
+            "e629784ae5455d8dd42eb723735b993be5dbfcd66983ee487aff36ba2c84a776"
+        );
+
+        let proposal = decoded
+            .tbs
+            .to_proposal_envelope()
+            .expect("fixture proposal envelope");
+        assert_eq!(proposal.group_id, "vector-ac");
+        assert_eq!(proposal.epoch, 9);
+        assert_eq!(proposal.sender_leaf, 2);
+        assert_eq!(proposal.proposal.encode(), Proposal::Remove { leaf_index: 3 }.encode());
+        assert!(decoded.tbs.public_message.membership_tag.is_none());
+        assert!(decoded.tbs.public_message.confirmation_tag.is_none());
+        assert_eq!(decoded.encode(), fixture.to_vec());
+    }
+
+    #[test]
+    fn authenticated_content_decode_fixture_tagged_full_bytes() {
+        let fixture = include_bytes!("../tests/vectors/authenticated_content_tagged.bin");
+        let decoded = AuthenticatedContent::decode(fixture).expect("decode fixture");
+        let (_, verify_key) = deterministic_signing_keys();
+        let membership_key = derive_membership_key(&[0x55u8; 32]);
+        assert!(decoded.verify_with_membership_tag(&verify_key, &membership_key));
+        assert_eq!(
+            sha3_hex(fixture),
+            "6ba5e461c44a670ef4827e45a4aed29f2dc66c911ab99735c6e11174d800422d"
+        );
+
+        let proposal = decoded
+            .tbs
+            .to_proposal_envelope()
+            .expect("fixture proposal envelope");
+        assert_eq!(proposal.group_id, "vector-ac");
+        assert_eq!(proposal.epoch, 9);
+        assert_eq!(proposal.sender_leaf, 2);
+        assert_eq!(proposal.proposal.encode(), Proposal::Remove { leaf_index: 3 }.encode());
+        assert_eq!(
+            decoded
+                .tbs
+                .public_message
+                .membership_tag
+                .as_deref()
+                .expect("membership tag present"),
+            &from_hex("55f35274c6aea4f27a291f7d3550b035b091e6bdc3ba46015ddd136737e1a1e1")
+        );
+        assert!(decoded.tbs.public_message.confirmation_tag.is_none());
+        assert_eq!(decoded.encode(), fixture.to_vec());
     }
 }

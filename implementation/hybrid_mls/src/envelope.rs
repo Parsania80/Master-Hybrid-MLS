@@ -172,6 +172,17 @@ impl<'a> Decoder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha3::{Digest, Sha3_256};
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn sha3_hex(bytes: &[u8]) -> String {
+        let mut hasher = Sha3_256::new();
+        hasher.update(bytes);
+        hex(&hasher.finalize())
+    }
 
     #[test]
     fn proposal_envelope_roundtrip() {
@@ -285,5 +296,118 @@ mod tests {
         let mut trailing = encoded;
         trailing.push(0xBB);
         assert!(PathUpdateEnvelope::decode(&trailing).is_none());
+    }
+
+    #[test]
+    fn proposal_envelope_binary_fixture_vector_matches_expected() {
+        let fixture = include_bytes!("../tests/vectors/proposal_envelope_vector.bin");
+        assert_eq!(
+            sha3_hex(fixture),
+            "489c55a31798801afc9bcf782afe2ac19e97b99862ed6a984850d6f95d2b14ba"
+        );
+
+        let decoded = ProposalEnvelope::decode(fixture).expect("decode proposal fixture");
+        assert_eq!(decoded.group_id, "vector-env");
+        assert_eq!(decoded.epoch, 11);
+        assert_eq!(decoded.sender_leaf, 4);
+        assert_eq!(
+            decoded.proposal.encode(),
+            Proposal::Remove { leaf_index: 7 }.encode()
+        );
+        assert_eq!(decoded.encode(), fixture.to_vec());
+    }
+
+    #[test]
+    fn commit_envelope_binary_fixture_vector_matches_expected() {
+        let fixture = include_bytes!("../tests/vectors/commit_envelope_vector.bin");
+        assert_eq!(
+            sha3_hex(fixture),
+            "4ea6ae8a8072ebce91712f638d120c17f38affe3a3e4d6669ad8babdcef78ca3"
+        );
+
+        let decoded = CommitEnvelope::decode(fixture).expect("decode commit fixture");
+        assert_eq!(decoded.group_id, "vector-env");
+        assert_eq!(decoded.epoch, 11);
+        assert_eq!(decoded.sender_leaf, 4);
+        let expected_commit = Commit {
+            sender: 4,
+            proposals: vec![Proposal::Remove { leaf_index: 7 }],
+            path: Vec::new(),
+        };
+        assert_eq!(decoded.commit.encode(), expected_commit.encode());
+        assert_eq!(decoded.encode(), fixture.to_vec());
+    }
+
+    #[test]
+    fn path_update_envelope_binary_fixture_vector_matches_expected() {
+        let fixture = include_bytes!("../tests/vectors/path_update_envelope_vector.bin");
+        assert_eq!(
+            sha3_hex(fixture),
+            "0ea12d707c1eddb11fc195bb4ca52544f5ad373e1ad8103378e55d392cb45bb5"
+        );
+
+        let decoded = PathUpdateEnvelope::decode(fixture).expect("decode path fixture");
+        assert_eq!(decoded.group_id, "vector-env");
+        assert_eq!(decoded.epoch, 11);
+        assert_eq!(decoded.sender_leaf, 4);
+        assert!(decoded.path_update.ciphertexts.is_empty());
+        assert!(decoded.path_update.path_secrets.is_empty());
+        assert_eq!(decoded.encode(), fixture.to_vec());
+    }
+
+    #[test]
+    fn malformed_envelope_fixtures_are_rejected() {
+        let proposal_cases: [(&str, &[u8]); 2] = [
+            (
+                "proposal_truncated",
+                include_bytes!("../tests/vectors/malformed/proposal_envelope_vector_truncated.bin"),
+            ),
+            (
+                "proposal_trailing",
+                include_bytes!("../tests/vectors/malformed/proposal_envelope_vector_trailing.bin"),
+            ),
+        ];
+        for (name, bytes) in proposal_cases {
+            assert!(
+                ProposalEnvelope::decode(bytes).is_none(),
+                "malformed proposal fixture should fail: {name}"
+            );
+        }
+
+        let commit_cases: [(&str, &[u8]); 2] = [
+            (
+                "commit_truncated",
+                include_bytes!("../tests/vectors/malformed/commit_envelope_vector_truncated.bin"),
+            ),
+            (
+                "commit_trailing",
+                include_bytes!("../tests/vectors/malformed/commit_envelope_vector_trailing.bin"),
+            ),
+        ];
+        for (name, bytes) in commit_cases {
+            assert!(
+                CommitEnvelope::decode(bytes).is_none(),
+                "malformed commit fixture should fail: {name}"
+            );
+        }
+
+        let path_cases: [(&str, &[u8]); 2] = [
+            (
+                "path_truncated",
+                include_bytes!(
+                    "../tests/vectors/malformed/path_update_envelope_vector_truncated.bin"
+                ),
+            ),
+            (
+                "path_trailing",
+                include_bytes!("../tests/vectors/malformed/path_update_envelope_vector_trailing.bin"),
+            ),
+        ];
+        for (name, bytes) in path_cases {
+            assert!(
+                PathUpdateEnvelope::decode(bytes).is_none(),
+                "malformed path fixture should fail: {name}"
+            );
+        }
     }
 }
