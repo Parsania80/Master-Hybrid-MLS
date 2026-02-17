@@ -104,7 +104,9 @@ pub struct PathSecretCiphertext {
 #[derive(Clone, Debug, PartialEq)]
 pub enum CommitValidationError {
     SenderOutOfBounds,
-    DuplicateAdd,
+    DuplicateAddTarget,
+    AddIdentityAlreadyMember,
+    InvalidAddKeyPackage,
     DuplicateUpdate,
     DuplicateRemove,
     DuplicatePreSharedKey,
@@ -847,7 +849,14 @@ impl RatchetTree {
             return Err(CommitValidationError::SenderOutOfBounds);
         }
 
-        let mut add_count = 0usize;
+        let mut existing_member_identities = HashSet::new();
+        for node in &self.nodes {
+            if let Node::Leaf(leaf) = node {
+                existing_member_identities.insert(leaf.credential.to_bytes());
+            }
+        }
+        let mut add_identities = HashSet::new();
+        let mut add_init_keys = HashSet::new();
         let mut updates = HashSet::new();
         let mut removes = HashSet::new();
         let mut psk_ids = HashSet::new();
@@ -856,10 +865,22 @@ impl RatchetTree {
 
         for proposal in &commit.proposals {
             match proposal {
-                Proposal::Add(_) => {
-                    add_count += 1;
-                    if add_count > 1 {
-                        return Err(CommitValidationError::DuplicateAdd);
+                Proposal::Add(key_package) => {
+                    if !key_package.verify() {
+                        return Err(CommitValidationError::InvalidAddKeyPackage);
+                    }
+
+                    let identity = key_package.identity.to_bytes();
+                    if existing_member_identities.contains(&identity) {
+                        return Err(CommitValidationError::AddIdentityAlreadyMember);
+                    }
+                    if !add_identities.insert(identity) {
+                        return Err(CommitValidationError::DuplicateAddTarget);
+                    }
+
+                    let init_key = key_package.init_key.to_bytes();
+                    if !add_init_keys.insert(init_key) {
+                        return Err(CommitValidationError::DuplicateAddTarget);
                     }
                 }
                 Proposal::Update { leaf_index, .. } => {
@@ -1793,6 +1814,48 @@ mod tests {
     }
 
     #[test]
+    fn apply_commit_adds_multiple_members_in_single_commit() {
+        let sender_leaf = make_leaf(13);
+        let mut tree = RatchetTree::from_leaves(vec![sender_leaf]);
+
+        let add_kp_b = make_key_package(14);
+        let add_kp_c = make_key_package(15);
+
+        let mut tree_after = tree.clone();
+        tree_after
+            .insert_key_package(&add_kp_b)
+            .expect("insert first add into temp tree");
+        tree_after
+            .insert_key_package(&add_kp_c)
+            .expect("insert second add into temp tree");
+
+        let path = parent_updates_for(&tree_after, 0, 16);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![
+                Proposal::Add(add_kp_b.clone()),
+                Proposal::Add(add_kp_c.clone()),
+            ],
+            path,
+        };
+
+        tree.apply_commit(&commit)
+            .expect("multi-add commit should apply");
+        assert_eq!(tree.leaf_count(), 3);
+
+        let leaf1 = RatchetTree::leaf_to_node_index(1);
+        let leaf2 = RatchetTree::leaf_to_node_index(2);
+        match &tree.nodes[leaf1] {
+            Node::Leaf(leaf) => assert_eq!(leaf.public_key, add_kp_b.init_key),
+            other => panic!("expected leaf node for added member B, got {other:?}"),
+        }
+        match &tree.nodes[leaf2] {
+            Node::Leaf(leaf) => assert_eq!(leaf.public_key, add_kp_c.init_key),
+            other => panic!("expected leaf node for added member C, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn apply_commit_updates_member_and_path() {
         let leaf0 = make_leaf(20);
         let leaf1 = make_leaf(21);
@@ -2221,6 +2284,63 @@ mod tests {
         let c3 = path_secret_encryption_context(1, 1, 2);
         assert_ne!(c1, c2);
         assert_ne!(c1, c3);
+    }
+
+    #[test]
+    fn validate_commit_allows_multiple_distinct_adds() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(60)]);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![
+                Proposal::Add(make_key_package(61)),
+                Proposal::Add(make_key_package(62)),
+            ],
+            path: Vec::new(),
+        };
+
+        assert!(tree.validate_commit(&commit).is_ok());
+    }
+
+    #[test]
+    fn validate_commit_rejects_duplicate_add_target() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(63)]);
+        let add_kp = make_key_package(64);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::Add(add_kp.clone()), Proposal::Add(add_kp)],
+            path: Vec::new(),
+        };
+
+        let result = tree.validate_commit(&commit);
+        assert_eq!(result, Err(CommitValidationError::DuplicateAddTarget));
+    }
+
+    #[test]
+    fn validate_commit_rejects_add_identity_already_member() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(65)]);
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::Add(make_key_package(65))],
+            path: Vec::new(),
+        };
+
+        let result = tree.validate_commit(&commit);
+        assert_eq!(result, Err(CommitValidationError::AddIdentityAlreadyMember));
+    }
+
+    #[test]
+    fn validate_commit_rejects_invalid_add_key_package() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(66)]);
+        let mut bad_add = make_key_package(67);
+        bad_add.signature = make_key_package(68).signature;
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::Add(bad_add)],
+            path: Vec::new(),
+        };
+
+        let result = tree.validate_commit(&commit);
+        assert_eq!(result, Err(CommitValidationError::InvalidAddKeyPackage));
     }
 
     #[test]

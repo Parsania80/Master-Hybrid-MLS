@@ -7,11 +7,16 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use std::thread;
 
 use crate::authenticated_content::{
     commit_authenticated_content_hash, path_update_authenticated_content_hash,
     proposal_authenticated_content_hash,
+};
+use crate::ds::admin::{
+    admin_password_salt, derive_admin_key_material, AdminKeyMaterial, ADMIN_PASSWORD,
+    ADMIN_USERNAME,
 };
 use crate::ds::auth::{decode_hybrid_sign_pub_key_bytes, decode_hybrid_signature_b64};
 use crate::ds::config::{
@@ -19,7 +24,9 @@ use crate::ds::config::{
     DEFAULT_SESSION_MAX_PER_USER, DEFAULT_SESSION_TTL_SECS,
 };
 use crate::ds::storage::{MessageKind, Storage, StorageError};
+use crate::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
 use crate::tree::KeyPackage;
+use crate::welcome::Welcome;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use sha3::{Digest, Sha3_256};
@@ -202,7 +209,34 @@ pub struct FetchKeyPackageResponse {
     pub created_at: i64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AdminListQuery {
+    pub username: String,
+    pub session_id: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminUsersResponse {
+    pub users: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminGroupSummary {
+    pub group_id: String,
+    pub message_count: u64,
+    pub last_created_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminGroupsResponse {
+    pub groups: Vec<AdminGroupSummary>,
+}
+
 pub fn router(state: ApiState) -> Router {
+    if let Err(err) = bootstrap_admin_for_state(&state) {
+        panic!("failed to bootstrap admin account: {err}");
+    }
     Router::new()
         .route("/healthz", get(health))
         .route("/ui", get(ui_index))
@@ -212,6 +246,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/auth/register", post(register))
         .route("/v1/auth/login", post(login))
         .route("/v1/auth/logout", post(logout))
+        .route("/v1/admin/users", get(list_admin_users))
+        .route("/v1/admin/groups", get(list_admin_groups))
         .route("/v1/keypackages", post(publish_keypackage))
         .route("/v1/keypackages/:target", get(fetch_keypackage))
         .route(
@@ -643,6 +679,72 @@ async fn logout(
     (StatusCode::OK, Json(LogoutResponse { logged_out: true })).into_response()
 }
 
+async fn list_admin_users(
+    State(state): State<ApiState>,
+    Query(query): Query<AdminListQuery>,
+) -> impl IntoResponse {
+    if query.username != ADMIN_USERNAME {
+        return admin_only_error();
+    }
+    let sign_input = admin_list_signing_input("users", &query.username);
+    if let Err(resp) = verify_authenticated_request(
+        &state,
+        &query.username,
+        &query.session_id,
+        sign_input,
+        &query.signature,
+    ) {
+        return resp;
+    }
+
+    let storage = match open_storage(&state) {
+        Ok(s) => s,
+        Err(err) => return storage_error(err),
+    };
+    let users = match storage.list_users() {
+        Ok(items) => items.into_iter().map(|item| item.username).collect(),
+        Err(err) => return storage_error(err),
+    };
+    (StatusCode::OK, Json(AdminUsersResponse { users })).into_response()
+}
+
+async fn list_admin_groups(
+    State(state): State<ApiState>,
+    Query(query): Query<AdminListQuery>,
+) -> impl IntoResponse {
+    if query.username != ADMIN_USERNAME {
+        return admin_only_error();
+    }
+    let sign_input = admin_list_signing_input("groups", &query.username);
+    if let Err(resp) = verify_authenticated_request(
+        &state,
+        &query.username,
+        &query.session_id,
+        sign_input,
+        &query.signature,
+    ) {
+        return resp;
+    }
+
+    let storage = match open_storage(&state) {
+        Ok(s) => s,
+        Err(err) => return storage_error(err),
+    };
+    let groups = match storage.list_groups() {
+        Ok(items) => items
+            .into_iter()
+            .map(|item| AdminGroupSummary {
+                group_id: item.group_id,
+                message_count: item.message_count,
+                last_created_at: item.last_created_at,
+            })
+            .collect(),
+        Err(err) => return storage_error(err),
+    };
+
+    (StatusCode::OK, Json(AdminGroupsResponse { groups })).into_response()
+}
+
 async fn submit_proposal(
     State(state): State<ApiState>,
     Path(group_id): Path<String>,
@@ -659,6 +761,9 @@ async fn submit_proposal(
         proposal_signing_input(&req.username, &group_id, &payload),
         &req.signature,
     ) {
+        return resp;
+    }
+    if let Err(resp) = validate_proposal_submission_payload(&group_id, &payload) {
         return resp;
     }
     let mut storage = match open_storage(&state) {
@@ -730,11 +835,75 @@ async fn submit_commit(
     ) {
         return resp;
     }
+    let commit_meta = match parse_and_validate_commit_submission_payload(
+        &group_id,
+        &commit_payload,
+        path_update_payload.as_deref(),
+        welcome_payload.as_deref(),
+    ) {
+        Ok(commit) => commit,
+        Err(resp) => return resp,
+    };
 
     let mut storage = match open_storage(&state) {
         Ok(s) => s,
         Err(err) => return storage_error(err),
     };
+
+    let latest_commit_epoch =
+        match storage.list_group_kind(&group_id, Some(MessageKind::Commit), 1, None) {
+            Ok(items) => {
+                if let Some(item) = items.into_iter().next() {
+                    let latest_bytes = match storage.load_message_group_kind(
+                        item.id,
+                        &group_id,
+                        MessageKind::Commit,
+                    ) {
+                        Ok(Some(bytes)) => bytes,
+                        Ok(None) => {
+                            return storage_error(StorageError::Io(std::io::Error::new(
+                                std::io::ErrorKind::NotFound,
+                                "latest commit disappeared during validation",
+                            )))
+                        }
+                        Err(err) => return storage_error(err),
+                    };
+                    match decode_commit_submission_meta(&latest_bytes) {
+                        Some(meta) => Some(meta.epoch),
+                        None => {
+                            return conflict_error(
+                                "invalid_server_commit_state",
+                                "latest stored commit payload is malformed",
+                            )
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+            Err(err) => return storage_error(err),
+        };
+
+    if let Some(latest_epoch) = latest_commit_epoch {
+        if commit_meta.epoch <= latest_epoch {
+            return conflict_error(
+                "stale_or_duplicate_commit_epoch",
+                &format!(
+                    "commit epoch {} must be greater than latest committed epoch {}",
+                    commit_meta.epoch, latest_epoch
+                ),
+            );
+        }
+        if commit_meta.epoch > latest_epoch.saturating_add(1) {
+            return conflict_error(
+                "commit_epoch_gap",
+                &format!(
+                    "commit epoch {} is ahead of latest committed epoch {} by more than one",
+                    commit_meta.epoch, latest_epoch
+                ),
+            );
+        }
+    }
 
     let pending = match storage.count_by_kind(&group_id, MessageKind::Proposal) {
         Ok(count) => count as usize,
@@ -1176,6 +1345,194 @@ fn decode_b64(value: &str) -> Result<Vec<u8>, Response> {
     })
 }
 
+fn bad_request_error(code: &str, message: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ApiError {
+            code: code.to_string(),
+            message: message.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+fn conflict_error(code: &str, message: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(ApiError {
+            code: code.to_string(),
+            message: message.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+fn validate_proposal_submission_payload(group_id: &str, payload: &[u8]) -> Result<(), Response> {
+    let Some(payload_group_id) = decode_proposal_group_id(payload) else {
+        return Err(bad_request_error(
+            "invalid_proposal_payload",
+            "proposal payload must be a valid ProposalEnvelope",
+        ));
+    };
+    if payload_group_id != group_id {
+        return Err(bad_request_error(
+            "proposal_group_mismatch",
+            &format!(
+                "proposal envelope group_id '{}' does not match request group_id '{}'",
+                payload_group_id, group_id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_and_validate_commit_submission_payload(
+    group_id: &str,
+    commit_payload: &[u8],
+    path_update_payload: Option<&[u8]>,
+    welcome_payload: Option<&[u8]>,
+) -> Result<CommitSubmissionMeta, Response> {
+    let Some(commit_meta) = decode_commit_submission_meta(commit_payload) else {
+        return Err(bad_request_error(
+            "invalid_commit_payload",
+            "commit payload must be a valid CommitEnvelope",
+        ));
+    };
+    if commit_meta.group_id != group_id {
+        return Err(bad_request_error(
+            "commit_group_mismatch",
+            &format!(
+                "commit envelope group_id '{}' does not match request group_id '{}'",
+                commit_meta.group_id, group_id
+            ),
+        ));
+    }
+    if commit_meta.sender_leaf != commit_meta.commit_sender {
+        return Err(bad_request_error(
+            "commit_sender_mismatch",
+            &format!(
+                "commit sender mismatch: envelope.sender_leaf={} commit.sender={}",
+                commit_meta.sender_leaf, commit_meta.commit_sender
+            ),
+        ));
+    }
+    if commit_meta.requires_path_update && path_update_payload.is_none() {
+        return Err(bad_request_error(
+            "missing_path_update",
+            "path_update payload is required when commit carries a non-empty direct-path update",
+        ));
+    }
+
+    if let Some(path_update_payload) = path_update_payload {
+        let Some(path_update_meta) = decode_path_update_submission_meta(path_update_payload) else {
+            return Err(bad_request_error(
+                "invalid_path_update_payload",
+                "path_update payload must be a valid PathUpdateEnvelope",
+            ));
+        };
+        if path_update_meta.group_id != commit_meta.group_id {
+            return Err(bad_request_error(
+                "path_update_group_mismatch",
+                &format!(
+                    "path update group_id '{}' does not match commit group_id '{}'",
+                    path_update_meta.group_id, commit_meta.group_id
+                ),
+            ));
+        }
+        if path_update_meta.epoch != commit_meta.epoch {
+            return Err(bad_request_error(
+                "path_update_epoch_mismatch",
+                &format!(
+                    "path update epoch {} does not match commit epoch {}",
+                    path_update_meta.epoch, commit_meta.epoch
+                ),
+            ));
+        }
+        if path_update_meta.sender_leaf != commit_meta.sender_leaf {
+            return Err(bad_request_error(
+                "path_update_sender_mismatch",
+                &format!(
+                    "path update sender_leaf {} does not match commit sender_leaf {}",
+                    path_update_meta.sender_leaf, commit_meta.sender_leaf
+                ),
+            ));
+        }
+    }
+
+    if let Some(welcome_payload) = welcome_payload {
+        if !welcome_payload_is_decodable(welcome_payload) {
+            return Err(bad_request_error(
+                "invalid_welcome_payload",
+                "welcome payload must be a valid Welcome structure",
+            ));
+        }
+    }
+
+    Ok(commit_meta)
+}
+
+#[derive(Clone, Debug)]
+struct CommitSubmissionMeta {
+    group_id: String,
+    epoch: u64,
+    sender_leaf: usize,
+    commit_sender: usize,
+    requires_path_update: bool,
+}
+
+#[derive(Clone, Debug)]
+struct PathUpdateSubmissionMeta {
+    group_id: String,
+    epoch: u64,
+    sender_leaf: usize,
+}
+
+fn decode_proposal_group_id(payload: &[u8]) -> Option<String> {
+    let encoded = payload.to_vec();
+    run_ds_worker_with_large_stack("ds-decode-proposal", move || {
+        ProposalEnvelope::decode(&encoded).map(|envelope| envelope.group_id)
+    })
+    .ok()
+    .flatten()
+}
+
+fn decode_commit_submission_meta(payload: &[u8]) -> Option<CommitSubmissionMeta> {
+    let encoded = payload.to_vec();
+    run_ds_worker_with_large_stack("ds-decode-commit", move || {
+        let envelope = CommitEnvelope::decode(&encoded)?;
+        Some(CommitSubmissionMeta {
+            group_id: envelope.group_id,
+            epoch: envelope.epoch,
+            sender_leaf: envelope.sender_leaf,
+            commit_sender: envelope.commit.sender,
+            requires_path_update: !envelope.commit.path.is_empty(),
+        })
+    })
+    .ok()
+    .flatten()
+}
+
+fn decode_path_update_submission_meta(payload: &[u8]) -> Option<PathUpdateSubmissionMeta> {
+    let encoded = payload.to_vec();
+    run_ds_worker_with_large_stack("ds-decode-path-update", move || {
+        PathUpdateEnvelope::decode(&encoded).map(|envelope| PathUpdateSubmissionMeta {
+            group_id: envelope.group_id,
+            epoch: envelope.epoch,
+            sender_leaf: envelope.sender_leaf,
+        })
+    })
+    .ok()
+    .flatten()
+}
+
+fn welcome_payload_is_decodable(payload: &[u8]) -> bool {
+    let encoded = payload.to_vec();
+    run_ds_worker_with_large_stack("ds-decode-welcome", move || {
+        Welcome::decode(&encoded).is_some()
+    })
+    .unwrap_or(false)
+}
+
 fn storage_error(err: StorageError) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1193,12 +1550,54 @@ fn open_storage(state: &ApiState) -> Result<Storage, StorageError> {
     Storage::open(config)
 }
 
+fn bootstrap_admin_for_state(state: &ApiState) -> Result<(), StorageError> {
+    let mut storage = open_storage(state)?;
+    ensure_admin_bootstrap(&mut storage)
+}
+
+fn ensure_admin_bootstrap(storage: &mut Storage) -> Result<(), StorageError> {
+    let admin_keys = admin_key_material_cached()?;
+    let salt = admin_password_salt();
+    let password_hash = hash_password(ADMIN_PASSWORD, &salt);
+    storage.upsert_user(
+        ADMIN_USERNAME,
+        &password_hash,
+        &salt,
+        &admin_keys.classic_public,
+        &admin_keys.pq_public,
+    )
+}
+
+fn admin_key_material_cached() -> Result<&'static AdminKeyMaterial, StorageError> {
+    static ADMIN_KEYS: OnceLock<AdminKeyMaterial> = OnceLock::new();
+    if let Some(keys) = ADMIN_KEYS.get() {
+        return Ok(keys);
+    }
+    let generated = run_ds_worker_with_large_stack("ds-admin-keygen", derive_admin_key_material)
+    .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
+    let _ = ADMIN_KEYS.set(generated);
+    ADMIN_KEYS
+        .get()
+        .ok_or_else(|| StorageError::Io(std::io::Error::other("admin key material missing")))
+}
+
 fn auth_error(code: &str) -> Response {
     (
         StatusCode::UNAUTHORIZED,
         Json(ApiError {
             code: code.to_string(),
             message: "signature verification failed".to_string(),
+        }),
+    )
+        .into_response()
+}
+
+fn admin_only_error() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ApiError {
+            code: "admin_only".to_string(),
+            message: "admin access required".to_string(),
         }),
     )
         .into_response()
@@ -1305,14 +1704,23 @@ fn run_ds_crypto_with_large_stack<F>(worker_name: &'static str, f: F) -> Result<
 where
     F: FnOnce() -> Result<bool, String> + Send + 'static,
 {
+    run_ds_worker_with_large_stack(worker_name, f)
+        .map_err(|err| format!("{worker_name} worker failed: {err}"))?
+}
+
+fn run_ds_worker_with_large_stack<F, T>(worker_name: &'static str, f: F) -> Result<T, String>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
     let handle = thread::Builder::new()
         .name(worker_name.to_string())
         .stack_size(DS_CRYPTO_WORKER_STACK_BYTES)
         .spawn(f)
         .map_err(|err| format!("failed to spawn {worker_name}: {err}"))?;
-    handle
+    Ok(handle
         .join()
-        .map_err(|_| format!("{worker_name} panicked"))?
+        .map_err(|_| format!("{worker_name} panicked"))?)
 }
 
 fn fetch_user_keys(state: &ApiState, username: &str) -> Result<(Vec<u8>, Vec<u8>), Response> {
@@ -1394,6 +1802,15 @@ fn list_signing_input(
     out.extend_from_slice(kind.as_bytes());
     out.extend_from_slice(b"|");
     out.extend_from_slice(before_id.unwrap_or(0).to_string().as_bytes());
+    out
+}
+
+fn admin_list_signing_input(kind: &str, username: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"admin-list|");
+    out.extend_from_slice(kind.as_bytes());
+    out.extend_from_slice(b"|");
+    out.extend_from_slice(username.as_bytes());
     out
 }
 
@@ -1535,7 +1952,7 @@ mod tests {
     use axum::http::Request;
     use ed25519_dalek::{SecretKey, SigningKey as EdSigningKey};
     use http_body_util::BodyExt;
-    use ml_dsa::{KeyGen, MlDsa65};
+    use ml_dsa::{EncodedSigningKey, KeyGen, MlDsa65};
     use ml_kem::Seed;
     use rand::{rngs::OsRng, RngCore};
     use serde_urlencoded;
@@ -1544,7 +1961,7 @@ mod tests {
 
     use crate::crypto::{HybridPublicKey, KyberPriv};
     use crate::crypto::{HybridSignPrivKey, HybridSignPubKey};
-    use crate::tree::KeyPackage;
+    use crate::tree::{KeyPackage, Proposal};
 
     #[test]
     fn password_hash_roundtrip() {
@@ -1693,6 +2110,47 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        json["session_id"].as_str().unwrap().to_string()
+    }
+
+    fn admin_signing_key() -> HybridSignPrivKey {
+        let material = derive_admin_key_material();
+        let mut classic_secret = [0u8; 32];
+        classic_secret.copy_from_slice(&material.classic_secret);
+        let classic = EdSigningKey::from_bytes(&classic_secret);
+        let pq_enc: EncodedSigningKey<MlDsa65> = material
+            .pq_secret
+            .as_slice()
+            .try_into()
+            .expect("valid admin pq signing key bytes");
+        let pq = ml_dsa::SigningKey::<MlDsa65>::decode(&pq_enc);
+        HybridSignPrivKey { classic, pq }
+    }
+
+    async fn login_admin(app: &axum::Router) -> String {
+        let priv_key = admin_signing_key();
+        let sign_input = login_signing_input(ADMIN_USERNAME, ADMIN_PASSWORD);
+        let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
+        let login = LoginRequest {
+            username: ADMIN_USERNAME.to_string(),
+            password: ADMIN_PASSWORD.to_string(),
+            signature,
+        };
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&login).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         json["session_id"].as_str().unwrap().to_string()
@@ -1964,6 +2422,152 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admin_bootstrap_lists_users_and_groups() {
+        let (state, base) = temp_state("admin-list");
+        let app = router(state.clone());
+
+        let mut rng = OsRng;
+        let (alice_priv, _alice_pub, classic_b64, pq_b64) = make_signing_keys(&mut rng);
+        let alice_session = register_and_login(
+            &app,
+            "alice",
+            "secret",
+            &classic_b64,
+            &pq_b64,
+            &alice_priv,
+        )
+        .await;
+
+        let group_id = "admin-visible-group";
+        let proposal_payload = ProposalEnvelope {
+            group_id: group_id.to_string(),
+            epoch: 0,
+            sender_leaf: 0,
+            proposal: Proposal::Remove { leaf_index: 0 },
+        }
+        .encode();
+        let sign_input = proposal_signing_input("alice", group_id, &proposal_payload);
+        let signature = STANDARD.encode(alice_priv.sign(&sign_input).to_bytes());
+        let proposal_req = serde_json::json!({
+            "username": "alice",
+            "session_id": alice_session,
+            "proposal_bytes": STANDARD.encode(proposal_payload),
+            "signature": signature,
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/groups/{group_id}/proposals"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&proposal_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let admin_session = login_admin(&app).await;
+        let admin_priv = admin_signing_key();
+
+        let users_sig_input = admin_list_signing_input("users", ADMIN_USERNAME);
+        let users_sig = STANDARD.encode(admin_priv.sign(&users_sig_input).to_bytes());
+        let users_query = serde_urlencoded::to_string([
+            ("username", ADMIN_USERNAME),
+            ("session_id", admin_session.as_str()),
+            ("signature", users_sig.as_str()),
+        ])
+        .unwrap();
+        let users_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/admin/users?{users_query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(users_resp.status(), StatusCode::OK);
+        let users_body = users_resp.into_body().collect().await.unwrap().to_bytes();
+        let users_json: serde_json::Value = serde_json::from_slice(&users_body).unwrap();
+        let users = users_json["users"].as_array().expect("users array");
+        assert!(users.iter().any(|v| v.as_str() == Some(ADMIN_USERNAME)));
+        assert!(users.iter().any(|v| v.as_str() == Some("alice")));
+
+        let groups_sig_input = admin_list_signing_input("groups", ADMIN_USERNAME);
+        let groups_sig = STANDARD.encode(admin_priv.sign(&groups_sig_input).to_bytes());
+        let groups_query = serde_urlencoded::to_string([
+            ("username", ADMIN_USERNAME),
+            ("session_id", admin_session.as_str()),
+            ("signature", groups_sig.as_str()),
+        ])
+        .unwrap();
+        let groups_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/admin/groups?{groups_query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(groups_resp.status(), StatusCode::OK);
+        let groups_body = groups_resp.into_body().collect().await.unwrap().to_bytes();
+        let groups_json: serde_json::Value = serde_json::from_slice(&groups_body).unwrap();
+        let groups = groups_json["groups"].as_array().expect("groups array");
+        assert!(groups
+            .iter()
+            .any(|v| v.get("group_id").and_then(|x| x.as_str()) == Some(group_id)));
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn admin_endpoints_reject_non_admin_user() {
+        let (state, base) = temp_state("admin-reject");
+        let app = router(state.clone());
+
+        let mut rng = OsRng;
+        let (alice_priv, _alice_pub, classic_b64, pq_b64) = make_signing_keys(&mut rng);
+        let alice_session = register_and_login(
+            &app,
+            "alice",
+            "secret",
+            &classic_b64,
+            &pq_b64,
+            &alice_priv,
+        )
+        .await;
+
+        let sign_input = admin_list_signing_input("users", "alice");
+        let signature = STANDARD.encode(alice_priv.sign(&sign_input).to_bytes());
+        let query = serde_urlencoded::to_string([
+            ("username", "alice"),
+            ("session_id", alice_session.as_str()),
+            ("signature", signature.as_str()),
+        ])
+        .unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/admin/users?{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
     async fn group_message_fetch_commit_path_and_welcome_roundtrip() {
         let (mut state, base) = temp_state("group-fetch");
         state.min_proposals_per_commit = 1;
@@ -1978,8 +2582,14 @@ mod tests {
 
         let group_id = "group-fetch";
 
-        let proposal_payload = b"proposal-1";
-        let sign_input = proposal_signing_input(username, group_id, proposal_payload);
+        let proposal_payload = ProposalEnvelope {
+            group_id: group_id.to_string(),
+            epoch: 0,
+            sender_leaf: 0,
+            proposal: Proposal::Remove { leaf_index: 0 },
+        }
+        .encode();
+        let sign_input = proposal_signing_input(username, group_id, &proposal_payload);
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let proposal_req = serde_json::json!({
             "username": username,
@@ -2001,23 +2611,47 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let commit_payload = b"commit-1";
-        let path_payload = b"path-1";
-        let welcome_payload = b"welcome-1";
+        let commit_payload = CommitEnvelope {
+            group_id: group_id.to_string(),
+            epoch: 0,
+            sender_leaf: 0,
+            commit: crate::tree::Commit {
+                sender: 0,
+                proposals: vec![Proposal::Remove { leaf_index: 0 }],
+                path: Vec::new(),
+            },
+        }
+        .encode();
+        let path_payload = PathUpdateEnvelope {
+            group_id: group_id.to_string(),
+            epoch: 0,
+            sender_leaf: 0,
+            path_update: crate::tree::PathUpdate {
+                path_secrets: Vec::new(),
+                ciphertexts: Vec::new(),
+            },
+        }
+        .encode();
+        let welcome_payload = Welcome {
+            cipher_suite: 0x0001,
+            secrets: Vec::new(),
+            encrypted_group_info: vec![0x11, 0x22, 0x33],
+        }
+        .encode();
         let sign_input = commit_signing_input(
             username,
             group_id,
-            commit_payload,
-            Some(path_payload),
-            Some(welcome_payload),
+            &commit_payload,
+            Some(&path_payload),
+            Some(&welcome_payload),
         );
         let signature = STANDARD.encode(priv_key.sign(&sign_input).to_bytes());
         let commit_req = serde_json::json!({
             "username": username,
             "session_id": session_id.clone(),
-            "commit_bytes": STANDARD.encode(commit_payload),
-            "path_update_bytes": STANDARD.encode(path_payload),
-            "welcome_bytes": STANDARD.encode(welcome_payload),
+            "commit_bytes": STANDARD.encode(&commit_payload),
+            "path_update_bytes": STANDARD.encode(&path_payload),
+            "welcome_bytes": STANDARD.encode(&welcome_payload),
             "signature": signature,
         });
         let resp = app

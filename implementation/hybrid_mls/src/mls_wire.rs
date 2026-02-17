@@ -413,6 +413,17 @@ impl<'a> Decoder<'a> {
 mod tests {
     use super::*;
     use crate::tree::{Commit, PathUpdate, Proposal};
+    use sha3::{Digest, Sha3_256};
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn sha3_hex(bytes: &[u8]) -> String {
+        let mut hasher = Sha3_256::new();
+        hasher.update(bytes);
+        hex(&hasher.finalize())
+    }
 
     #[test]
     fn public_message_proposal_roundtrip() {
@@ -558,5 +569,111 @@ mod tests {
         let mut trailing = public.encode();
         trailing.push(0xAA);
         assert!(PublicMessage::decode(&trailing).is_none());
+    }
+
+    #[test]
+    fn public_message_full_byte_vector_matches_expected() {
+        let public = PublicMessage {
+            group_id: "vector-wire".to_string(),
+            epoch: 42,
+            sender_leaf: 3,
+            content_type: ContentType::Proposal,
+            authenticated_data: vec![0xAA, 0xBB, 0xCC],
+            content: Proposal::Remove { leaf_index: 7 }.encode(),
+            membership_tag: Some(vec![0x10, 0x20, 0x30, 0x40]),
+            confirmation_tag: Some([0x55; 32]),
+        };
+
+        let encoded = public.encode();
+        let fixture = include_bytes!("../tests/vectors/public_message_vector.bin");
+        assert_eq!(encoded, fixture.to_vec());
+        assert_eq!(
+            sha3_hex(fixture),
+            "455ecb7402eb80bd8355c4cb28dff6f172fbc99deb944ee321832a940533e1c9"
+        );
+        let decoded = PublicMessage::decode(fixture).expect("decode public vector");
+        assert_eq!(decoded, public);
+        assert_eq!(decoded.encode(), fixture.to_vec());
+    }
+
+    #[test]
+    fn private_message_full_byte_vector_matches_expected() {
+        let private = PrivateMessage {
+            group_id: "vector-wire".to_string(),
+            epoch: 42,
+            content_type: ContentType::Application,
+            authenticated_data: vec![0x01, 0x02, 0x03],
+            encrypted_sender_data: vec![0xA1, 0xB2, 0xC3, 0xD4],
+            ciphertext: vec![0xDE, 0xAD, 0xBE, 0xEF, 0x11],
+        };
+
+        let encoded = private.encode();
+        let fixture = include_bytes!("../tests/vectors/private_message_vector.bin");
+        assert_eq!(encoded, fixture.to_vec());
+        assert_eq!(
+            sha3_hex(fixture),
+            "3f102f6df1bcdc437a5048331f1188074f767c80cfebabf5f1e71753cf31c18f"
+        );
+        let decoded = PrivateMessage::decode(fixture).expect("decode private vector");
+        assert_eq!(decoded, private);
+        assert_eq!(decoded.encode(), fixture.to_vec());
+    }
+
+    #[test]
+    fn mls_message_full_byte_vectors_match_expected() {
+        let public = MlsMessage::from_public(PublicMessage {
+            group_id: "vector-wire".to_string(),
+            epoch: 42,
+            sender_leaf: 3,
+            content_type: ContentType::Proposal,
+            authenticated_data: vec![0xAA, 0xBB, 0xCC],
+            content: Proposal::Remove { leaf_index: 7 }.encode(),
+            membership_tag: Some(vec![0x10, 0x20, 0x30, 0x40]),
+            confirmation_tag: Some([0x55; 32]),
+        });
+        let private = MlsMessage::from_private(PrivateMessage {
+            group_id: "vector-wire".to_string(),
+            epoch: 42,
+            content_type: ContentType::Application,
+            authenticated_data: vec![0x01, 0x02, 0x03],
+            encrypted_sender_data: vec![0xA1, 0xB2, 0xC3, 0xD4],
+            ciphertext: vec![0xDE, 0xAD, 0xBE, 0xEF, 0x11],
+        });
+
+        let public_encoded = public.encode();
+        let private_encoded = private.encode();
+        let public_fixture = include_bytes!("../tests/vectors/mls_public_message_vector.bin");
+        let private_fixture = include_bytes!("../tests/vectors/mls_private_message_vector.bin");
+        assert_eq!(public_encoded, public_fixture.to_vec());
+        assert_eq!(private_encoded, private_fixture.to_vec());
+        assert_eq!(
+            sha3_hex(public_fixture),
+            "1004d11984c16e05a4df78f47e3b0daf789b8c55b5a0dad241253247314851f4"
+        );
+        assert_eq!(
+            sha3_hex(private_fixture),
+            "1a1e665b50f1f35cb2a482f8a5165d913f5f374bbdb2215160696b4022ed2df1"
+        );
+
+        assert_eq!(
+            MlsMessage::decode(public_fixture).expect("decode mls public vector"),
+            public
+        );
+        assert_eq!(
+            MlsMessage::decode(private_fixture).expect("decode mls private vector"),
+            private
+        );
+        assert_eq!(
+            MlsMessage::decode(public_fixture)
+                .expect("decode mls public vector")
+                .encode(),
+            public_fixture.to_vec()
+        );
+        assert_eq!(
+            MlsMessage::decode(private_fixture)
+                .expect("decode mls private vector")
+                .encode(),
+            private_fixture.to_vec()
+        );
     }
 }

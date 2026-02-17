@@ -49,6 +49,19 @@ pub struct StoredMessage {
     pub path: PathBuf,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredUser {
+    pub username: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredGroup {
+    pub group_id: String,
+    pub message_count: u64,
+    pub last_created_at: i64,
+}
+
 #[derive(Debug)]
 pub struct Storage {
     conn: Connection,
@@ -333,6 +346,28 @@ impl Storage {
         Ok(())
     }
 
+    pub fn upsert_user(
+        &mut self,
+        username: &str,
+        password_hash: &[u8],
+        salt: &[u8],
+        classic_pub: &[u8],
+        pq_pub: &[u8],
+    ) -> Result<(), StorageError> {
+        let now = now_unix();
+        self.conn.execute(
+            "INSERT INTO users (username, password_hash, salt, classic_pub, pq_pub, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(username) DO UPDATE SET
+               password_hash = excluded.password_hash,
+               salt = excluded.salt,
+               classic_pub = excluded.classic_pub,
+               pq_pub = excluded.pq_pub",
+            params![username, password_hash, salt, classic_pub, pq_pub, now],
+        )?;
+        Ok(())
+    }
+
     pub fn get_user_keys(
         &self,
         username: &str,
@@ -486,6 +521,44 @@ impl Storage {
         let payload: Vec<u8> = row.get(0)?;
         let created_at: i64 = row.get(1)?;
         Ok(Some((payload, created_at)))
+    }
+
+    pub fn list_users(&self) -> Result<Vec<StoredUser>, StorageError> {
+        let mut out = Vec::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT username, created_at FROM users ORDER BY created_at ASC, username ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(StoredUser {
+                username: row.get(0)?,
+                created_at: row.get(1)?,
+            })
+        })?;
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn list_groups(&self) -> Result<Vec<StoredGroup>, StorageError> {
+        let mut out = Vec::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT group_id, COUNT(*) as msg_count, MAX(created_at) as last_created_at
+             FROM messages
+             GROUP BY group_id
+             ORDER BY group_id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(StoredGroup {
+                group_id: row.get(0)?,
+                message_count: row.get::<_, i64>(1)? as u64,
+                last_created_at: row.get::<_, i64>(2)?,
+            })
+        })?;
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     pub fn count_by_kind(&self, group_id: &str, kind: MessageKind) -> Result<u64, StorageError> {
@@ -808,6 +881,43 @@ mod tests {
             .load_message_group_kind(app_msg.id, "group-d", MessageKind::Commit)
             .expect("load app");
         assert!(missing.is_none());
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn list_users_and_groups() {
+        let (config, base) = temp_config("list-users-groups", 1024 * 1024);
+        let mut storage = Storage::open(config).expect("open storage");
+
+        storage
+            .upsert_user("alice", b"h1", b"s1", b"c1", b"p1")
+            .expect("upsert alice");
+        storage
+            .upsert_user("bob", b"h2", b"s2", b"c2", b"p2")
+            .expect("upsert bob");
+
+        let users = storage.list_users().expect("list users");
+        assert_eq!(users.len(), 2);
+        assert_eq!(users[0].username, "alice");
+        assert_eq!(users[1].username, "bob");
+
+        storage
+            .store_message("group-alpha", MessageKind::Proposal, b"p")
+            .expect("store proposal");
+        storage
+            .store_message("group-alpha", MessageKind::Commit, b"c")
+            .expect("store commit");
+        storage
+            .store_message("group-beta", MessageKind::Commit, b"c2")
+            .expect("store commit");
+
+        let groups = storage.list_groups().expect("list groups");
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].group_id, "group-alpha");
+        assert_eq!(groups[0].message_count, 2);
+        assert_eq!(groups[1].group_id, "group-beta");
+        assert_eq!(groups[1].message_count, 1);
 
         let _ = std::fs::remove_dir_all(base);
     }

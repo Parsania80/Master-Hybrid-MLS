@@ -18,6 +18,9 @@ use serde_urlencoded;
 use sha3::{Digest, Sha3_256};
 use x25519_dalek::{PublicKey as X25519Pub, StaticSecret as X25519Priv};
 
+use hybrid_mls::application_message::{
+    protect_application_message_bytes, unprotect_application_message_bytes,
+};
 use hybrid_mls::authenticated_content::{
     commit_authenticated_content_hash, path_update_authenticated_content_hash,
     proposal_authenticated_content_hash,
@@ -29,9 +32,7 @@ use hybrid_mls::crypto::{
 };
 use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
 use hybrid_mls::key_schedule::tree_snapshot_hash;
-use hybrid_mls::transcript::{
-    derive_confirmation_key, derive_confirmation_tag, verify_confirmation_tag,
-};
+use hybrid_mls::transcript::{derive_confirmation_tag, verify_confirmation_tag};
 use hybrid_mls::tree::{
     Commit, KeyPackage, LeafNode, Node, ParentUpdate, PathUpdate, Proposal, RatchetTree,
 };
@@ -138,7 +139,11 @@ pub enum Commands {
         #[arg(long)]
         group_id: String,
         #[arg(long)]
+        group_state: Option<PathBuf>,
+        #[arg(long)]
         message_file: PathBuf,
+        #[arg(long)]
+        sender_leaf: Option<usize>,
     },
     ListAppMessages {
         #[arg(long)]
@@ -157,6 +162,8 @@ pub enum Commands {
         group_id: String,
         #[arg(long)]
         message_id: String,
+        #[arg(long)]
+        group_state: Option<PathBuf>,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -750,12 +757,23 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::SendAppMessage {
             username,
             group_id,
+            group_state,
             message_file,
+            sender_leaf,
         } => {
             let state = load_state(&cli.state)?;
             let username = resolve_username(username, &state)?;
             let session_id = require_session_id(&state)?;
-            let payload = fs::read(&message_file)?;
+            let plaintext = fs::read(&message_file)?;
+            let payload = if let Some(group_state_path) = group_state {
+                let group_state = ClientGroupState::load_from_file(&group_state_path)?;
+                ensure_group_state_consistency(&group_state, "send-app-message protect")?;
+                let sender = sender_leaf.unwrap_or(group_state.own_leaf_index) as u32;
+                protect_application_message_bytes(&group_state, sender, &plaintext, b"")
+                    .ok_or("failed to protect application message with current group state")?
+            } else {
+                plaintext.clone()
+            };
             let payload_b64 = STANDARD.encode(&payload);
 
             let priv_key = signing_key_from_state(&state)?;
@@ -810,6 +828,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             username,
             group_id,
             message_id,
+            group_state,
             out,
         } => {
             let state = load_state(&cli.state)?;
@@ -840,7 +859,20 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
                     if let Some(bytes) = json.get("message_bytes").and_then(|v| v.as_str()) {
                         let decoded = STANDARD.decode(bytes)?;
-                        fs::write(path, decoded)?;
+                        let output = if let Some(group_state_path) = group_state {
+                            let group_state = ClientGroupState::load_from_file(&group_state_path)?;
+                            ensure_group_state_consistency(
+                                &group_state,
+                                "fetch-app-message unprotect",
+                            )?;
+                            let opened =
+                                unprotect_application_message_bytes(&group_state, &decoded)
+                                    .ok_or("failed to decrypt fetched application message")?;
+                            opened.plaintext
+                        } else {
+                            decoded
+                        };
+                        fs::write(path, output)?;
                     }
                 }
             }
@@ -1077,6 +1109,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             let mut state = load_group_state(&group_state)?;
             let commit_envelope = load_commit_envelope_from_file(&commit_file)?;
             validate_commit_envelope_metadata(&state, &commit_envelope)?;
+            validate_commit_state_machine_transition(&state, &commit_envelope)?;
 
             let path_update_envelope = match path_update_file.as_ref() {
                 Some(path) => {
@@ -1086,6 +1119,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 None => None,
             };
+            let path_required = commit_requires_path_update(&commit_envelope.commit);
 
             if path_update_envelope.is_some() && receiver_private_file.is_none() {
                 return Err(
@@ -1093,9 +1127,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                         .into(),
                 );
             }
-            if path_update_envelope.is_none() && receiver_private_file.is_some() {
+            if path_required && path_update_envelope.is_none() && receiver_private_file.is_some() {
                 return Err(
-                    "--path-update-file is required when --receiver-private-file is provided"
+                    "--path-update-file is required when --receiver-private-file is provided and commit carries a non-empty path update"
                         .into(),
                 );
             }
@@ -1708,6 +1742,10 @@ fn validate_welcome_for_joiner(
         .key_schedule
         .chain_secrets_for_epoch(state.epoch)
         .ok_or("missing key schedule chain secrets for current epoch")?;
+    let epoch_derived = state
+        .key_schedule
+        .derive_secrets_for_epoch(&state.group_id, state.epoch)
+        .ok_or("missing key schedule derived secrets for current epoch")?;
     if group_secrets.joiner_secret != chain.joiner_secret {
         return Err(
             "welcome GroupSecrets.joiner_secret mismatch against local key schedule chain".into(),
@@ -1749,9 +1787,8 @@ fn validate_welcome_for_joiner(
                 .into(),
         );
     }
-    let confirmation_key = derive_confirmation_key(&chain.epoch_secret);
     if !verify_confirmation_tag(
-        &confirmation_key,
+        &epoch_derived.confirmation_key,
         &group_info.confirmed_transcript_hash,
         &group_info.confirmation_tag,
     ) {
@@ -1893,6 +1930,25 @@ fn validate_commit_envelope_metadata(
             envelope.sender_leaf, envelope.commit.sender
         )
         .into());
+    }
+    Ok(())
+}
+
+fn commit_requires_path_update(commit: &Commit) -> bool {
+    !commit.path.is_empty()
+}
+
+fn validate_commit_state_machine_transition(
+    state: &ClientGroupState,
+    envelope: &CommitEnvelope,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if envelope.commit.proposals.is_empty()
+        && envelope.commit.path.is_empty()
+        && state.ratchet_tree.leaf_count() > 1
+    {
+        return Err(
+            "multi-member commit must carry proposals and/or a non-empty path update".into(),
+        );
     }
     Ok(())
 }
@@ -2114,10 +2170,13 @@ fn build_welcome_for_commit(
     let chain = key_schedule
         .chain_secrets_for_epoch(next_epoch)
         .ok_or("missing key-schedule chain secrets for welcome epoch")?;
+    let derived = key_schedule
+        .derive_secrets_for_epoch(&state.group_id, next_epoch)
+        .ok_or("missing key-schedule derived secrets for welcome epoch")?;
     let confirmed_transcript_hash =
         state.predict_confirmed_transcript_after_commit(&commit_context);
-    let confirmation_key = derive_confirmation_key(&chain.epoch_secret);
-    let confirmation_tag = derive_confirmation_tag(&confirmation_key, &confirmed_transcript_hash);
+    let confirmation_tag =
+        derive_confirmation_tag(&derived.confirmation_key, &confirmed_transcript_hash);
     let group_info = GroupInfo {
         group_id: state.group_id.clone(),
         epoch: next_epoch,
@@ -2545,57 +2604,74 @@ async fn fetch_and_apply_latest_once(
             skipped += 1;
             continue;
         }
+        if let Err(err) = validate_commit_state_machine_transition(state, &commit_env) {
+            return Err(format!(
+                "strict receiver policy: invalid commit state transition for commit_id={} (group={}, epoch={}): {}",
+                commit_id, commit_env.group_id, commit_env.epoch, err
+            )
+            .into());
+        }
         let mut derived_for_commit: Option<Vec<Option<[u8; 32]>>> = None;
 
         if let Some(receiver_private) = receiver_private {
             let mut matched_path_update: Option<(i64, PathUpdateEnvelope)> = None;
+            let path_required = commit_requires_path_update(&commit_env.commit);
             let candidate_path_ids = candidate_path_update_ids(*commit_id, next_commit, &path_ids);
 
-            for path_id in candidate_path_ids {
-                let fetched_path = ds_fetch_group_message(
-                    client,
-                    base_url,
-                    username,
-                    session_id,
-                    signing_key,
-                    &state.group_id,
-                    path_id,
-                )
-                .await?;
-                if fetched_path.kind != "path_update" {
-                    continue;
-                }
-                let path_bytes = STANDARD.decode(&fetched_path.message_bytes)?;
-                let Some(path_env) = PathUpdateEnvelope::decode(&path_bytes) else {
-                    continue;
-                };
-                if validate_path_update_envelope_metadata(&commit_env, &path_env).is_ok() {
-                    matched_path_update = Some((path_id, path_env));
-                    break;
+            if path_required {
+                for path_id in candidate_path_ids {
+                    let fetched_path = ds_fetch_group_message(
+                        client,
+                        base_url,
+                        username,
+                        session_id,
+                        signing_key,
+                        &state.group_id,
+                        path_id,
+                    )
+                    .await?;
+                    if fetched_path.kind != "path_update" {
+                        continue;
+                    }
+                    let path_bytes = STANDARD.decode(&fetched_path.message_bytes)?;
+                    let Some(path_env) = PathUpdateEnvelope::decode(&path_bytes) else {
+                        continue;
+                    };
+                    if validate_path_update_envelope_metadata(&commit_env, &path_env).is_ok() {
+                        matched_path_update = Some((path_id, path_env));
+                        break;
+                    }
                 }
             }
 
-            if let Some((path_id, path_env)) = matched_path_update {
-                let derived = state
-                    .ratchet_tree
-                    .apply_commit_with_path_update(
-                        &commit_env.commit,
-                        &path_env.path_update,
-                        state.own_leaf_index,
-                        receiver_private,
+            if path_required {
+                if let Some((path_id, path_env)) = matched_path_update {
+                    let derived = state
+                        .ratchet_tree
+                        .apply_commit_with_path_update(
+                            &commit_env.commit,
+                            &path_env.path_update,
+                            state.own_leaf_index,
+                            receiver_private,
+                        )
+                        .ok_or("failed to apply commit+path update during sync")?;
+                    derived_for_commit = Some(derived);
+                    println!(
+                        "applied commit_id={} with matched path_update_id={}",
+                        commit_id, path_id
+                    );
+                } else {
+                    return Err(format!(
+                        "strict receiver policy: missing or mismatched path_update for commit_id={} (group={}, epoch={}, sender_leaf={})",
+                        commit_id, commit_env.group_id, commit_env.epoch, commit_env.sender_leaf
                     )
-                    .ok_or("failed to apply commit+path update during sync")?;
-                derived_for_commit = Some(derived);
-                println!(
-                    "applied commit_id={} with matched path_update_id={}",
-                    commit_id, path_id
-                );
+                    .into());
+                }
             } else {
-                return Err(format!(
-                    "strict receiver policy: missing or mismatched path_update for commit_id={} (group={}, epoch={}, sender_leaf={})",
-                    commit_id, commit_env.group_id, commit_env.epoch, commit_env.sender_leaf
-                )
-                .into());
+                state
+                    .ratchet_tree
+                    .apply_commit(&commit_env.commit)
+                    .ok_or("failed to apply commit during sync")?;
             }
         } else {
             state
@@ -3114,7 +3190,7 @@ mod tests {
     use super::*;
     use hybrid_mls::crypto::{HybridSignPrivKey, HybridSignPubKey, KyberPriv};
     use hybrid_mls::tree::RatchetTree;
-    use hybrid_mls::tree::{LeafNode, Proposal};
+    use hybrid_mls::tree::{LeafNode, ParentUpdate, Proposal};
     use ml_dsa::{KeyGen, MlDsa65};
     use rand::rngs::StdRng;
     use rand::SeedableRng;
@@ -3215,6 +3291,62 @@ mod tests {
         };
 
         assert!(validate_commit_envelope_metadata(&state, &envelope).is_err());
+    }
+
+    #[test]
+    fn commit_requires_path_update_reflects_commit_path_presence() {
+        let without_path = Commit {
+            sender: 0,
+            proposals: Vec::new(),
+            path: Vec::new(),
+        };
+        assert!(!commit_requires_path_update(&without_path));
+
+        let with_path = Commit {
+            sender: 0,
+            proposals: Vec::new(),
+            path: vec![ParentUpdate {
+                public_key: test_member(1).0.init_key,
+                unmerged_leaves: Vec::new(),
+            }],
+        };
+        assert!(commit_requires_path_update(&with_path));
+    }
+
+    #[test]
+    fn validate_commit_state_machine_transition_rejects_multimember_noop_commit() {
+        let mut state = ClientGroupState::new("group-a", RatchetTree::new(2), 0);
+        state.set_epoch(3);
+        let envelope = CommitEnvelope {
+            group_id: "group-a".to_string(),
+            epoch: 3,
+            sender_leaf: 0,
+            commit: Commit {
+                sender: 0,
+                proposals: Vec::new(),
+                path: Vec::new(),
+            },
+        };
+
+        assert!(validate_commit_state_machine_transition(&state, &envelope).is_err());
+    }
+
+    #[test]
+    fn validate_commit_state_machine_transition_allows_single_member_noop_commit() {
+        let mut state = ClientGroupState::new("group-a", RatchetTree::new(1), 0);
+        state.set_epoch(1);
+        let envelope = CommitEnvelope {
+            group_id: "group-a".to_string(),
+            epoch: 1,
+            sender_leaf: 0,
+            commit: Commit {
+                sender: 0,
+                proposals: Vec::new(),
+                path: Vec::new(),
+            },
+        };
+
+        assert!(validate_commit_state_machine_transition(&state, &envelope).is_ok());
     }
 
     #[test]
@@ -3430,6 +3562,9 @@ mod tests {
         let chain = key_schedule
             .chain_secrets_for_epoch(next_epoch)
             .expect("chain secrets");
+        let derived = key_schedule
+            .derive_secrets_for_epoch(&state.group_id, next_epoch)
+            .expect("derived secrets");
         let group_info_bytes = decrypt_hpke_payload(
             &chain.welcome_secret,
             &welcome_group_info_context(&state.group_id, next_epoch, commit.sender),
@@ -3437,9 +3572,8 @@ mod tests {
         )
         .expect("decrypt group info");
         let group_info = GroupInfo::decode(&group_info_bytes).expect("decode group info");
-        let confirmation_key = derive_confirmation_key(&chain.epoch_secret);
         assert!(verify_confirmation_tag(
-            &confirmation_key,
+            &derived.confirmation_key,
             &group_info.confirmed_transcript_hash,
             &group_info.confirmation_tag
         ));
@@ -3591,7 +3725,7 @@ mod tests {
         );
         assert_eq!(
             hex(&group_secrets.joiner_secret),
-            "f43b10bfa477e02ec6f8eda342c2da5291bf5dad1a570b0ba489b421c20fbac7"
+            "c325a108a5ad68260f00d1c0a17dcaeaba1f5bcf3a6171ba09555c17c4e62565"
         );
     }
 }

@@ -1,3 +1,4 @@
+pub mod application_message;
 pub mod authenticated_content;
 pub mod client_state;
 pub mod crypto;

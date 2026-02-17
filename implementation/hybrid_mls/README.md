@@ -9,24 +9,38 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 
 **Status**
 - Progress tracking is maintained in `PROJECT.md`.
-- Current implementation priority is Part 10 RFC hardening (post-Welcome), with proposal-family expansion now in progress.
+- Current implementation priority is Part 8 UI/Admin demo work, now moved to Task 8 (Admin demo index) after completing Part 10 Task 15 and Part 8 Task 7.
 - RFC compliance note: beyond Welcome, remaining work includes full MLS wire framing, transcript/confirmation/membership authentication pipeline, full proposal set, and deeper RFC key-schedule alignment.
 - Post-Welcome RFC hardening tasks are tracked in `PROJECT.md` Part 10.
 - `PreSharedKey` proposal support is now implemented in the tree/commit model (`Proposal::PreSharedKey { psk_id }`) with encode/decode and validation coverage.
 - `ReInit` proposal support is now implemented in the tree/commit model (`Proposal::ReInit { group_id, version, cipher_suite, extensions }`) with compatibility/validation checks and DS-backed sync coverage.
 - `GroupContextExtensions` proposal support is now implemented in the tree/commit model (`Proposal::GroupContextExtensions { extensions }`) with validation and DS-backed mixed-batch sync coverage.
-- Key schedule Task 10 is now in progress with a fuller per-epoch chain: `commit_secret -> joiner_secret -> welcome_secret -> epoch_secret -> root_secret`.
+- Key schedule Task 10 is complete with a fuller per-epoch chain: `commit_secret -> joiner_secret -> welcome_secret -> epoch_secret -> root_secret`.
 - Welcome flow now uses chain secrets explicitly: committer writes `GroupSecrets.joiner_secret` from key-schedule `joiner_secret`, encrypts `GroupInfo` with `welcome_secret`, and includes `commit_secret` in GroupInfo signature input; joiner validates these against local chain state.
 - Stage-key derivation now has explicit helpers for `confirmation_key`, `membership_key`, and `sender_data_key` derived from `epoch_secret` (`src/stage_keys.rs`), and deterministic vectors pin these outputs for drift detection.
-- DS-backed integration coverage now includes stage-key stability across persisted state reload + `fetch-and-apply-latest` replay/no-op sync behavior.
+- Task 11 RFC alignment is complete: key schedule and stage-key derivation labels now use RFC-like naming (`init_secret`, `commit_secret`, `joiner_secret`, `welcome_secret`, `epoch_secret`, `root_secret`, `handshake_secret`, `application_secret`, `exporter_secret`, plus `confirm`/`membership`/`sender_data`) and per-epoch `group_context_hash` binding (v3 key-schedule encoding with backward decode for v1/v2).
+- Task 12 application-message protection is complete: app payloads are now produced/consumed as MLS-style `PrivateMessage` bytes via `src/application_message.rs`, and CLI/UI app-message flows now protect/unprotect using local `ClientGroupState`.
+- Task 13 protocol state-machine guards are now in place: DS rejects proposal/commit metadata mismatches and missing required path-update payloads, enforces commit epoch monotonic progression, and receiver sync rejects invalid multi-member no-op commit transitions.
+- Task 14 multiple-Add policy hardening is now complete: commits can include multiple distinct `Add` proposals (RFC-aligned), while validation rejects invalid Add key packages, duplicate Add targets (identity/init-key), and attempts to Add an identity already in the group.
+- DS-backed integration coverage now includes stage-key stability across persisted state reload + `fetch-and-apply-latest` replay/no-op sync behavior and across a multi-epoch commit chain.
+- DS-backed integration tests were rebaselined for strict Task 13 DS guards (malformed proposal/commit/path submits now reject at submission time); `tests/ds_fetch_apply_e2e.rs` currently passes end-to-end (`42 passed`).
+- Task 15 is complete with an RFC conformance matrix test suite in `tests/rfc_conformance_matrix.rs` covering deterministic vectors and negative matrices for MLS wire decode, proposal encodings, transcript/confirmation/membership derivations, and key-schedule transition/decode guards.
+- Task 15 now also includes deterministic `AuthenticatedContent` vectors in `src/authenticated_content.rs` covering framing bytes, signing-input digest, signature-byte stability (length + digest), encoded-content digest, and membership-tag bytes.
+- Task 15 now includes deterministic full-byte payload vectors for `PublicMessage`/`PrivateMessage` and `MLSMessage` wrappers in `src/mls_wire.rs`, not just decode-negative cases.
+- Task 15 now includes deterministic full encoded `AuthenticatedContent` decode fixtures (`tests/vectors/authenticated_content_untagged.bin`, `tests/vectors/authenticated_content_tagged.bin`) with fixed SHA3-256 byte-stability checks in unit tests.
+- Task 15 now stores wire-level deterministic binary fixtures for `PublicMessage`/`PrivateMessage` and wrapper `MLSMessage` payloads under `tests/vectors/*message_vector.bin`, and `src/mls_wire.rs` tests validate exact bytes + fixed SHA3-256 digests.
+- Task 15 now stores deterministic envelope binary fixtures under `tests/vectors/*_envelope_vector.bin` (`proposal`, `commit`, `path_update`), and `src/envelope.rs` tests validate exact bytes + fixed SHA3-256 digests + decode/re-encode stability.
+- Task 15 now also includes fixture-hash manifest validation (`tests/vectors/MANIFEST.sha3`, `tests/vector_manifest.rs`), malformed envelope fixture corpus (`tests/vectors/malformed/*`), and DS-backed fixture byte-stability round-trip verification (`tests/ds_fetch_apply_e2e.rs`).
+- Part 8 Task 7 is complete: DS bootstraps deterministic `admin/admin@123`, exposes signed admin-only list APIs (`/v1/admin/users`, `/v1/admin/groups`), and UI gateway includes an admin panel at `/ui/admin`.
 
 **Architecture**
 - `src/crypto.rs` implements hybrid KEM, hybrid signatures, serialization helpers, and HPKE-style path secret encryption.
 - `src/tree.rs` implements the ratchet tree, parent hashes, node resolution, proposals/commits, and path update logic.
 - `src/key_schedule.rs` implements persisted epoch-secret tree state used to track per-epoch root secrets and derive epoch-level handshake/application/exporter secrets.
-- `src/key_schedule.rs` now also persists and exposes chain secrets per epoch (`commit`, `joiner`, `welcome`, `epoch`, `root`) with backward decode compatibility for older key-schedule state payloads.
+- `src/key_schedule.rs` now also persists and exposes chain secrets per epoch (`commit`, `joiner`, `welcome`, `epoch`, `root`) plus a per-epoch `group_context_hash`; decode remains backward-compatible with older key-schedule payloads.
 - `src/stage_keys.rs` implements explicit per-epoch stage-key helpers (`confirmation_key`, `membership_key`, `sender_data_key`) derived from `epoch_secret` for tag/sender-data alignment work.
 - `src/mls_wire.rs` implements RFC-style wire model skeletons for `MlsMessage`, `PublicMessage`, and `PrivateMessage` with strict framing/codec checks.
+- `src/application_message.rs` implements RFC-style `PrivateMessage` application payload protection/deprotection (sender-data encryption + ciphertext AAD binding) using key-schedule-derived `sender_data_key` and `application_secret`.
 - `src/authenticated_content.rs` implements `AuthenticatedContent` framing/signature scaffolding over `PublicMessage`, including sign/verify, strict codecs, and envelope conversion helpers.
 - Membership tag verification is now implemented in authenticated-content scaffolding (`derive_membership_key`, `derive_membership_tag`, `verify_with_membership_tag`) with canonical signature input that excludes membership-tag bytes from signature material; membership key derivation now uses key-schedule `epoch_secret` stage input.
 - `src/transcript.rs` implements confirmed/interim transcript hash state and update helpers for proposal/commit-driven transcript progression.
@@ -80,6 +94,15 @@ Field-level malformed tests now cover `PathSecretCiphertext::decode` rejection f
 | `derive path secret` | `derive_path_secret` hash label in `src/tree.rs` | `DeriveSecret(path_secret[n-1], "path")` and `DeriveSecret(path_secret[n], "node")` chain | Sections 7.6, 8 | Current prototype collapses path/node derivation into one helper; RFC distinguishes `"path"` and `"node"` labels. |
 | `path secret derivation` | Context label for direct-path secret evolution | Generation/position context for tree derivation | Section 9.1 | Current context uses `(parent_index, level)`; RFC tree-ratchet context is generation-based (`uint32`, big-endian). |
 | `path secret encryption` | Context label for per-recipient path ciphertext KEM+AEAD | `EncryptWithLabel` context = provisional `GroupContext` | Section 7.6 | Current context is structural tuple `(sender,parent,recipient)`; RFC target is full provisional `GroupContext`. |
+
+**RFC 9420 Context-Input Mapping (Task 11)**
+
+| Current Context Input | Current Use | RFC 9420 Closest Term | RFC Section | Alignment Status |
+| --- | --- | --- | --- | --- |
+| `group_context_hash` (stored per epoch in `KeyScheduleState`) | Derivation context for epoch-derived secrets and stage keys | `GroupContext` binding in epoch/key schedule and transcript-linked context | Sections 8, 8.1, 8.2, 9.1 | Partial: uses hashed compact binding of `(group_id, epoch, tree_hash, commit_context)` instead of full encoded RFC `GroupContext`. |
+| `confirm` stage-key context input | Input to confirmation key used for `confirmation_tag` derivation/verification | `confirmation_key` / confirmation tag path derived from epoch schedule | Sections 8.2, 8.3 | Partial: key role is aligned; derivation primitive remains project SHA3-labeled scheme (not RFC ciphersuite HKDF). |
+| `membership` stage-key context input | Input to membership key for `membership_tag` verification | `membership_key` used for `membership_tag` in PublicMessage auth | Sections 7.2, 8.2 | Partial: key role and API usage align; derivation primitive differs from RFC HKDF schedule. |
+| `sender_data` stage-key context input | Input for sender-data protection in private application message flow | `sender_data_secret` / sender-data encryption context in PrivateMessage | Sections 6.3, 8.2 | Partial: sender-data/context-bound private-message protection is implemented; full RFC sender ratchet/generation/nonces remain future hardening work. |
 
 **RFC 9420 Welcome Mapping (Compact)**
 
