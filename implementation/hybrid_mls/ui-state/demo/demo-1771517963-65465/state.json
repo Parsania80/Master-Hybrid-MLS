@@ -1,0 +1,53 @@
+{
+  "epoch": 1,
+  "members": [
+    {
+      "username": "A",
+      "leaf_index": 0,
+      "key_generation": 1
+    },
+    {
+      "username": "B",
+      "leaf_index": 1,
+      "key_generation": 1
+    }
+  ],
+  "logs": [
+    {
+      "timestamp": 1771517963,
+      "line": "MLS Demo init: created single-member group with A at leaf 0",
+      "separator": false
+    },
+    {
+      "timestamp": 1771517963,
+      "line": "GroupContext epoch initialized to 0",
+      "separator": false
+    },
+    {
+      "timestamp": 1771517963,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771517987,
+      "line": "Proposal(Add): sender=A target=B",
+      "separator": false
+    },
+    {
+      "timestamp": 1771517987,
+      "line": "TreeKEM: inserted member B at provisional leaf 1",
+      "separator": false
+    },
+    {
+      "timestamp": 1771517987,
+      "line": "Commit: epoch 0 -> 1",
+      "separator": false
+    },
+    {
+      "timestamp": 1771517987,
+      "line": "--------------------",
+      "separator": true
+    }
+  ],
+  "last_action": "add: A added B"
+}

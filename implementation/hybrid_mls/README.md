@@ -9,7 +9,7 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 
 **Status**
 - Progress tracking is maintained in `PROJECT.md`.
-- Current implementation priority is Part 8 UI/Admin demo work, now moved to Task 8 (Admin demo index) after completing Part 10 Task 15 and Part 8 Task 7.
+- Current implementation priority moved to Part 7 Task 6 (multi-VM deployment/test guide) after completing Part 8 Tasks 8-12.
 - RFC compliance note: beyond Welcome, remaining work includes full MLS wire framing, transcript/confirmation/membership authentication pipeline, full proposal set, and deeper RFC key-schedule alignment.
 - Post-Welcome RFC hardening tasks are tracked in `PROJECT.md` Part 10.
 - `PreSharedKey` proposal support is now implemented in the tree/commit model (`Proposal::PreSharedKey { psk_id }`) with encode/decode and validation coverage.
@@ -32,6 +32,12 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 - Task 15 now stores deterministic envelope binary fixtures under `tests/vectors/*_envelope_vector.bin` (`proposal`, `commit`, `path_update`), and `src/envelope.rs` tests validate exact bytes + fixed SHA3-256 digests + decode/re-encode stability.
 - Task 15 now also includes fixture-hash manifest validation (`tests/vectors/MANIFEST.sha3`, `tests/vector_manifest.rs`), malformed envelope fixture corpus (`tests/vectors/malformed/*`), and DS-backed fixture byte-stability round-trip verification (`tests/ds_fetch_apply_e2e.rs`).
 - Part 8 Task 7 is complete: DS bootstraps deterministic `admin/admin@123`, exposes signed admin-only list APIs (`/v1/admin/users`, `/v1/admin/groups`), and UI gateway includes an admin panel at `/ui/admin`.
+- Part 8 Task 8 is complete: admin demo index now supports list/create/open flows; demos are persisted under `ui-state/demo/<id>` with index/manifest metadata.
+- Part 8 Task 9 is complete: admin demo page now uses a two-pane layout (left actions/logs split, right tree panel) with responsive behavior and demo metadata loading.
+- Part 8 Task 10 is complete: admin demo Add/Remove/Update actions are wired end-to-end with persisted deterministic state transitions (epoch advance, member set changes, key-generation increments).
+- Part 8 Task 11 is complete: admin demo now records timestamped MLS-style logs for init/Add/Remove/Update with separator lines (`--------------------`) and persists them in per-demo state.
+- Part 8 Task 12 is complete: admin demo persistence is enforced end-to-end (state survives UI reload/restart, new demos start clean with A-only baseline, and missing-demo actions fail closed without creating orphan state).
+- Warning debt cleanup: removed dead code `not_implemented` helper in `src/ds/http.rs`; `cargo check` now runs clean with no warnings.
 
 **Architecture**
 - `src/crypto.rs` implements hybrid KEM, hybrid signatures, serialization helpers, and HPKE-style path secret encryption.
@@ -246,6 +252,7 @@ Leaf labels use known usernames when available (own leaf and locally mapped adde
 Important MLS flow note: `Add` proposal does not make a user a member by itself. A `Commit` containing that proposal must be created and applied before the added user can join/sync.
 For an added user (for example Peyman), visibility is commit-driven: after creator submits Add and Commit, the added user must run `Sync + Apply Latest` with receiver private material; only then local state reflects membership and the group appears in that user’s tracked list.
 Troubleshooting: if the added user still sees no group, check that the user has a local tracked group entry and a valid local group-state baseline for that group. Current UI sync operates on locally tracked groups and does not yet auto-discover/join unknown groups solely from DS message history.
+Troubleshooting (Admin Demo): if admin sees no demos, first create one from `/ui/admin` (demos are not pre-seeded). Demo records are stored in UI gateway local state (`DS_UI_STATE_DIR`, default `./ui-state/demo`), so using a different working directory or state dir shows a different/empty demo list.
 The group Actions panel now includes `Create + Submit Commit` to build a real commit from local pending proposals and submit it to DS in one step.
 The same panel now includes `Sync + Apply Latest` to fetch DS commits/path updates and apply them into local `ClientGroupState`, so newly added members can materialize membership after commit publication.
 The same panel now also includes `Join from latest Welcome` for joiner onboarding when local group state does not exist yet.
@@ -464,4 +471,4 @@ Sync notes:
 - `--watch` enables continuous polling; use `--poll-interval-ms` and optional `--max-polls` to control loop behavior.
 - `show-derived-secrets` is debug-only and intentionally exposes secret material; use only in local test/demo environments.
 
-Last updated: 2026-02-11 14:56
+Last updated: 2026-02-19 19:47

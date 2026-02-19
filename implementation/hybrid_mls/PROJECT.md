@@ -93,11 +93,11 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 5 | Group page action menu | ✅ Done | Actions menu now creates Add/Remove/Update proposals, supports Create+Submit Commit from pending proposals, and includes Sync+Apply Latest to consume DS commit/path-update streams into local state. Added stack-safe large-stack worker execution for UI/DS hybrid signing and keypackage verification in proposal flow, plus UI+DS end-to-end test coverage for register/bootstrap/add/commit/sync/relogin group visibility. Top-bar Sync + Apply Latest is now available and auto-sync runs on groups/group page load for logged-in users. Added MLS-aligned joiner-onboarding endpoint/button (`join-from-latest`) that reconstructs a pre-commit base tree from ordered base-member keypackages, applies the matched Add commit + path update, and persists local state. |
 | 6 | Tree structure view | ✅ Done | Group UI now renders local ratchet tree nodes (leaf/parent/blank) with short key fingerprints and metadata. |
 | 7 | Admin account bootstrap | ✅ Done | DS now bootstraps deterministic `admin/admin@123` on storage open, exposes signed admin-only APIs for listing all users/groups (`/v1/admin/users`, `/v1/admin/groups`), and UI gateway includes `/ui/admin` with admin panel + integration tests. |
-| 8 | Admin demo index | ⬜ Todo | Admin “Demo” menu lists demos, allows create/open; demos stored under `ui-state/demo/<id>`. |
-| 9 | Admin demo UI layout | ⬜ Todo | Two-column layout: right tree view; left split into actions (top) and logs (bottom). |
-| 10 | Admin demo actions | ⬜ Todo | Add/Remove/Update actions with inputs (adder, added; remover; updater) and deterministic flow. |
-| 11 | Admin demo logging | ⬜ Todo | Timestamped MLS-style step logs with separators; logs persisted in `ui-state/demo/<id>`. |
-| 12 | Admin demo persistence | ⬜ Todo | Demo state reload on open; “new demo” initializes A-only tree and clean logs. |
+| 8 | Admin demo index | ✅ Done | Added admin demo index flow in UI gateway: admin panel now lists demos, supports creating new demos, and supports opening demo detail pages; persisted under `ui-state/demo/<id>` with index + manifest files. |
+| 9 | Admin demo UI layout | ✅ Done | Added `/ui/admin/demos/:demo_id` two-pane layout: right tree panel, left split into actions (top) and logs (bottom), responsive collapse for smaller screens, with demo metadata wiring. |
+| 10 | Admin demo actions | ✅ Done | Wired demo action APIs and UI controls for Add/Remove/Update (`adder/added`, `remover/removed`, `updater`) with deterministic state transitions, epoch bumping, member reindexing, and persisted demo state updates. |
+| 11 | Admin demo logging | ✅ Done | Added timestamped MLS-style log entries for init/Add/Remove/Update transitions with `--------------------` separators; log entries persist in `ui-state/demo/<id>/state.json` and render in demo UI. |
+| 12 | Admin demo persistence | ✅ Done | Enforced persisted demo state usage across reloads and strict missing-state handling (no implicit reset). Added UI “Reload Demo” control and end-to-end integration test covering restart/reload persistence, clean new-demo initialization, and missing-demo action rejection without orphan state writes. |
 
 ### Part 9: RFC 9420 Welcome (Hybrid)
 | # | Task | Status | Notes |
@@ -131,5 +131,5 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 15 | Add RFC conformance test matrix and vectors | ✅ Done | Completed deterministic fixture suite: `AuthenticatedContent`, `PublicMessage`/`PrivateMessage`, and `ProposalEnvelope`/`CommitEnvelope`/`PathUpdateEnvelope` binary fixtures; added fixture hash manifest validation (`tests/vector_manifest.rs` + `tests/vectors/MANIFEST.sha3`), malformed fixture corpus, and DS-backed byte-stability round-trip assertions. |
 
 ---
-Current: `Part 8 / Task 8 - Admin demo index`
-Next: `Part 8 / Task 9 - Admin demo UI layout`
+Current: `Part 7 / Task 6 - Multi-VM deployment/test guide`
+Next: `Part 8 extensions (admin-demo deepening) or requested next priority`

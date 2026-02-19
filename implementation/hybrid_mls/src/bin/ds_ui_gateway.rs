@@ -334,6 +334,88 @@ struct GroupMemberLabels {
     items: HashMap<String, String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AdminDemoRecord {
+    id: String,
+    title: String,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+struct AdminDemoIndex {
+    items: Vec<AdminDemoRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminDemoCreatePayload {
+    username: String,
+    title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminDemoAddActionPayload {
+    username: String,
+    adder: String,
+    added: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminDemoRemoveActionPayload {
+    username: String,
+    remover: String,
+    removed: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminDemoUpdateActionPayload {
+    username: String,
+    updater: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AdminDemoMember {
+    username: String,
+    leaf_index: usize,
+    key_generation: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AdminDemoLogEntry {
+    timestamp: i64,
+    line: String,
+    separator: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AdminDemoState {
+    epoch: u64,
+    members: Vec<AdminDemoMember>,
+    #[serde(default)]
+    logs: Vec<AdminDemoLogEntry>,
+    last_action: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminDemoDetail {
+    id: String,
+    title: String,
+    created_at: i64,
+    updated_at: i64,
+    root_dir: String,
+    manifest_path: String,
+    epoch: u64,
+    members: Vec<AdminDemoMember>,
+    logs: Vec<AdminDemoLogEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminDemoActionResponse {
+    action: String,
+    epoch: u64,
+    members: Vec<AdminDemoMember>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind = std::env::var("DS_UI_BIND").unwrap_or_else(|_| "127.0.0.1:4000".to_string());
@@ -365,11 +447,29 @@ fn build_ui_router(ui_state: UiState) -> Router {
         .route("/ui/groups", get(ui_groups))
         .route("/ui/groups/:group_id", get(ui_group_detail))
         .route("/ui/admin", get(ui_admin))
+        .route("/ui/admin/demos/:demo_id", get(ui_admin_demo))
         .route("/ui/api/register", post(api_register))
         .route("/ui/api/login", post(api_login))
         .route("/ui/api/logout", post(api_logout))
         .route("/ui/api/admin/users", get(api_admin_users))
         .route("/ui/api/admin/groups", get(api_admin_groups))
+        .route(
+            "/ui/api/admin/demos",
+            get(api_admin_demos).post(api_admin_create_demo),
+        )
+        .route("/ui/api/admin/demos/:demo_id", get(api_admin_demo_detail))
+        .route(
+            "/ui/api/admin/demos/:demo_id/actions/add",
+            post(api_admin_demo_action_add),
+        )
+        .route(
+            "/ui/api/admin/demos/:demo_id/actions/remove",
+            post(api_admin_demo_action_remove),
+        )
+        .route(
+            "/ui/api/admin/demos/:demo_id/actions/update",
+            post(api_admin_demo_action_update),
+        )
         .route("/ui/api/groups", get(api_groups))
         .route("/ui/api/groups/open", post(api_groups_open))
         .route("/ui/api/groups/remove", post(api_groups_remove))
@@ -900,6 +1000,15 @@ async fn ui_admin() -> impl IntoResponse {
                 <div class="title">Groups</div>
                 <div id="admin-groups" class="list"></div>
             </section>
+            <section class="card">
+                <div class="title">Demos</div>
+                <div class="row">
+                    <input id="demo-title" type="text" placeholder="Demo title (optional)" />
+                    <button class="primary" type="button" onclick="createDemo()">Create Demo</button>
+                </div>
+                <div id="admin-demos" class="list"></div>
+                <div id="admin-demos-status" class="note"></div>
+            </section>
         </main>
         <script>
         function uiBack(fallbackPath) {
@@ -928,6 +1037,49 @@ async fn ui_admin() -> impl IntoResponse {
             return;
           }
           node.innerHTML = rows.join('');
+        }
+        async function createDemo() {
+          const username = localStorage.getItem('ui_username');
+          const status = document.getElementById('admin-demos-status');
+          if (!username) {
+            window.location.href = '/ui/login';
+            return;
+          }
+          status.textContent = 'Creating demo...';
+          const title = document.getElementById('demo-title').value.trim();
+          const resp = await fetch('/ui/api/admin/demos', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ username, title: title || null })
+          });
+          const data = await resp.json();
+          if (!data.ok) {
+            status.textContent = data.error || 'Create demo failed.';
+            return;
+          }
+          const created = data.data;
+          status.textContent = `Created ${created.id}.`;
+          window.location.href = `/ui/admin/demos/${encodeURIComponent(created.id)}`;
+        }
+        async function loadDemos(username) {
+          const status = document.getElementById('admin-demos-status');
+          const resp = await fetch(`/ui/api/admin/demos?username=${encodeURIComponent(username)}`);
+          const data = await resp.json();
+          if (!data.ok) {
+            renderList('admin-demos', [`<div class="note">${data.error || 'Failed to load demos.'}</div>`], 'No demos.');
+            status.textContent = data.error || 'Failed to load demos.';
+            return;
+          }
+          const demos = data.data.items || [];
+          renderList(
+            'admin-demos',
+            demos.map(demo => {
+              const created = new Date((demo.created_at || 0) * 1000).toISOString();
+              return `<div class="list-item"><div><div class="title">${demo.id}</div><div class="muted">${demo.title} • created ${created}</div></div><a class="link" href="/ui/admin/demos/${encodeURIComponent(demo.id)}">Open</a></div>`;
+            }),
+            'No demos yet. Create the first one.'
+          );
+          status.textContent = `Loaded ${demos.length} demo(s).`;
         }
         async function loadAdmin() {
           const username = localStorage.getItem('ui_username');
@@ -966,11 +1118,249 @@ async fn ui_admin() -> impl IntoResponse {
               'No groups.'
             );
           }
+          await loadDemos(username);
         }
         loadAdmin();
         </script>
         "#,
     )
+}
+
+async fn ui_admin_demo(AxumPath(demo_id): AxumPath<String>) -> impl IntoResponse {
+    let body = format!(
+        r##"
+        <div class="top-left">
+            <button class="ghost" type="button" onclick="uiBack('/ui/admin')">Back</button>
+            <button class="ghost" type="button" onclick="window.location.href='/ui/admin'">Admin</button>
+            <button class="ghost" type="button" onclick="uiLogout()">Logout</button>
+        </div>
+        <main class="panel">
+            <section class="hero">
+                <div class="eyebrow">Admin Demo</div>
+                <h1>{demo_id}</h1>
+                <p class="muted">Two-pane demo layout: left actions/logs, right tree view.</p>
+            </section>
+            <section class="card demo-layout">
+                <div class="demo-left">
+                    <div class="card-sub shadowed demo-actions">
+                        <div class="title">Actions</div>
+                        <div id="demo-meta" class="note"></div>
+                        <div id="demo-action-status" class="note"></div>
+                        <div class="row">
+                          <button class="ghost" type="button" onclick="reloadDemo()">Reload Demo</button>
+                        </div>
+                        <details class="action-block" open>
+                          <summary class="muted">Add member</summary>
+                          <label>Adder
+                            <input id="demo-add-adder" type="text" value="A" />
+                          </label>
+                          <label>Added
+                            <input id="demo-add-added" type="text" placeholder="B" />
+                          </label>
+                          <button class="primary" type="button" onclick="demoActionAdd()">Apply Add</button>
+                        </details>
+                        <details class="action-block">
+                          <summary class="muted">Remove member</summary>
+                          <label>Remover
+                            <input id="demo-remove-remover" type="text" value="A" />
+                          </label>
+                          <label>Removed
+                            <input id="demo-remove-removed" type="text" placeholder="B" />
+                          </label>
+                          <button class="primary" type="button" onclick="demoActionRemove()">Apply Remove</button>
+                        </details>
+                        <details class="action-block">
+                          <summary class="muted">Update key</summary>
+                          <label>Updater
+                            <input id="demo-update-updater" type="text" value="A" />
+                          </label>
+                          <button class="primary" type="button" onclick="demoActionUpdate()">Apply Update</button>
+                        </details>
+                        <div class="muted">Actions are deterministic demo transitions mapped to MLS-style proposal/commit steps.</div>
+                    </div>
+                    <div class="card-sub shadowed demo-logs">
+                        <div class="title">Logs</div>
+                        <div id="demo-log-list" class="list"></div>
+                    </div>
+                </div>
+                <div class="card-sub shadowed demo-tree">
+                    <div class="title">Tree Structure</div>
+                    <div id="demo-tree-canvas" class="tree-graph"></div>
+                    <div class="muted">Live demo tree snapshot for the current epoch and member leaf indices.</div>
+                </div>
+            </section>
+        </main>
+        <script>
+        function uiBack(fallbackPath) {{
+          if (window.history.length > 1) {{
+            window.history.back();
+            return;
+          }}
+          window.location.href = fallbackPath;
+        }}
+        async function uiLogout() {{
+          const username = localStorage.getItem('ui_username');
+          if (username) {{
+            await fetch('/ui/api/logout', {{
+              method: 'POST',
+              headers: {{'Content-Type': 'application/json'}},
+              body: JSON.stringify({{username}})
+            }});
+          }}
+          localStorage.removeItem('ui_username');
+          window.location.href = '/ui/login';
+        }}
+        function escapeHtml(value) {{
+          return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        }}
+        function renderDemoTree(members, epoch) {{
+          const tree = document.getElementById('demo-tree-canvas');
+          if (!tree) return;
+          const items = (members || []).slice().sort((a, b) => a.leaf_index - b.leaf_index);
+          if (items.length === 0) {{
+            tree.innerHTML = '<div class="note">No members.</div>';
+            return;
+          }}
+          const width = 520;
+          const height = 320;
+          const rootX = width / 2;
+          const rootY = 72;
+          const leafY = 230;
+          const step = width / (items.length + 1);
+          const lines = items.map((m, i) => {{
+            const x = step * (i + 1);
+            return `<line x1="${{rootX}}" y1="${{rootY}}" x2="${{x}}" y2="${{leafY}}" stroke="#9aa8b7" stroke-width="2"></line>`;
+          }}).join('');
+          const leaves = items.map((m, i) => {{
+            const x = step * (i + 1);
+            const name = escapeHtml((m.username || '').slice(0, 14));
+            return `
+              <g>
+                <circle cx="${{x}}" cy="${{leafY}}" r="22" fill="#fff" stroke="#b45309" stroke-width="2"></circle>
+                <text x="${{x}}" y="${{leafY - 3}}" text-anchor="middle" font-size="10" font-family="Space Grotesk" fill="#1f2933">#${{m.leaf_index}}</text>
+                <text x="${{x}}" y="${{leafY + 10}}" text-anchor="middle" font-size="9" font-family="Space Grotesk" fill="#5c6b7a">${{name}}</text>
+              </g>
+            `;
+          }}).join('');
+          tree.innerHTML = `
+            <svg viewBox="0 0 ${{width}} ${{height}}" width="100%" height="${{height}}" preserveAspectRatio="xMidYMid meet">
+              <rect x="0" y="0" width="${{width}}" height="${{height}}" fill="#fffef8" stroke="#e7cba1" rx="10"></rect>
+              <text x="${{rootX}}" y="28" text-anchor="middle" font-size="12" font-family="Space Grotesk" fill="#5c6b7a">epoch ${{epoch}}</text>
+              <circle cx="${{rootX}}" cy="${{rootY}}" r="22" fill="#fff" stroke="#b45309" stroke-width="2"></circle>
+              <text x="${{rootX}}" y="${{rootY - 3}}" text-anchor="middle" font-size="10" font-family="Space Grotesk" fill="#1f2933">root</text>
+              <text x="${{rootX}}" y="${{rootY + 10}}" text-anchor="middle" font-size="9" font-family="Space Grotesk" fill="#5c6b7a">node</text>
+              ${{lines}}
+              ${{leaves}}
+            </svg>
+          `;
+        }}
+        function renderDemoLogs(demo) {{
+          const logs = document.getElementById('demo-log-list');
+          if (!logs) return;
+          const rows = [];
+          const entries = demo.logs || [];
+          if (entries.length === 0) {{
+            rows.push('<div class="note">No logs yet.</div>');
+          }} else {{
+            entries.forEach(entry => {{
+              if (entry.separator) {{
+                rows.push('<div class="divider"></div>');
+                return;
+              }}
+              const ts = new Date((entry.timestamp || 0) * 1000).toISOString();
+              rows.push(`<div class="list-item"><div><div class="title">${{escapeHtml(entry.line || '')}}</div><div class="muted">${{ts}}</div></div></div>`);
+            }});
+          }}
+          rows.push(`<div class="note">Root: ${{demo.root_dir}}</div>`);
+          rows.push(`<div class="note">Manifest: ${{demo.manifest_path}}</div>`);
+          logs.innerHTML = rows.join('');
+        }}
+        async function callDemoAction(kind, payload) {{
+          const username = localStorage.getItem('ui_username');
+          const status = document.getElementById('demo-action-status');
+          if (!username) {{
+            window.location.href = '/ui/login';
+            return;
+          }}
+          if (username !== 'admin') {{
+            window.location.href = '/ui/groups';
+            return;
+          }}
+          status.textContent = `Applying ${{kind}}...`;
+          const resp = await fetch(`/ui/api/admin/demos/{demo_id}/actions/${{kind}}`, {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify(Object.assign({{ username }}, payload))
+          }});
+          const data = await resp.json();
+          if (!data.ok) {{
+            status.textContent = data.error || `${{kind}} failed.`;
+            return;
+          }}
+          const out = data.data;
+          status.textContent = `${{out.action}} applied. epoch=${{out.epoch}} members=${{(out.members || []).length}}`;
+          await loadDemo();
+        }}
+        async function demoActionAdd() {{
+          const adder = document.getElementById('demo-add-adder').value.trim();
+          const added = document.getElementById('demo-add-added').value.trim();
+          if (!adder || !added) return;
+          await callDemoAction('add', {{ adder, added }});
+        }}
+        async function demoActionRemove() {{
+          const remover = document.getElementById('demo-remove-remover').value.trim();
+          const removed = document.getElementById('demo-remove-removed').value.trim();
+          if (!remover || !removed) return;
+          await callDemoAction('remove', {{ remover, removed }});
+        }}
+        async function demoActionUpdate() {{
+          const updater = document.getElementById('demo-update-updater').value.trim();
+          if (!updater) return;
+          await callDemoAction('update', {{ updater }});
+        }}
+        async function reloadDemo() {{
+          await loadDemo();
+        }}
+        async function loadDemo() {{
+          const username = localStorage.getItem('ui_username');
+          if (!username) {{
+            window.location.href = '/ui/login';
+            return;
+          }}
+          if (username !== 'admin') {{
+            window.location.href = '/ui/groups';
+            return;
+          }}
+          const resp = await fetch(`/ui/api/admin/demos/{demo_id}?username=${{encodeURIComponent(username)}}`);
+          const data = await resp.json();
+          const meta = document.getElementById('demo-meta');
+          const actionStatus = document.getElementById('demo-action-status');
+          if (!data.ok) {{
+            meta.textContent = data.error || 'Failed to load demo metadata.';
+            if (actionStatus) {{
+              actionStatus.textContent = data.error || 'Failed to load demo metadata.';
+            }}
+            return;
+          }}
+          const demo = data.data;
+          meta.textContent = `Demo: ${{demo.id}} | ${{demo.title}} | created: ${{new Date((demo.created_at || 0) * 1000).toISOString()}}`;
+          if (actionStatus && !actionStatus.textContent) {{
+            actionStatus.textContent = 'Ready.';
+          }}
+          renderDemoLogs(demo);
+          renderDemoTree(demo.members || [], demo.epoch || 0);
+        }}
+        loadDemo();
+        </script>
+        "##,
+        demo_id = demo_id
+    );
+    ui_shell("Admin Demo", &body)
 }
 
 async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoResponse {
@@ -1904,6 +2294,30 @@ fn ui_shell(title: &str, body: &str) -> Html<String> {
       align-items: stretch;
       min-width: 0;
     }}
+    .demo-layout {{
+      display: grid;
+      grid-template-columns: minmax(420px, 1.2fr) minmax(320px, 1fr);
+      gap: var(--space-md);
+      min-width: 0;
+    }}
+    .demo-left {{
+      display: grid;
+      grid-template-rows: minmax(220px, auto) minmax(280px, 1fr);
+      gap: var(--space-md);
+      min-width: 0;
+    }}
+    .demo-actions {{
+      align-content: start;
+    }}
+    .demo-action-grid {{
+      grid-template-columns: repeat(1, minmax(0, 1fr));
+    }}
+    .demo-logs {{
+      align-content: start;
+    }}
+    .demo-tree {{
+      align-content: start;
+    }}
     .tree-view-grid {{
       display: grid;
       grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
@@ -1962,6 +2376,12 @@ fn ui_shell(title: &str, body: &str) -> Html<String> {
       }}
       .tree-view-grid {{
         grid-template-columns: 1fr;
+      }}
+      .demo-layout {{
+        grid-template-columns: 1fr;
+      }}
+      .demo-left {{
+        grid-template-rows: auto auto;
       }}
       .list-item {{
         flex-direction: column;
@@ -2190,6 +2610,118 @@ async fn api_admin_groups(
             error: None,
         }),
         Err(err) => Json(ApiResult::<serde_json::Value> {
+            ok: false,
+            data: None,
+            error: Some(err),
+        }),
+    }
+}
+
+async fn api_admin_demos(
+    State(state): State<UiState>,
+    Query(query): Query<UserQuery>,
+) -> impl IntoResponse {
+    match load_admin_demos(&state, &query.username) {
+        Ok(value) => Json(ApiResult {
+            ok: true,
+            data: Some(value),
+            error: None,
+        }),
+        Err(err) => Json(ApiResult::<AdminDemoIndex> {
+            ok: false,
+            data: None,
+            error: Some(err),
+        }),
+    }
+}
+
+async fn api_admin_create_demo(
+    State(state): State<UiState>,
+    Json(payload): Json<AdminDemoCreatePayload>,
+) -> impl IntoResponse {
+    match create_admin_demo(&state, &payload.username, payload.title.as_deref()) {
+        Ok(value) => Json(ApiResult {
+            ok: true,
+            data: Some(value),
+            error: None,
+        }),
+        Err(err) => Json(ApiResult::<AdminDemoRecord> {
+            ok: false,
+            data: None,
+            error: Some(err),
+        }),
+    }
+}
+
+async fn api_admin_demo_detail(
+    AxumPath(demo_id): AxumPath<String>,
+    State(state): State<UiState>,
+    Query(query): Query<UserQuery>,
+) -> impl IntoResponse {
+    match load_admin_demo_detail(&state, &query.username, &demo_id) {
+        Ok(value) => Json(ApiResult {
+            ok: true,
+            data: Some(value),
+            error: None,
+        }),
+        Err(err) => Json(ApiResult::<AdminDemoDetail> {
+            ok: false,
+            data: None,
+            error: Some(err),
+        }),
+    }
+}
+
+async fn api_admin_demo_action_add(
+    AxumPath(demo_id): AxumPath<String>,
+    State(state): State<UiState>,
+    Json(payload): Json<AdminDemoAddActionPayload>,
+) -> impl IntoResponse {
+    match apply_admin_demo_add_action(&state, &demo_id, &payload) {
+        Ok(value) => Json(ApiResult {
+            ok: true,
+            data: Some(value),
+            error: None,
+        }),
+        Err(err) => Json(ApiResult::<AdminDemoActionResponse> {
+            ok: false,
+            data: None,
+            error: Some(err),
+        }),
+    }
+}
+
+async fn api_admin_demo_action_remove(
+    AxumPath(demo_id): AxumPath<String>,
+    State(state): State<UiState>,
+    Json(payload): Json<AdminDemoRemoveActionPayload>,
+) -> impl IntoResponse {
+    match apply_admin_demo_remove_action(&state, &demo_id, &payload) {
+        Ok(value) => Json(ApiResult {
+            ok: true,
+            data: Some(value),
+            error: None,
+        }),
+        Err(err) => Json(ApiResult::<AdminDemoActionResponse> {
+            ok: false,
+            data: None,
+            error: Some(err),
+        }),
+    }
+}
+
+async fn api_admin_demo_action_update(
+    AxumPath(demo_id): AxumPath<String>,
+    State(state): State<UiState>,
+    Json(payload): Json<AdminDemoUpdateActionPayload>,
+) -> impl IntoResponse {
+    match apply_admin_demo_update_action(&state, &demo_id, &payload) {
+        Ok(value) => Json(ApiResult {
+            ok: true,
+            data: Some(value),
+            error: None,
+        }),
+        Err(err) => Json(ApiResult::<AdminDemoActionResponse> {
             ok: false,
             data: None,
             error: Some(err),
@@ -2674,6 +3206,26 @@ fn keypackages_path(state_dir: &Path, username: &str) -> PathBuf {
     state_dir.join(format!("user-{}-keypackages.json", sanitize(username)))
 }
 
+fn admin_demo_root_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("demo")
+}
+
+fn admin_demo_index_path(state_dir: &Path) -> PathBuf {
+    admin_demo_root_path(state_dir).join("index.json")
+}
+
+fn admin_demo_dir_path(state_dir: &Path, demo_id: &str) -> PathBuf {
+    admin_demo_root_path(state_dir).join(sanitize(demo_id))
+}
+
+fn admin_demo_manifest_path(state_dir: &Path, demo_id: &str) -> PathBuf {
+    admin_demo_dir_path(state_dir, demo_id).join("manifest.json")
+}
+
+fn admin_demo_state_path(state_dir: &Path, demo_id: &str) -> PathBuf {
+    admin_demo_dir_path(state_dir, demo_id).join("state.json")
+}
+
 fn group_state_path(state_dir: &Path, username: &str, group_id: &str) -> PathBuf {
     state_dir.join(format!(
         "user-{}-group-{}.bin",
@@ -2701,6 +3253,337 @@ fn sanitize(value: &str) -> String {
             }
         })
         .collect()
+}
+
+fn ensure_admin_username(username: &str) -> Result<(), String> {
+    if username == ADMIN_USERNAME {
+        Ok(())
+    } else {
+        Err("admin access required".to_string())
+    }
+}
+
+fn load_admin_demo_index(state: &UiState) -> Result<AdminDemoIndex, String> {
+    let path = admin_demo_index_path(&state.state_dir);
+    if !path.exists() {
+        return Ok(AdminDemoIndex::default());
+    }
+    let bytes = fs::read(&path).map_err(|err| format!("read demo index: {err}"))?;
+    serde_json::from_slice(&bytes).map_err(|err| format!("parse demo index: {err}"))
+}
+
+fn initial_admin_demo_state() -> AdminDemoState {
+    let mut state = AdminDemoState {
+        epoch: 0,
+        members: vec![AdminDemoMember {
+            username: "A".to_string(),
+            leaf_index: 0,
+            key_generation: 1,
+        }],
+        logs: Vec::new(),
+        last_action: Some("init: A".to_string()),
+    };
+    append_demo_log_block(
+        &mut state,
+        vec![
+            "MLS Demo init: created single-member group with A at leaf 0".to_string(),
+            "GroupContext epoch initialized to 0".to_string(),
+        ],
+    );
+    state
+}
+
+fn reindex_demo_members(members: &mut [AdminDemoMember]) {
+    for (idx, member) in members.iter_mut().enumerate() {
+        member.leaf_index = idx;
+    }
+}
+
+fn append_demo_log_block(demo_state: &mut AdminDemoState, lines: Vec<String>) {
+    let ts = now_unix();
+    for line in lines {
+        demo_state.logs.push(AdminDemoLogEntry {
+            timestamp: ts,
+            line,
+            separator: false,
+        });
+    }
+    demo_state.logs.push(AdminDemoLogEntry {
+        timestamp: ts,
+        line: "--------------------".to_string(),
+        separator: true,
+    });
+}
+
+fn load_admin_demo_state(state: &UiState, demo_id: &str) -> Result<AdminDemoState, String> {
+    let path = admin_demo_state_path(&state.state_dir, demo_id);
+    if !path.exists() {
+        return Err(format!(
+            "demo state missing at {}",
+            path.to_string_lossy()
+        ));
+    }
+    let bytes = fs::read(&path).map_err(|err| format!("read demo state: {err}"))?;
+    serde_json::from_slice(&bytes).map_err(|err| format!("parse demo state: {err}"))
+}
+
+fn save_admin_demo_state(
+    state: &UiState,
+    demo_id: &str,
+    demo_state: &AdminDemoState,
+) -> Result<(), String> {
+    let dir = admin_demo_dir_path(&state.state_dir, demo_id);
+    fs::create_dir_all(&dir).map_err(|err| format!("create demo dir: {err}"))?;
+    let path = admin_demo_state_path(&state.state_dir, demo_id);
+    let bytes = serde_json::to_vec_pretty(demo_state).map_err(|err| err.to_string())?;
+    fs::write(path, bytes).map_err(|err| format!("write demo state: {err}"))
+}
+
+fn touch_admin_demo_updated_at(state: &UiState, demo_id: &str, updated_at: i64) -> Result<(), String> {
+    let mut index = load_admin_demo_index(state)?;
+    if let Some(item) = index.items.iter_mut().find(|item| item.id == demo_id) {
+        item.updated_at = updated_at;
+        let manifest_path = admin_demo_manifest_path(&state.state_dir, demo_id);
+        let manifest_bytes = serde_json::to_vec_pretty(item).map_err(|err| err.to_string())?;
+        fs::write(manifest_path, manifest_bytes).map_err(|err| format!("write manifest: {err}"))?;
+        save_admin_demo_index(state, &index)?;
+        Ok(())
+    } else {
+        Err(format!("demo {} not found", demo_id))
+    }
+}
+
+fn save_admin_demo_index(state: &UiState, index: &AdminDemoIndex) -> Result<(), String> {
+    let root = admin_demo_root_path(&state.state_dir);
+    fs::create_dir_all(&root).map_err(|err| format!("create demo root: {err}"))?;
+    let path = admin_demo_index_path(&state.state_dir);
+    let bytes = serde_json::to_vec_pretty(index).map_err(|err| err.to_string())?;
+    fs::write(path, bytes).map_err(|err| format!("write demo index: {err}"))
+}
+
+fn load_admin_demos(state: &UiState, username: &str) -> Result<AdminDemoIndex, String> {
+    ensure_admin_username(username)?;
+    let mut index = load_admin_demo_index(state)?;
+    index.items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(index)
+}
+
+fn create_admin_demo(
+    state: &UiState,
+    username: &str,
+    title: Option<&str>,
+) -> Result<AdminDemoRecord, String> {
+    ensure_admin_username(username)?;
+    let now = now_unix();
+    let demo_id = format!("demo-{}-{}", now, rand::random::<u16>());
+    let demo_title = title
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("Demo {}", now));
+
+    let demo_dir = admin_demo_dir_path(&state.state_dir, &demo_id);
+    fs::create_dir_all(&demo_dir).map_err(|err| format!("create demo dir: {err}"))?;
+
+    let record = AdminDemoRecord {
+        id: demo_id.clone(),
+        title: demo_title,
+        created_at: now,
+        updated_at: now,
+    };
+
+    let manifest_path = admin_demo_manifest_path(&state.state_dir, &demo_id);
+    let manifest_bytes = serde_json::to_vec_pretty(&record).map_err(|err| err.to_string())?;
+    fs::write(&manifest_path, manifest_bytes).map_err(|err| format!("write manifest: {err}"))?;
+    save_admin_demo_state(state, &demo_id, &initial_admin_demo_state())?;
+
+    let mut index = load_admin_demo_index(state)?;
+    index.items.retain(|item| item.id != record.id);
+    index.items.push(record.clone());
+    save_admin_demo_index(state, &index)?;
+
+    Ok(record)
+}
+
+fn load_admin_demo_detail(
+    state: &UiState,
+    username: &str,
+    demo_id: &str,
+) -> Result<AdminDemoDetail, String> {
+    ensure_admin_username(username)?;
+    let index = load_admin_demo_index(state)?;
+    let Some(record) = index.items.into_iter().find(|item| item.id == demo_id) else {
+        return Err(format!("demo {} not found", demo_id));
+    };
+    let demo_state = load_admin_demo_state(state, &record.id)?;
+    let root = admin_demo_dir_path(&state.state_dir, &record.id);
+    let manifest = admin_demo_manifest_path(&state.state_dir, &record.id);
+    Ok(AdminDemoDetail {
+        id: record.id,
+        title: record.title,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        root_dir: root.to_string_lossy().to_string(),
+        manifest_path: manifest.to_string_lossy().to_string(),
+        epoch: demo_state.epoch,
+        members: demo_state.members,
+        logs: demo_state.logs,
+    })
+}
+
+fn apply_admin_demo_add_action(
+    state: &UiState,
+    demo_id: &str,
+    payload: &AdminDemoAddActionPayload,
+) -> Result<AdminDemoActionResponse, String> {
+    ensure_admin_username(&payload.username)?;
+    let adder = payload.adder.trim();
+    let added = payload.added.trim();
+    if adder.is_empty() || added.is_empty() {
+        return Err("adder and added are required".to_string());
+    }
+    let mut demo_state = load_admin_demo_state(state, demo_id)?;
+    if !demo_state.members.iter().any(|m| m.username == adder) {
+        return Err(format!("adder {} is not a member", adder));
+    }
+    if demo_state.members.iter().any(|m| m.username == added) {
+        return Err(format!("member {} already exists", added));
+    }
+    let previous_epoch = demo_state.epoch;
+    let new_leaf_index = demo_state.members.len();
+    demo_state.members.push(AdminDemoMember {
+        username: added.to_string(),
+        leaf_index: new_leaf_index,
+        key_generation: 1,
+    });
+    reindex_demo_members(&mut demo_state.members);
+    demo_state.epoch = demo_state.epoch.saturating_add(1);
+    let new_epoch = demo_state.epoch;
+    let action_line = format!("add: {} added {}", adder, added);
+    demo_state.last_action = Some(action_line.clone());
+    append_demo_log_block(
+        &mut demo_state,
+        vec![
+            format!("Proposal(Add): sender={} target={}", adder, added),
+            format!(
+                "TreeKEM: inserted member {} at provisional leaf {}",
+                added, new_leaf_index
+            ),
+            format!("Commit: epoch {} -> {}", previous_epoch, new_epoch),
+        ],
+    );
+    save_admin_demo_state(state, demo_id, &demo_state)?;
+    touch_admin_demo_updated_at(state, demo_id, now_unix())?;
+    Ok(AdminDemoActionResponse {
+        action: action_line,
+        epoch: demo_state.epoch,
+        members: demo_state.members,
+    })
+}
+
+fn apply_admin_demo_remove_action(
+    state: &UiState,
+    demo_id: &str,
+    payload: &AdminDemoRemoveActionPayload,
+) -> Result<AdminDemoActionResponse, String> {
+    ensure_admin_username(&payload.username)?;
+    let remover = payload.remover.trim();
+    let removed = payload.removed.trim();
+    if remover.is_empty() || removed.is_empty() {
+        return Err("remover and removed are required".to_string());
+    }
+    let mut demo_state = load_admin_demo_state(state, demo_id)?;
+    if !demo_state.members.iter().any(|m| m.username == remover) {
+        return Err(format!("remover {} is not a member", remover));
+    }
+    if !demo_state.members.iter().any(|m| m.username == removed) {
+        return Err(format!("member {} not found", removed));
+    }
+    if demo_state.members.len() <= 1 {
+        return Err("cannot remove the last remaining member".to_string());
+    }
+    let removed_leaf = demo_state
+        .members
+        .iter()
+        .find(|m| m.username == removed)
+        .map(|m| m.leaf_index)
+        .unwrap_or(0);
+    let previous_epoch = demo_state.epoch;
+    demo_state.members.retain(|m| m.username != removed);
+    reindex_demo_members(&mut demo_state.members);
+    demo_state.epoch = demo_state.epoch.saturating_add(1);
+    let new_epoch = demo_state.epoch;
+    let action_line = format!("remove: {} removed {}", remover, removed);
+    demo_state.last_action = Some(action_line.clone());
+    append_demo_log_block(
+        &mut demo_state,
+        vec![
+            format!("Proposal(Remove): sender={} target={}", remover, removed),
+            format!(
+                "TreeKEM: blanked leaf {} for member {}",
+                removed_leaf, removed
+            ),
+            format!("Commit: epoch {} -> {}", previous_epoch, new_epoch),
+        ],
+    );
+    save_admin_demo_state(state, demo_id, &demo_state)?;
+    touch_admin_demo_updated_at(state, demo_id, now_unix())?;
+    Ok(AdminDemoActionResponse {
+        action: action_line,
+        epoch: demo_state.epoch,
+        members: demo_state.members,
+    })
+}
+
+fn apply_admin_demo_update_action(
+    state: &UiState,
+    demo_id: &str,
+    payload: &AdminDemoUpdateActionPayload,
+) -> Result<AdminDemoActionResponse, String> {
+    ensure_admin_username(&payload.username)?;
+    let updater = payload.updater.trim();
+    if updater.is_empty() {
+        return Err("updater is required".to_string());
+    }
+    let mut demo_state = load_admin_demo_state(state, demo_id)?;
+    let previous_epoch = demo_state.epoch;
+    let (previous_generation, new_generation) = {
+        let Some(member) = demo_state
+            .members
+            .iter_mut()
+            .find(|member| member.username == updater)
+        else {
+            return Err(format!("updater {} is not a member", updater));
+        };
+        let previous_generation = member.key_generation;
+        member.key_generation = member.key_generation.saturating_add(1);
+        (previous_generation, member.key_generation)
+    };
+    demo_state.epoch = demo_state.epoch.saturating_add(1);
+    let new_epoch = demo_state.epoch;
+    let action_line = format!(
+        "update: {} key_generation={}",
+        updater, new_generation
+    );
+    demo_state.last_action = Some(action_line.clone());
+    append_demo_log_block(
+        &mut demo_state,
+        vec![
+            format!("Proposal(Update): sender={} target={}", updater, updater),
+            format!(
+                "PathUpdate: {} key_generation {} -> {}",
+                updater, previous_generation, new_generation
+            ),
+            format!("Commit: epoch {} -> {}", previous_epoch, new_epoch),
+        ],
+    );
+    save_admin_demo_state(state, demo_id, &demo_state)?;
+    touch_admin_demo_updated_at(state, demo_id, now_unix())?;
+    Ok(AdminDemoActionResponse {
+        action: action_line,
+        epoch: demo_state.epoch,
+        members: demo_state.members,
+    })
 }
 
 fn load_state(state: &UiState, username: &str) -> Result<ClientState, String> {
@@ -5547,6 +6430,20 @@ mod tests {
         serde_json::from_str(&text).expect("parse get json")
     }
 
+    async fn get_text(client: &Client, url: &str) -> String {
+        let resp = client.get(url).send().await.expect("get request");
+        let status = resp.status();
+        let text = resp.text().await.expect("response text");
+        assert!(
+            status.is_success(),
+            "unexpected status {} for {} with body {}",
+            status,
+            url,
+            text
+        );
+        text
+    }
+
     fn run_async_test_on_large_stack<F>(name: &str, fut: F)
     where
         F: Future<Output = ()> + Send + 'static,
@@ -5881,6 +6778,487 @@ mod tests {
         ui_handle.abort();
         ds_handle.abort();
         let _ = fs::remove_dir_all(&run_dir);
+        });
+    }
+
+    #[test]
+    fn ui_admin_demo_index_create_and_open() {
+        run_async_test_on_large_stack("ui-admin-demo-index", async move {
+            let run_dir = test_run_dir("ui-admin-demo-index");
+            let ds_data_dir = run_dir.join("data");
+            let ds_db_path = run_dir.join("ds.sqlite");
+            fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+
+            let mut ds_state = DsApiState::default();
+            ds_state.min_proposals_per_commit = 1;
+            ds_state.storage = StorageConfig::new(
+                ds_data_dir.to_string_lossy().as_ref(),
+                ds_db_path.to_string_lossy().as_ref(),
+            );
+            let ds_router = ds_http::router(ds_state);
+            let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+
+            let ui_state_dir = run_dir.join("ui-state");
+            fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+            let ui_state = UiState {
+                base_url: ds_base_url,
+                state_dir: ui_state_dir.clone(),
+                client: Client::new(),
+            };
+            let ui_router = build_ui_router(ui_state);
+            let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
+
+            let client = Client::new();
+            let admin_login = post_json(
+                &client,
+                &format!("{}/ui/api/login", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "password": "admin@123"
+                }),
+            )
+            .await;
+            assert_eq!(admin_login["ok"].as_bool(), Some(true));
+
+            let create_demo = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "title": "Professor Demo"
+                }),
+            )
+            .await;
+            assert_eq!(create_demo["ok"].as_bool(), Some(true));
+            let demo_id = create_demo["data"]["id"]
+                .as_str()
+                .expect("demo id")
+                .to_string();
+
+            let list_demos = get_json(
+                &client,
+                &format!("{}/ui/api/admin/demos?username=admin", ui_base_url),
+            )
+            .await;
+            assert_eq!(list_demos["ok"].as_bool(), Some(true));
+            let items = list_demos["data"]["items"].as_array().expect("demo items");
+            assert!(items
+                .iter()
+                .any(|item| item.get("id").and_then(|v| v.as_str()) == Some(demo_id.as_str())));
+
+            let detail = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(detail["ok"].as_bool(), Some(true));
+            assert_eq!(detail["data"]["epoch"].as_u64(), Some(0));
+            let manifest_path = detail["data"]["manifest_path"]
+                .as_str()
+                .expect("manifest path");
+            assert!(Path::new(manifest_path).exists());
+
+            let add_action = post_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/add",
+                    ui_base_url, demo_id
+                ),
+                json!({
+                    "username": "admin",
+                    "adder": "A",
+                    "added": "B"
+                }),
+            )
+            .await;
+            assert_eq!(add_action["ok"].as_bool(), Some(true));
+            assert_eq!(add_action["data"]["epoch"].as_u64(), Some(1));
+
+            let update_action = post_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/update",
+                    ui_base_url, demo_id
+                ),
+                json!({
+                    "username": "admin",
+                    "updater": "B"
+                }),
+            )
+            .await;
+            assert_eq!(update_action["ok"].as_bool(), Some(true));
+            assert_eq!(update_action["data"]["epoch"].as_u64(), Some(2));
+
+            let remove_action = post_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/remove",
+                    ui_base_url, demo_id
+                ),
+                json!({
+                    "username": "admin",
+                    "remover": "A",
+                    "removed": "B"
+                }),
+            )
+            .await;
+            assert_eq!(remove_action["ok"].as_bool(), Some(true));
+            assert_eq!(remove_action["data"]["epoch"].as_u64(), Some(3));
+
+            let detail_after_actions = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(detail_after_actions["ok"].as_bool(), Some(true));
+            assert_eq!(detail_after_actions["data"]["epoch"].as_u64(), Some(3));
+            let members_after = detail_after_actions["data"]["members"]
+                .as_array()
+                .expect("members after actions");
+            assert_eq!(members_after.len(), 1);
+            assert_eq!(
+                members_after[0]["username"].as_str(),
+                Some("A"),
+                "expected only A after add->update->remove flow"
+            );
+            let logs_after = detail_after_actions["data"]["logs"]
+                .as_array()
+                .expect("logs after actions");
+            assert!(
+                logs_after.len() >= 10,
+                "expected persisted MLS-style log entries, got {}",
+                logs_after.len()
+            );
+            assert!(
+                logs_after.iter().any(|entry| {
+                    entry
+                        .get("separator")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                }),
+                "expected at least one separator log entry"
+            );
+            assert!(
+                logs_after.iter().any(|entry| {
+                    entry
+                        .get("line")
+                        .and_then(|v| v.as_str())
+                        .map(|line| line.contains("Proposal(Add)"))
+                        .unwrap_or(false)
+                }),
+                "expected Proposal(Add) log line"
+            );
+            assert!(
+                logs_after.iter().any(|entry| {
+                    entry
+                        .get("line")
+                        .and_then(|v| v.as_str())
+                        .map(|line| line.contains("Proposal(Update)"))
+                        .unwrap_or(false)
+                }),
+                "expected Proposal(Update) log line"
+            );
+            assert!(
+                logs_after.iter().any(|entry| {
+                    entry
+                        .get("line")
+                        .and_then(|v| v.as_str())
+                        .map(|line| line.contains("Proposal(Remove)"))
+                        .unwrap_or(false)
+                }),
+                "expected Proposal(Remove) log line"
+            );
+
+            let demo_page = get_text(
+                &client,
+                &format!("{}/ui/admin/demos/{}", ui_base_url, demo_id),
+            )
+            .await;
+            assert!(demo_page.contains("demo-layout"));
+            assert!(demo_page.contains("Actions"));
+            assert!(demo_page.contains("Logs"));
+            assert!(demo_page.contains("Tree Structure"));
+            assert!(demo_page.contains("demo-add-adder"));
+            assert!(demo_page.contains("demo-remove-remover"));
+            assert!(demo_page.contains("demo-update-updater"));
+            assert!(demo_page.contains("demo-log-list"));
+
+            ui_handle.abort();
+            ds_handle.abort();
+            let _ = fs::remove_dir_all(&run_dir);
+        });
+    }
+
+    #[test]
+    fn ui_admin_demo_persistence_reload_and_new_demo_clean_state() {
+        run_async_test_on_large_stack("ui-admin-demo-persistence", async move {
+            let run_dir = test_run_dir("ui-admin-demo-persist");
+            let ds_data_dir = run_dir.join("data");
+            let ds_db_path = run_dir.join("ds.sqlite");
+            fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+
+            let mut ds_state = DsApiState::default();
+            ds_state.min_proposals_per_commit = 1;
+            ds_state.storage = StorageConfig::new(
+                ds_data_dir.to_string_lossy().as_ref(),
+                ds_db_path.to_string_lossy().as_ref(),
+            );
+            let ds_router = ds_http::router(ds_state);
+            let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+
+            let ui_state_dir = run_dir.join("ui-state");
+            fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+            let ui_state = UiState {
+                base_url: ds_base_url.clone(),
+                state_dir: ui_state_dir.clone(),
+                client: Client::new(),
+            };
+            let ui_router = build_ui_router(ui_state.clone());
+            let (ui_base_url, ui_handle_1) = spawn_router(ui_router).await;
+
+            let client = Client::new();
+            let admin_login = post_json(
+                &client,
+                &format!("{}/ui/api/login", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "password": "admin@123"
+                }),
+            )
+            .await;
+            assert_eq!(admin_login["ok"].as_bool(), Some(true));
+
+            let create_demo_1 = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "title": "Demo One"
+                }),
+            )
+            .await;
+            assert_eq!(create_demo_1["ok"].as_bool(), Some(true));
+            let demo_1_id = create_demo_1["data"]["id"]
+                .as_str()
+                .expect("demo 1 id")
+                .to_string();
+
+            let demo_1_state_path = ui_state_dir
+                .join("demo")
+                .join(sanitize(&demo_1_id))
+                .join("state.json");
+            assert!(
+                demo_1_state_path.exists(),
+                "expected demo state file at {}",
+                demo_1_state_path.display()
+            );
+
+            let add_action_demo_1 = post_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/add",
+                    ui_base_url, demo_1_id
+                ),
+                json!({
+                    "username": "admin",
+                    "adder": "A",
+                    "added": "B"
+                }),
+            )
+            .await;
+            assert_eq!(add_action_demo_1["ok"].as_bool(), Some(true));
+            assert_eq!(add_action_demo_1["data"]["epoch"].as_u64(), Some(1));
+
+            let detail_demo_1_before_reload = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_1_id
+                ),
+            )
+            .await;
+            assert_eq!(detail_demo_1_before_reload["ok"].as_bool(), Some(true));
+            assert_eq!(
+                detail_demo_1_before_reload["data"]["epoch"].as_u64(),
+                Some(1)
+            );
+            assert_eq!(
+                detail_demo_1_before_reload["data"]["members"]
+                    .as_array()
+                    .expect("demo1 members before reload")
+                    .len(),
+                2
+            );
+
+            ui_handle_1.abort();
+
+            let ui_router_reloaded = build_ui_router(UiState {
+                base_url: ds_base_url.clone(),
+                state_dir: ui_state_dir.clone(),
+                client: Client::new(),
+            });
+            let (ui_base_url_reloaded, ui_handle_2) = spawn_router(ui_router_reloaded).await;
+
+            let admin_login_reloaded = post_json(
+                &client,
+                &format!("{}/ui/api/login", ui_base_url_reloaded),
+                json!({
+                    "username": "admin",
+                    "password": "admin@123"
+                }),
+            )
+            .await;
+            assert_eq!(admin_login_reloaded["ok"].as_bool(), Some(true));
+
+            let list_after_reload = get_json(
+                &client,
+                &format!("{}/ui/api/admin/demos?username=admin", ui_base_url_reloaded),
+            )
+            .await;
+            assert_eq!(list_after_reload["ok"].as_bool(), Some(true));
+            assert!(
+                list_after_reload["data"]["items"]
+                    .as_array()
+                    .expect("demo list after reload")
+                    .iter()
+                    .any(|item| item.get("id").and_then(|v| v.as_str()) == Some(demo_1_id.as_str())),
+                "expected first demo in demo index after reload"
+            );
+
+            let detail_demo_1_after_reload = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url_reloaded, demo_1_id
+                ),
+            )
+            .await;
+            assert_eq!(detail_demo_1_after_reload["ok"].as_bool(), Some(true));
+            assert_eq!(detail_demo_1_after_reload["data"]["epoch"].as_u64(), Some(1));
+            let demo_1_members_after = detail_demo_1_after_reload["data"]["members"]
+                .as_array()
+                .expect("demo1 members after reload");
+            assert_eq!(demo_1_members_after.len(), 2);
+            assert!(
+                detail_demo_1_after_reload["data"]["logs"]
+                    .as_array()
+                    .expect("demo1 logs after reload")
+                    .iter()
+                    .any(|entry| {
+                        entry
+                            .get("line")
+                            .and_then(|v| v.as_str())
+                            .map(|line| line.contains("Proposal(Add)"))
+                            .unwrap_or(false)
+                    }),
+                "expected persisted Proposal(Add) log line after reload"
+            );
+
+            let create_demo_2 = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos", ui_base_url_reloaded),
+                json!({
+                    "username": "admin",
+                    "title": "Demo Two"
+                }),
+            )
+            .await;
+            assert_eq!(create_demo_2["ok"].as_bool(), Some(true));
+            let demo_2_id = create_demo_2["data"]["id"]
+                .as_str()
+                .expect("demo 2 id")
+                .to_string();
+            assert_ne!(demo_1_id, demo_2_id);
+
+            let detail_demo_2 = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url_reloaded, demo_2_id
+                ),
+            )
+            .await;
+            assert_eq!(detail_demo_2["ok"].as_bool(), Some(true));
+            assert_eq!(detail_demo_2["data"]["epoch"].as_u64(), Some(0));
+            let demo_2_members = detail_demo_2["data"]["members"]
+                .as_array()
+                .expect("demo2 members");
+            assert_eq!(demo_2_members.len(), 1);
+            assert_eq!(demo_2_members[0]["username"].as_str(), Some("A"));
+            let demo_2_logs = detail_demo_2["data"]["logs"].as_array().expect("demo2 logs");
+            assert!(
+                demo_2_logs.len() >= 2,
+                "expected initial logs for new demo"
+            );
+            assert!(
+                demo_2_logs.iter().all(|entry| {
+                    entry
+                        .get("line")
+                        .and_then(|v| v.as_str())
+                        .map(|line| !line.contains("Proposal("))
+                        .unwrap_or(true)
+                }),
+                "new demo should not inherit proposal logs from previous demos"
+            );
+
+            let detail_demo_1_final = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url_reloaded, demo_1_id
+                ),
+            )
+            .await;
+            assert_eq!(detail_demo_1_final["ok"].as_bool(), Some(true));
+            assert_eq!(detail_demo_1_final["data"]["epoch"].as_u64(), Some(1));
+            assert_eq!(
+                detail_demo_1_final["data"]["members"]
+                    .as_array()
+                    .expect("demo1 members final")
+                    .len(),
+                2
+            );
+
+            let missing_demo_id = "missing-demo-for-action";
+            let missing_action = post_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/add",
+                    ui_base_url_reloaded, missing_demo_id
+                ),
+                json!({
+                    "username": "admin",
+                    "adder": "A",
+                    "added": "B"
+                }),
+            )
+            .await;
+            assert_eq!(missing_action["ok"].as_bool(), Some(false));
+            let error_text = missing_action["error"].as_str().unwrap_or("");
+            assert!(
+                error_text.contains("demo state missing"),
+                "expected strict missing-state error, got {}",
+                error_text
+            );
+            let missing_demo_state_path = ui_state_dir
+                .join("demo")
+                .join(sanitize(missing_demo_id))
+                .join("state.json");
+            assert!(
+                !missing_demo_state_path.exists(),
+                "missing demo action should not create state file at {}",
+                missing_demo_state_path.display()
+            );
+
+            ui_handle_2.abort();
+            ds_handle.abort();
+            let _ = fs::remove_dir_all(&run_dir);
         });
     }
 }
