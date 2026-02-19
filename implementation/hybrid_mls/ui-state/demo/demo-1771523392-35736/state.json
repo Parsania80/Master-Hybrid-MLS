@@ -1,0 +1,492 @@
+{
+  "epoch": 18,
+  "leaf_slots": [
+    {
+      "username": "N",
+      "key_generation": 1
+    },
+    {
+      "username": "B",
+      "key_generation": 2
+    },
+    {
+      "username": "Q",
+      "key_generation": 1
+    },
+    {
+      "username": "W",
+      "key_generation": 1
+    },
+    {
+      "username": "F",
+      "key_generation": 1
+    },
+    {
+      "username": "G",
+      "key_generation": 1
+    }
+  ],
+  "logs": [
+    {
+      "timestamp": 1771523392,
+      "line": "RFC9420 Demo Init: initialized single-member ratchet tree with A at LeafIndex=0 (NodeIndex=0, root)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523392,
+      "line": "RFC9420 GroupContext: epoch set to 0",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523392,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523396,
+      "line": "RFC9420 Proposal Add: sender=A target=B (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523396,
+      "line": "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count 1 -> 2 and placed B at LeafIndex=1 (NodeIndex=2)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523396,
+      "line": "RFC9420 RatchetTree Add result: B mapped to LeafIndex=1 (NodeIndex=2)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523396,
+      "line": "RFC9420 Commit: GroupContext.epoch 0 -> 1",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523396,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523400,
+      "line": "RFC9420 Proposal Add: sender=A target=C (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523400,
+      "line": "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count 2 -> 3 and placed C at LeafIndex=2 (NodeIndex=4)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523400,
+      "line": "RFC9420 RatchetTree Add result: C mapped to LeafIndex=2 (NodeIndex=4)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523400,
+      "line": "RFC9420 Commit: GroupContext.epoch 1 -> 2",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523400,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523403,
+      "line": "RFC9420 Proposal Add: sender=A target=D (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523403,
+      "line": "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count 3 -> 4 and placed D at LeafIndex=3 (NodeIndex=6)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523403,
+      "line": "RFC9420 RatchetTree Add result: D mapped to LeafIndex=3 (NodeIndex=6)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523403,
+      "line": "RFC9420 Commit: GroupContext.epoch 2 -> 3",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523403,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523411,
+      "line": "RFC9420 Proposal Remove: sender=A target=C",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523411,
+      "line": "RFC9420 RatchetTree Remove: blanked LeafIndex=2 (NodeIndex=4) for C",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523411,
+      "line": "RFC9420 RatchetTree Remove: no trailing blank leaves to trim (leaf_count stays 4)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523411,
+      "line": "RFC9420 Commit: GroupContext.epoch 3 -> 4",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523411,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523414,
+      "line": "RFC9420 Proposal Remove: sender=A target=D",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523414,
+      "line": "RFC9420 RatchetTree Remove: blanked LeafIndex=3 (NodeIndex=6) for D",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523414,
+      "line": "RFC9420 RatchetTree Remove: trimmed trailing blank leaves (leaf_count 4 -> 2)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523414,
+      "line": "RFC9420 Commit: GroupContext.epoch 4 -> 5",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523414,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523421,
+      "line": "RFC9420 Proposal Remove: sender=B target=A",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523421,
+      "line": "RFC9420 RatchetTree Remove: blanked LeafIndex=0 (NodeIndex=0) for A",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523421,
+      "line": "RFC9420 RatchetTree Remove: no trailing blank leaves to trim (leaf_count stays 2)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523421,
+      "line": "RFC9420 Commit: GroupContext.epoch 5 -> 6",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523421,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523433,
+      "line": "RFC9420 Proposal Add: sender=B target=N (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523433,
+      "line": "RFC9420 RatchetTree Add: filled leftmost blank LeafIndex=0 (NodeIndex=0) with N",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523433,
+      "line": "RFC9420 RatchetTree Add result: N mapped to LeafIndex=0 (NodeIndex=0)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523433,
+      "line": "RFC9420 Commit: GroupContext.epoch 6 -> 7",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523433,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523448,
+      "line": "RFC9420 Proposal Add: sender=B target=Q (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523448,
+      "line": "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count 2 -> 3 and placed Q at LeafIndex=2 (NodeIndex=4)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523448,
+      "line": "RFC9420 RatchetTree Add result: Q mapped to LeafIndex=2 (NodeIndex=4)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523448,
+      "line": "RFC9420 Commit: GroupContext.epoch 7 -> 8",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523448,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523451,
+      "line": "RFC9420 Proposal Add: sender=B target=W (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523451,
+      "line": "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count 3 -> 4 and placed W at LeafIndex=3 (NodeIndex=6)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523451,
+      "line": "RFC9420 RatchetTree Add result: W mapped to LeafIndex=3 (NodeIndex=6)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523451,
+      "line": "RFC9420 Commit: GroupContext.epoch 8 -> 9",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523451,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523454,
+      "line": "RFC9420 Proposal Add: sender=B target=E (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523454,
+      "line": "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count 4 -> 5 and placed E at LeafIndex=4 (NodeIndex=8)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523454,
+      "line": "RFC9420 RatchetTree Add result: E mapped to LeafIndex=4 (NodeIndex=8)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523454,
+      "line": "RFC9420 Commit: GroupContext.epoch 9 -> 10",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523454,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523472,
+      "line": "RFC9420 Proposal Remove: sender=Q target=E",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523472,
+      "line": "RFC9420 RatchetTree Remove: blanked LeafIndex=4 (NodeIndex=8) for E",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523472,
+      "line": "RFC9420 RatchetTree Remove: trimmed trailing blank leaves (leaf_count 5 -> 4)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523472,
+      "line": "RFC9420 Commit: GroupContext.epoch 10 -> 11",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523472,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523653,
+      "line": "RFC9420 Proposal Add: sender=B target=F (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523653,
+      "line": "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count 4 -> 5 and placed F at LeafIndex=4 (NodeIndex=8)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523653,
+      "line": "RFC9420 RatchetTree Add result: F mapped to LeafIndex=4 (NodeIndex=8)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523653,
+      "line": "RFC9420 Commit: GroupContext.epoch 11 -> 12",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523653,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771523705,
+      "line": "RFC9420 Proposal Update: sender=B target=B",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523705,
+      "line": "RFC9420 Path Update: B at LeafIndex=1 (NodeIndex=2) key_generation 1 -> 2",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523705,
+      "line": "RFC9420 Commit: GroupContext.epoch 12 -> 13",
+      "separator": false
+    },
+    {
+      "timestamp": 1771523705,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771524241,
+      "line": "RFC9420 Proposal Add: sender=N target=G (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524241,
+      "line": "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count 5 -> 6 and placed G at LeafIndex=5 (NodeIndex=10)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524241,
+      "line": "RFC9420 RatchetTree Add result: G mapped to LeafIndex=5 (NodeIndex=10)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524241,
+      "line": "RFC9420 Commit: GroupContext.epoch 13 -> 14",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524241,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771524285,
+      "line": "RFC9420 Proposal Remove: sender=N target=G",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524285,
+      "line": "RFC9420 RatchetTree Remove: blanked LeafIndex=5 (NodeIndex=10) for G",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524285,
+      "line": "RFC9420 RatchetTree Remove: trimmed trailing blank leaves (leaf_count 6 -> 5)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524285,
+      "line": "RFC9420 Commit: GroupContext.epoch 14 -> 15",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524285,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771524288,
+      "line": "RFC9420 Proposal Add: sender=N target=G (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524288,
+      "line": "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count 5 -> 6 and placed G at LeafIndex=5 (NodeIndex=10)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524288,
+      "line": "RFC9420 RatchetTree Add result: G mapped to LeafIndex=5 (NodeIndex=10)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524288,
+      "line": "RFC9420 Commit: GroupContext.epoch 15 -> 16",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524288,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771524294,
+      "line": "RFC9420 Proposal Remove: sender=N target=F",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524294,
+      "line": "RFC9420 RatchetTree Remove: blanked LeafIndex=4 (NodeIndex=8) for F",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524294,
+      "line": "RFC9420 RatchetTree Remove: no trailing blank leaves to trim (leaf_count stays 6)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524294,
+      "line": "RFC9420 Commit: GroupContext.epoch 16 -> 17",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524294,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771524298,
+      "line": "RFC9420 Proposal Add: sender=N target=F (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524298,
+      "line": "RFC9420 RatchetTree Add: filled leftmost blank LeafIndex=4 (NodeIndex=8) with F",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524298,
+      "line": "RFC9420 RatchetTree Add result: F mapped to LeafIndex=4 (NodeIndex=8)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524298,
+      "line": "RFC9420 Commit: GroupContext.epoch 17 -> 18",
+      "separator": false
+    },
+    {
+      "timestamp": 1771524298,
+      "line": "--------------------",
+      "separator": true
+    }
+  ],
+  "last_action": "add: N added F"
+}

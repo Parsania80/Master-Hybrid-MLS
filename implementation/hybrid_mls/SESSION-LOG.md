@@ -407,3 +407,7 @@
 [2026-02-19 21:06] [AGENT] Added migration compatibility tests in `src/bin/ds_ui_gateway.rs`: unit negative for duplicate legacy indices and DS-backed end-to-end test that injects legacy state, loads migrated detail API, applies action, and verifies persisted rewrite to new schema.
 [2026-02-19 21:06] [AGENT] Implemented admin route hardening: `/ui/admin` and `/ui/admin/demos/:id` now require active admin UI session (cookie + local session), non-admin requests redirect to `/ui/login`; login page now routes admin users to `/ui/admin`.
 [2026-02-19 21:06] [AGENT] Verification: `cargo test --bin ds_ui_gateway` passed (16/16) and `cargo check` passed.
+[2026-02-19 21:13] [AGENT] Updated admin demo tree UI sizing in `src/bin/ds_ui_gateway.rs`: demo page now uses `panel-admin-demo` wider max width, right-heavy `demo-layout` ratio, larger tree node circles/text, and taller spacing/canvas for clearer `LeafIndex`/`NodeIndex` readability.
+[2026-02-19 21:13] [AGENT] Verification: `cargo test --bin ds_ui_gateway` passed (16/16) and `cargo check` passed.
+[2026-02-19 21:17] [AGENT] Refined tree-size patch scope to apply only on admin demo page (`/ui/admin/demos/:id`) and re-verified UI gateway suite.
+[2026-02-19 21:17] [AGENT] Verification: `cargo test --bin ds_ui_gateway` passed (16/16) and `cargo check` passed.

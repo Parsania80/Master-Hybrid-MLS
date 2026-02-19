@@ -1214,7 +1214,7 @@ async fn ui_admin_demo(
             <button class="ghost" type="button" onclick="window.location.href='/ui/admin'">Admin</button>
             <button class="ghost" type="button" onclick="uiLogout()">Logout</button>
         </div>
-        <main class="panel">
+        <main class="panel panel-admin-demo">
             <section class="hero">
                 <div class="eyebrow">Admin Demo</div>
                 <h1>{demo_id}</h1>
@@ -1384,14 +1384,14 @@ async fn ui_admin_demo(
           const memberMap = new Map(items.map(item => [Number(item.leaf_index), item]));
           const nodes = [];
           const edges = [];
-          const rootNodeIndex = buildDemoTree(0, resolvedLeafCount, 0, 40, 920, nodes, edges, memberMap);
+          const width = 1800;
+          const rootNodeIndex = buildDemoTree(0, resolvedLeafCount, 0, 80, width - 80, nodes, edges, memberMap);
           const maxDepth = nodes.reduce((m, node) => Math.max(m, Number(node.depth || 0)), 0);
-          const rowHeight = 92;
-          const height = 90 + (maxDepth + 1) * rowHeight;
-          const width = 960;
+          const rowHeight = 128;
+          const height = 120 + (maxDepth + 1) * rowHeight;
           const nodePos = new Map(nodes.map(node => [
             Number(node.node_index),
-            {{ x: Number(node.x), y: 58 + Number(node.depth) * rowHeight }}
+            {{ x: Number(node.x), y: 84 + Number(node.depth) * rowHeight }}
           ]));
           const edgeSvg = edges.map(edge => {{
             const from = nodePos.get(Number(edge.from));
@@ -1406,10 +1406,10 @@ async fn ui_admin_demo(
             if (node.kind === 'parent') {{
               return `
                 <g>
-                  <circle cx="${{pos.x}}" cy="${{pos.y}}" r="18" fill="${{isRoot ? '#ffe8cc' : '#fff5ec'}}" stroke="#b45309" stroke-width="2"></circle>
-                  <text x="${{pos.x}}" y="${{pos.y - 2}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#1f2933">parent</text>
-                  <text x="${{pos.x}}" y="${{pos.y + 9}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#5c6b7a">N${{node.node_index}}</text>
-                  ${{isRoot ? `<text x="${{pos.x}}" y="${{pos.y - 24}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#b45309">root</text>` : ''}}
+                  <circle cx="${{pos.x}}" cy="${{pos.y}}" r="30" fill="${{isRoot ? '#ffe8cc' : '#fff5ec'}}" stroke="#b45309" stroke-width="2"></circle>
+                  <text x="${{pos.x}}" y="${{pos.y - 6}}" text-anchor="middle" font-size="13" font-family="Space Grotesk" fill="#1f2933">parent</text>
+                  <text x="${{pos.x}}" y="${{pos.y + 12}}" text-anchor="middle" font-size="13" font-family="Space Grotesk" fill="#5c6b7a">N${{node.node_index}}</text>
+                  ${{isRoot ? `<text x="${{pos.x}}" y="${{pos.y - 40}}" text-anchor="middle" font-size="13" font-family="Space Grotesk" fill="#b45309">root</text>` : ''}}
                 </g>
               `;
             }}
@@ -1423,11 +1423,11 @@ async fn ui_admin_demo(
               : '';
             return `
               <g>
-                <circle cx="${{pos.x}}" cy="${{pos.y}}" r="20" fill="${{isBlank ? '#f6f7f8' : '#ffffff'}}" stroke="${{isBlank ? '#9aa8b7' : '#b45309'}}" stroke-width="2"></circle>
-                <text x="${{pos.x}}" y="${{pos.y - 8}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#1f2933">${{leafLabel}} / ${{nodeLabel}}</text>
-                <text x="${{pos.x}}" y="${{pos.y + 3}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#5c6b7a">${{escapeHtml(userLabel)}}</text>
-                <text x="${{pos.x}}" y="${{pos.y + 14}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#5c6b7a">${{escapeHtml(keyGeneration)}}</text>
-                ${{isRoot ? `<text x="${{pos.x}}" y="${{pos.y - 24}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#b45309">root</text>` : ''}}
+                <circle cx="${{pos.x}}" cy="${{pos.y}}" r="34" fill="${{isBlank ? '#f6f7f8' : '#ffffff'}}" stroke="${{isBlank ? '#9aa8b7' : '#b45309'}}" stroke-width="2"></circle>
+                <text x="${{pos.x}}" y="${{pos.y - 14}}" text-anchor="middle" font-size="13" font-family="Space Grotesk" fill="#1f2933">${{leafLabel}} / ${{nodeLabel}}</text>
+                <text x="${{pos.x}}" y="${{pos.y + 4}}" text-anchor="middle" font-size="12" font-family="Space Grotesk" fill="#5c6b7a">${{escapeHtml(userLabel)}}</text>
+                <text x="${{pos.x}}" y="${{pos.y + 22}}" text-anchor="middle" font-size="12" font-family="Space Grotesk" fill="#5c6b7a">${{escapeHtml(keyGeneration)}}</text>
+                ${{isRoot ? `<text x="${{pos.x}}" y="${{pos.y - 46}}" text-anchor="middle" font-size="13" font-family="Space Grotesk" fill="#b45309">root</text>` : ''}}
               </g>
             `;
           }}).join('');
@@ -1437,7 +1437,7 @@ async fn ui_admin_demo(
           tree.innerHTML = `
             <svg viewBox="0 0 ${{width}} ${{height}}" width="100%" height="${{height}}" preserveAspectRatio="xMidYMid meet">
               <rect x="0" y="0" width="${{width}}" height="${{height}}" fill="#fffef8" stroke="#e7cba1" rx="10"></rect>
-              <text x="${{width / 2}}" y="24" text-anchor="middle" font-size="12" font-family="Space Grotesk" fill="#5c6b7a">epoch ${{epoch}} • root N${{rootNodeIndex}} • leaves ${{resolvedLeafCount}} • nodes ${{resolvedNodeCount}}</text>
+              <text x="${{width / 2}}" y="34" text-anchor="middle" font-size="16" font-family="Space Grotesk" fill="#5c6b7a">epoch ${{epoch}} • root N${{rootNodeIndex}} • leaves ${{resolvedLeafCount}} • nodes ${{resolvedNodeCount}}</text>
               ${{edgeSvg}}
               ${{nodeSvg}}
             </svg>
@@ -2442,6 +2442,9 @@ fn ui_shell(title: &str, body: &str) -> Html<String> {
       display: grid;
       gap: var(--space-lg);
     }}
+    .panel-admin-demo {{
+      max-width: 2200px;
+    }}
     .hero {{
       display: grid;
       gap: var(--space-sm);
@@ -2489,7 +2492,7 @@ fn ui_shell(title: &str, body: &str) -> Html<String> {
     }}
     .demo-layout {{
       display: grid;
-      grid-template-columns: minmax(420px, 1.2fr) minmax(320px, 1fr);
+      grid-template-columns: minmax(320px, 0.8fr) minmax(980px, 2.4fr);
       gap: var(--space-md);
       min-width: 0;
     }}
@@ -2510,6 +2513,7 @@ fn ui_shell(title: &str, body: &str) -> Html<String> {
     }}
     .demo-tree {{
       align-content: start;
+      min-height: 740px;
     }}
     .tree-view-grid {{
       display: grid;
@@ -2522,6 +2526,7 @@ fn ui_shell(title: &str, body: &str) -> Html<String> {
       width: 100%;
       overflow: hidden;
       border-radius: 10px;
+      min-height: 660px;
     }}
     label {{
       display: grid;

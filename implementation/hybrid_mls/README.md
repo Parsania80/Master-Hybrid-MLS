@@ -49,6 +49,7 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 - Part 11 Task 8 is complete: legacy admin-demo `members` state migration is now hardened with validation (reject duplicate legacy `leaf_index` and empty usernames) plus DS-backed migration integration coverage that verifies legacy detail load + rewrite to new `leaf_slots` schema after action apply.
 - Admin UI page access is now server-guarded: `/ui/admin` and `/ui/admin/demos/:id` require an active admin UI session (cookie + local session state), and non-admin access redirects to `/ui/login`.
 - Login UX now routes admin users directly to `/ui/admin` (non-admin users continue to `/ui/groups`).
+- Admin demo tree visualization is now significantly enlarged for readability: the demo page uses a wider panel, a right-heavy 3x-style layout ratio, larger node circles/fonts, and taller tree canvas spacing so `LeafIndex`/`NodeIndex` labels are easy to read.
 - Tree helper alignment fix: `RatchetTree::direct_path`, `copath`, and `filtered_direct_path` now expose leaf-to-root ordering (matching RFC direct-path semantics), with regression tests in `src/tree.rs`.
 - Warning debt cleanup: removed dead code `not_implemented` helper in `src/ds/http.rs`; `cargo check` now runs clean with no warnings.
 
@@ -484,4 +485,4 @@ Sync notes:
 - `--watch` enables continuous polling; use `--poll-interval-ms` and optional `--max-polls` to control loop behavior.
 - `show-derived-secrets` is debug-only and intentionally exposes secret material; use only in local test/demo environments.
 
-Last updated: 2026-02-19 21:06
+Last updated: 2026-02-19 21:17
