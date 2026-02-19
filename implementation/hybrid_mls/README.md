@@ -9,7 +9,7 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 
 **Status**
 - Progress tracking is maintained in `PROJECT.md`.
-- Current implementation priority moved to Part 7 Task 6 (multi-VM deployment/test guide) after completing Part 8 Tasks 8-12.
+- Current implementation priority is Part 11 (RFC tree semantics bug fixes for Admin Demo UI/state).
 - RFC compliance note: beyond Welcome, remaining work includes full MLS wire framing, transcript/confirmation/membership authentication pipeline, full proposal set, and deeper RFC key-schedule alignment.
 - Post-Welcome RFC hardening tasks are tracked in `PROJECT.md` Part 10.
 - `PreSharedKey` proposal support is now implemented in the tree/commit model (`Proposal::PreSharedKey { psk_id }`) with encode/decode and validation coverage.
@@ -37,6 +37,19 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 - Part 8 Task 10 is complete: admin demo Add/Remove/Update actions are wired end-to-end with persisted deterministic state transitions (epoch advance, member set changes, key-generation increments).
 - Part 8 Task 11 is complete: admin demo now records timestamped MLS-style logs for init/Add/Remove/Update with separator lines (`--------------------`) and persists them in per-demo state.
 - Part 8 Task 12 is complete: admin demo persistence is enforced end-to-end (state survives UI reload/restart, new demos start clean with A-only baseline, and missing-demo actions fail closed without creating orphan state).
+- Review note (2026-02-19): earlier admin demo versions used a simplified member-list model and star renderer; Part 11 migrated this to explicit tree topology + binary render.
+- Part 11 Task 1 is complete: admin demo state now persists explicit topology as `leaf_slots` (`Vec<Option<...>>`) with legacy `members`-state migration, and demo detail API now exposes derived `leaf_count`/`node_count`.
+- Part 11 Task 2 is complete: admin demo Add placement is now explicit and test-backed (`reuse leftmost blank leaf` before any tree extension), with integration coverage asserting stable leaf indices and width when blank reuse is possible.
+- Part 11 Task 3 is complete: admin demo Remove behavior now uses explicit blank+trim semantics (blank target leaf, truncate only right-edge blank leaves, no leaf compaction/reindex), with strict unit and DS-backed integration tests.
+- Part 11 Task 4 is complete: admin demo tree panel now renders a real left-balanced binary topology (parent-child edges, internal nodes, blank leaves, and topology-derived leaf/node counts) instead of root-to-all star rendering.
+- Part 11 Task 5 is complete: tree labels now explicitly present both LeafIndex and NodeIndex in-node (`Lx/Ny` for leaves, `Ny` for parents), and legend text now clarifies index semantics and the even-node leaf rule.
+- Part 11 Task 6 is complete: admin demo logs now use RFC-style operation wording (`RFC9420 Proposal Add/Remove/Update`, `RFC9420 RatchetTree`, `RFC9420 Path Update`, `RFC9420 Commit`) with explicit `LeafIndex`, `NodeIndex`, and `GroupContext.epoch` transitions.
+- Added DS-backed UI regression coverage for admin demo tree label behavior after add/remove chains, asserting root/blank label markers remain present while a non-tail remove preserves a blank leaf slot in topology state.
+- Part 11 Task 7 is complete: regression coverage now includes binary-topology index invariants (left-balanced node index rules, even/odd leaf/parent mapping, unique node IDs) and DS-backed epoch-chain index stability checks across Add/Update/Remove/Add flows.
+- Part 11 Task 8 is complete: legacy admin-demo `members` state migration is now hardened with validation (reject duplicate legacy `leaf_index` and empty usernames) plus DS-backed migration integration coverage that verifies legacy detail load + rewrite to new `leaf_slots` schema after action apply.
+- Admin UI page access is now server-guarded: `/ui/admin` and `/ui/admin/demos/:id` require an active admin UI session (cookie + local session state), and non-admin access redirects to `/ui/login`.
+- Login UX now routes admin users directly to `/ui/admin` (non-admin users continue to `/ui/groups`).
+- Tree helper alignment fix: `RatchetTree::direct_path`, `copath`, and `filtered_direct_path` now expose leaf-to-root ordering (matching RFC direct-path semantics), with regression tests in `src/tree.rs`.
 - Warning debt cleanup: removed dead code `not_implemented` helper in `src/ds/http.rs`; `cargo check` now runs clean with no warnings.
 
 **Architecture**
@@ -471,4 +484,4 @@ Sync notes:
 - `--watch` enables continuous polling; use `--poll-interval-ms` and optional `--max-polls` to control loop behavior.
 - `show-derived-secrets` is debug-only and intentionally exposes secret material; use only in local test/demo environments.
 
-Last updated: 2026-02-19 19:47
+Last updated: 2026-02-19 21:06

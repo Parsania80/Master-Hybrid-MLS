@@ -37,7 +37,7 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 |---|------|--------|-------|
 | 1 | Implement integrated ratchet tree indexing and node model | ✅ Done | Leaf/parent/blank model implemented in `src/tree.rs`. |
 | 2 | Implement parent hash computation and update propagation | ✅ Done | Parent hash logic and recomputation implemented. |
-| 3 | Implement tree resolution and direct path helpers | ✅ Done | `direct_path`, `filtered_direct_path`, `resolution` implemented. |
+| 3 | Implement tree resolution and direct path helpers | ✅ Done | `direct_path`, `filtered_direct_path`, `resolution` implemented; direct-path/copath public ordering aligned to leaf-to-root semantics in `src/tree.rs` with regression tests. |
 | 4 | Add encode/decode coverage for tree and commit payloads | ✅ Done | Round-trip tests exist. |
 
 ### Part 3: Engine (Proposals & Commits)
@@ -130,6 +130,18 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 14 | Relax and harden commit policy for multiple Add proposals | ✅ Done | Removed single-Add restriction and replaced it with robust Add-target checks: invalid Add keypackage rejection, existing-member identity rejection, and duplicate Add target rejection (identity/init-key). Added unit + DS-backed integration coverage. |
 | 15 | Add RFC conformance test matrix and vectors | ✅ Done | Completed deterministic fixture suite: `AuthenticatedContent`, `PublicMessage`/`PrivateMessage`, and `ProposalEnvelope`/`CommitEnvelope`/`PathUpdateEnvelope` binary fixtures; added fixture hash manifest validation (`tests/vector_manifest.rs` + `tests/vectors/MANIFEST.sha3`), malformed fixture corpus, and DS-backed byte-stability round-trip assertions. |
 
+### Part 11: RFC Tree Semantics Bug Fixes (UI/Admin Demo)
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 1 | Replace demo member-list model with explicit tree model (leaf/node indices + blank nodes) | ✅ Done | Migrated admin demo persistence from `members` vector to explicit `leaf_slots` topology (`Vec<Option<...>>`) with legacy state migration support and derived `leaf_count`/`node_count` in detail API. |
+| 2 | Enforce RFC-style Add placement in demo flow | ✅ Done | Formalized Add placement via explicit helper (`reused leftmost blank` vs `extend tree`), updated MLS-style logs accordingly, and added strict unit/integration tests for blank-reuse before extension and stable leaf-index behavior after add. |
+| 3 | Enforce RFC-style Remove behavior in demo flow | ✅ Done | Remove now follows explicit blank+trim policy: blank target leaf, truncate only trailing blank leaves (no compaction/reindex), and emit deterministic truncation/no-truncation logs. Added strict unit + DS-backed integration coverage. |
+| 4 | Render real binary tree in admin demo UI from node topology | ✅ Done | Replaced star renderer with topology-driven left-balanced binary render based on leaf span (`leaf_count`), parent/child edges, and explicit blank/internal node visualization; tree header now reports epoch/leaves/nodes. |
+| 5 | Show both `LeafIndex` and `NodeIndex` in UI labels | ✅ Done | Tree nodes now render explicit index labels (`Lx / Ny` for leaves, `Ny` for parents) with root marker, key-generation/user tags, and polished legend text clarifying `LeafIndex` vs `NodeIndex` semantics including even-node leaf rule. |
+| 6 | Align demo logs with exact RFC-style tree operations | ✅ Done | Admin demo logs now use RFC-style wording across init/Add/Remove/Update/Commit entries with explicit `GroupContext.epoch`, `LeafIndex`, and `NodeIndex` semantics plus trim/no-trim outcomes. |
+| 7 | Add regression tests for demo tree semantics | ✅ Done | Completed coverage for add-reuse-blank, remove-without-reindex, index stability across epochs, and binary layout invariants via new unit + DS-backed integration tests in `src/bin/ds_ui_gateway.rs`. |
+| 8 | Add migration/compatibility for existing demo state files | ✅ Done | Added migration hardening for legacy `members` state: duplicate `leaf_index` and empty-username legacy records are now rejected; added DS-backed integration coverage that injects legacy state, verifies migrated detail API topology, and confirms persistence rewrites to new `leaf_slots` schema after action apply. |
+
 ---
-Current: `Part 7 / Task 6 - Multi-VM deployment/test guide`
-Next: `Part 8 extensions (admin-demo deepening) or requested next priority`
+Current: `Part 7 / Task 6 - Add multi-VM deployment/test guide and automation`
+Next: `Part 8 / UX hardening follow-ups (admin/page access + onboarding polish)`

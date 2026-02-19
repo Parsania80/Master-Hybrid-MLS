@@ -7,6 +7,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     extract::{Path as AxumPath, Query, State},
+    http::{
+        header::{COOKIE, SET_COOKIE},
+        HeaderMap, HeaderValue,
+    },
     response::{Html, IntoResponse, Redirect},
     routing::{get, post},
     Json, Router,
@@ -381,6 +385,12 @@ struct AdminDemoMember {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+struct AdminDemoLeafSlot {
+    username: String,
+    key_generation: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct AdminDemoLogEntry {
     timestamp: i64,
     line: String,
@@ -390,6 +400,16 @@ struct AdminDemoLogEntry {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct AdminDemoState {
     epoch: u64,
+    leaf_slots: Vec<Option<AdminDemoLeafSlot>>,
+    #[serde(default)]
+    logs: Vec<AdminDemoLogEntry>,
+    last_action: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyAdminDemoState {
+    epoch: u64,
+    #[serde(default)]
     members: Vec<AdminDemoMember>,
     #[serde(default)]
     logs: Vec<AdminDemoLogEntry>,
@@ -405,6 +425,8 @@ struct AdminDemoDetail {
     root_dir: String,
     manifest_path: String,
     epoch: u64,
+    leaf_count: usize,
+    node_count: usize,
     members: Vec<AdminDemoMember>,
     logs: Vec<AdminDemoLogEntry>,
 }
@@ -534,6 +556,50 @@ async fn ui_index() -> impl IntoResponse {
     Redirect::to("/ui/login")
 }
 
+fn ui_cookie_username(headers: &HeaderMap) -> Option<String> {
+    let cookie_header = headers.get(COOKIE)?.to_str().ok()?;
+    for part in cookie_header.split(';') {
+        let mut kv = part.trim().splitn(2, '=');
+        let key = kv.next()?.trim();
+        let value = kv.next()?.trim();
+        if key == "ui_username" {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn has_active_local_session(state: &UiState, username: &str) -> bool {
+    load_state(state, username)
+        .map(|client_state| client_state.session_id.is_some())
+        .unwrap_or(false)
+}
+
+fn has_admin_ui_session(state: &UiState, headers: &HeaderMap) -> bool {
+    let Some(username) = ui_cookie_username(headers) else {
+        return false;
+    };
+    if username != ADMIN_USERNAME {
+        return false;
+    }
+    has_active_local_session(state, ADMIN_USERNAME)
+}
+
+fn ui_login_cookie_value(username: &str) -> String {
+    let safe_username: String = username
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .collect();
+    format!(
+        "ui_username={}; Path=/; HttpOnly; SameSite=Lax",
+        safe_username
+    )
+}
+
+fn ui_logout_cookie_value() -> &'static str {
+    "ui_username=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+}
+
 async fn ui_login() -> impl IntoResponse {
     ui_shell(
         "DS Login",
@@ -588,7 +654,8 @@ async fn ui_login() -> impl IntoResponse {
           if (data.ok) {
             localStorage.setItem('ui_username', username);
             status.textContent = 'Registered and logged in.';
-            window.location.href = '/ui/groups';
+            const next = username === 'admin' ? '/ui/admin' : '/ui/groups';
+            window.location.href = next;
           } else {
             status.textContent = data.error || 'Registration failed.';
           }
@@ -607,7 +674,8 @@ async fn ui_login() -> impl IntoResponse {
           if (data.ok) {
             localStorage.setItem('ui_username', username);
             status.textContent = 'Logged in.';
-            window.location.href = '/ui/groups';
+            const next = username === 'admin' ? '/ui/admin' : '/ui/groups';
+            window.location.href = next;
           } else {
             status.textContent = data.error || 'Login failed.';
           }
@@ -634,7 +702,8 @@ async fn ui_login() -> impl IntoResponse {
         function uiContinue() {
           const username = localStorage.getItem('ui_username');
           if (username) {
-            window.location.href = '/ui/groups';
+            const next = username === 'admin' ? '/ui/admin' : '/ui/groups';
+            window.location.href = next;
           }
         }
         (function initLoginHint() {
@@ -971,7 +1040,10 @@ async fn ui_groups() -> impl IntoResponse {
     )
 }
 
-async fn ui_admin() -> impl IntoResponse {
+async fn ui_admin(State(state): State<UiState>, headers: HeaderMap) -> impl IntoResponse {
+    if !has_admin_ui_session(&state, &headers) {
+        return Redirect::to("/ui/login").into_response();
+    }
     ui_shell(
         "Admin",
         r#"
@@ -1124,9 +1196,17 @@ async fn ui_admin() -> impl IntoResponse {
         </script>
         "#,
     )
+    .into_response()
 }
 
-async fn ui_admin_demo(AxumPath(demo_id): AxumPath<String>) -> impl IntoResponse {
+async fn ui_admin_demo(
+    AxumPath(demo_id): AxumPath<String>,
+    State(state): State<UiState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !has_admin_ui_session(&state, &headers) {
+        return Redirect::to("/ui/login").into_response();
+    }
     let body = format!(
         r##"
         <div class="top-left">
@@ -1186,6 +1266,7 @@ async fn ui_admin_demo(AxumPath(demo_id): AxumPath<String>) -> impl IntoResponse
                 <div class="card-sub shadowed demo-tree">
                     <div class="title">Tree Structure</div>
                     <div id="demo-tree-canvas" class="tree-graph"></div>
+                    <div id="demo-tree-legend" class="muted">Legend: LeafIndex (L) = member leaf position, NodeIndex (N) = tree array index. Root is marked as `root`; blank leaves are labeled `blank`.</div>
                     <div class="muted">Live demo tree snapshot for the current epoch and member leaf indices.</div>
                 </div>
             </section>
@@ -1218,46 +1299,153 @@ async fn ui_admin_demo(AxumPath(demo_id): AxumPath<String>) -> impl IntoResponse
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
         }}
-        function renderDemoTree(members, epoch) {{
+        function leftSubtreeSize(leafCount) {{
+          if (leafCount <= 1) return 1;
+          let size = 1;
+          const target = leafCount - 1;
+          while ((size << 1) <= target) {{
+            size <<= 1;
+          }}
+          return size;
+        }}
+        function leafToNodeIndex(leafIndex) {{
+          return leafIndex * 2;
+        }}
+        function rootIndexForRange(startLeaf, leafCount) {{
+          if (leafCount <= 1) {{
+            return leafToNodeIndex(startLeaf);
+          }}
+          const leftCount = leftSubtreeSize(leafCount);
+          return leafToNodeIndex(startLeaf) + (2 * leftCount - 1);
+        }}
+        function buildDemoTree(startLeaf, leafCount, depth, xMin, xMax, nodes, edges, memberMap) {{
+          const nodeIndex = rootIndexForRange(startLeaf, leafCount);
+          const x = (xMin + xMax) / 2;
+          if (leafCount <= 1) {{
+            nodes.push({{
+              kind: 'leaf',
+              node_index: nodeIndex,
+              leaf_index: startLeaf,
+              depth,
+              x,
+              member: memberMap.get(startLeaf) || null
+            }});
+            return nodeIndex;
+          }}
+          nodes.push({{
+            kind: 'parent',
+            node_index: nodeIndex,
+            depth,
+            x
+          }});
+          const leftCount = leftSubtreeSize(leafCount);
+          const rightStart = startLeaf + leftCount;
+          const rightCount = leafCount - leftCount;
+          const leftNode = buildDemoTree(
+            startLeaf,
+            leftCount,
+            depth + 1,
+            xMin,
+            x,
+            nodes,
+            edges,
+            memberMap
+          );
+          const rightNode = buildDemoTree(
+            rightStart,
+            rightCount,
+            depth + 1,
+            x,
+            xMax,
+            nodes,
+            edges,
+            memberMap
+          );
+          edges.push({{ from: nodeIndex, to: leftNode }});
+          edges.push({{ from: nodeIndex, to: rightNode }});
+          return nodeIndex;
+        }}
+        function renderDemoTree(members, epoch, leafCount, nodeCount) {{
           const tree = document.getElementById('demo-tree-canvas');
+          const legend = document.getElementById('demo-tree-legend');
           if (!tree) return;
           const items = (members || []).slice().sort((a, b) => a.leaf_index - b.leaf_index);
-          if (items.length === 0) {{
+          const inferredLeafCount = items.length === 0
+            ? 0
+            : items.reduce((m, item) => Math.max(m, Number(item.leaf_index || 0)), 0) + 1;
+          const resolvedLeafCount = Number(leafCount || 0) > 0 ? Number(leafCount) : inferredLeafCount;
+          if (resolvedLeafCount === 0) {{
             tree.innerHTML = '<div class="note">No members.</div>';
+            if (legend) {{
+              legend.textContent = 'No topology to render.';
+            }}
             return;
           }}
-          const width = 520;
-          const height = 320;
-          const rootX = width / 2;
-          const rootY = 72;
-          const leafY = 230;
-          const step = width / (items.length + 1);
-          const lines = items.map((m, i) => {{
-            const x = step * (i + 1);
-            return `<line x1="${{rootX}}" y1="${{rootY}}" x2="${{x}}" y2="${{leafY}}" stroke="#9aa8b7" stroke-width="2"></line>`;
+          const memberMap = new Map(items.map(item => [Number(item.leaf_index), item]));
+          const nodes = [];
+          const edges = [];
+          const rootNodeIndex = buildDemoTree(0, resolvedLeafCount, 0, 40, 920, nodes, edges, memberMap);
+          const maxDepth = nodes.reduce((m, node) => Math.max(m, Number(node.depth || 0)), 0);
+          const rowHeight = 92;
+          const height = 90 + (maxDepth + 1) * rowHeight;
+          const width = 960;
+          const nodePos = new Map(nodes.map(node => [
+            Number(node.node_index),
+            {{ x: Number(node.x), y: 58 + Number(node.depth) * rowHeight }}
+          ]));
+          const edgeSvg = edges.map(edge => {{
+            const from = nodePos.get(Number(edge.from));
+            const to = nodePos.get(Number(edge.to));
+            if (!from || !to) return '';
+            return `<line x1="${{from.x}}" y1="${{from.y}}" x2="${{to.x}}" y2="${{to.y}}" stroke="#9aa8b7" stroke-width="2"></line>`;
           }}).join('');
-          const leaves = items.map((m, i) => {{
-            const x = step * (i + 1);
-            const name = escapeHtml((m.username || '').slice(0, 14));
+          const nodeSvg = nodes.map(node => {{
+            const pos = nodePos.get(Number(node.node_index));
+            if (!pos) return '';
+            const isRoot = Number(node.node_index) === Number(rootNodeIndex);
+            if (node.kind === 'parent') {{
+              return `
+                <g>
+                  <circle cx="${{pos.x}}" cy="${{pos.y}}" r="18" fill="${{isRoot ? '#ffe8cc' : '#fff5ec'}}" stroke="#b45309" stroke-width="2"></circle>
+                  <text x="${{pos.x}}" y="${{pos.y - 2}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#1f2933">parent</text>
+                  <text x="${{pos.x}}" y="${{pos.y + 9}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#5c6b7a">N${{node.node_index}}</text>
+                  ${{isRoot ? `<text x="${{pos.x}}" y="${{pos.y - 24}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#b45309">root</text>` : ''}}
+                </g>
+              `;
+            }}
+            const member = node.member || null;
+            const isBlank = !member;
+            const leafLabel = `L${{node.leaf_index}}`;
+            const nodeLabel = `N${{node.node_index}}`;
+            const userLabel = isBlank ? 'blank' : String(member.username || '').slice(0, 12);
+            const keyGeneration = !isBlank && member && member.key_generation != null
+              ? `k${{Number(member.key_generation)}}`
+              : '';
             return `
               <g>
-                <circle cx="${{x}}" cy="${{leafY}}" r="22" fill="#fff" stroke="#b45309" stroke-width="2"></circle>
-                <text x="${{x}}" y="${{leafY - 3}}" text-anchor="middle" font-size="10" font-family="Space Grotesk" fill="#1f2933">#${{m.leaf_index}}</text>
-                <text x="${{x}}" y="${{leafY + 10}}" text-anchor="middle" font-size="9" font-family="Space Grotesk" fill="#5c6b7a">${{name}}</text>
+                <circle cx="${{pos.x}}" cy="${{pos.y}}" r="20" fill="${{isBlank ? '#f6f7f8' : '#ffffff'}}" stroke="${{isBlank ? '#9aa8b7' : '#b45309'}}" stroke-width="2"></circle>
+                <text x="${{pos.x}}" y="${{pos.y - 8}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#1f2933">${{leafLabel}} / ${{nodeLabel}}</text>
+                <text x="${{pos.x}}" y="${{pos.y + 3}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#5c6b7a">${{escapeHtml(userLabel)}}</text>
+                <text x="${{pos.x}}" y="${{pos.y + 14}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#5c6b7a">${{escapeHtml(keyGeneration)}}</text>
+                ${{isRoot ? `<text x="${{pos.x}}" y="${{pos.y - 24}}" text-anchor="middle" font-size="8" font-family="Space Grotesk" fill="#b45309">root</text>` : ''}}
               </g>
             `;
           }}).join('');
+          const resolvedNodeCount = Number(nodeCount || 0) > 0
+            ? Number(nodeCount)
+            : (resolvedLeafCount > 0 ? (2 * resolvedLeafCount - 1) : 0);
           tree.innerHTML = `
             <svg viewBox="0 0 ${{width}} ${{height}}" width="100%" height="${{height}}" preserveAspectRatio="xMidYMid meet">
               <rect x="0" y="0" width="${{width}}" height="${{height}}" fill="#fffef8" stroke="#e7cba1" rx="10"></rect>
-              <text x="${{rootX}}" y="28" text-anchor="middle" font-size="12" font-family="Space Grotesk" fill="#5c6b7a">epoch ${{epoch}}</text>
-              <circle cx="${{rootX}}" cy="${{rootY}}" r="22" fill="#fff" stroke="#b45309" stroke-width="2"></circle>
-              <text x="${{rootX}}" y="${{rootY - 3}}" text-anchor="middle" font-size="10" font-family="Space Grotesk" fill="#1f2933">root</text>
-              <text x="${{rootX}}" y="${{rootY + 10}}" text-anchor="middle" font-size="9" font-family="Space Grotesk" fill="#5c6b7a">node</text>
-              ${{lines}}
-              ${{leaves}}
+              <text x="${{width / 2}}" y="24" text-anchor="middle" font-size="12" font-family="Space Grotesk" fill="#5c6b7a">epoch ${{epoch}} • root N${{rootNodeIndex}} • leaves ${{resolvedLeafCount}} • nodes ${{resolvedNodeCount}}</text>
+              ${{edgeSvg}}
+              ${{nodeSvg}}
             </svg>
           `;
+          if (legend) {{
+            const blankCount = nodes.filter(node => node.kind === 'leaf' && !node.member).length;
+            legend.textContent = `LeafIndex (L) = member leaf position. NodeIndex (N) = tree-array node id (leaf nodes have even N). Parent nodes display N only. Root is marked as root. Blank leaves are labeled blank. Blank leaves: ${{blankCount}}.`;
+          }}
         }}
         function renderDemoLogs(demo) {{
           const logs = document.getElementById('demo-log-list');
@@ -1348,19 +1536,24 @@ async fn ui_admin_demo(AxumPath(demo_id): AxumPath<String>) -> impl IntoResponse
             return;
           }}
           const demo = data.data;
-          meta.textContent = `Demo: ${{demo.id}} | ${{demo.title}} | created: ${{new Date((demo.created_at || 0) * 1000).toISOString()}}`;
+          meta.textContent = `Demo: ${{demo.id}} | ${{demo.title}} | epoch=${{demo.epoch}} | leaves=${{demo.leaf_count}} | nodes=${{demo.node_count}} | created: ${{new Date((demo.created_at || 0) * 1000).toISOString()}}`;
           if (actionStatus && !actionStatus.textContent) {{
             actionStatus.textContent = 'Ready.';
           }}
           renderDemoLogs(demo);
-          renderDemoTree(demo.members || [], demo.epoch || 0);
+          renderDemoTree(
+            demo.members || [],
+            demo.epoch || 0,
+            demo.leaf_count || 0,
+            demo.node_count || 0
+          );
         }}
         loadDemo();
         </script>
         "##,
         demo_id = demo_id
     );
-    ui_shell("Admin Demo", &body)
+    ui_shell("Admin Demo", &body).into_response()
 }
 
 async fn ui_group_detail(AxumPath(group_id): AxumPath<String>) -> impl IntoResponse {
@@ -2532,16 +2725,24 @@ async fn api_register(
     Json(payload): Json<AuthPayload>,
 ) -> impl IntoResponse {
     match register_user(&state, &payload.username, &payload.password).await {
-        Ok(value) => Json(ApiResult {
-            ok: true,
-            data: Some(value),
-            error: None,
-        }),
+        Ok(value) => {
+            let mut resp = Json(ApiResult {
+                ok: true,
+                data: Some(value),
+                error: None,
+            })
+            .into_response();
+            if let Ok(header_value) = HeaderValue::from_str(&ui_login_cookie_value(&payload.username)) {
+                resp.headers_mut().insert(SET_COOKIE, header_value);
+            }
+            resp
+        }
         Err(err) => Json(ApiResult::<serde_json::Value> {
             ok: false,
             data: None,
             error: Some(err),
-        }),
+        })
+        .into_response(),
     }
 }
 
@@ -2550,16 +2751,24 @@ async fn api_login(
     Json(payload): Json<AuthPayload>,
 ) -> impl IntoResponse {
     match login_user(&state, &payload.username, &payload.password).await {
-        Ok(value) => Json(ApiResult {
-            ok: true,
-            data: Some(value),
-            error: None,
-        }),
+        Ok(value) => {
+            let mut resp = Json(ApiResult {
+                ok: true,
+                data: Some(value),
+                error: None,
+            })
+            .into_response();
+            if let Ok(header_value) = HeaderValue::from_str(&ui_login_cookie_value(&payload.username)) {
+                resp.headers_mut().insert(SET_COOKIE, header_value);
+            }
+            resp
+        }
         Err(err) => Json(ApiResult::<serde_json::Value> {
             ok: false,
             data: None,
             error: Some(err),
-        }),
+        })
+        .into_response(),
     }
 }
 
@@ -2568,16 +2777,24 @@ async fn api_logout(
     Json(payload): Json<LogoutPayload>,
 ) -> impl IntoResponse {
     match logout_user(&state, &payload.username).await {
-        Ok(value) => Json(ApiResult {
-            ok: true,
-            data: Some(value),
-            error: None,
-        }),
+        Ok(value) => {
+            let mut resp = Json(ApiResult {
+                ok: true,
+                data: Some(value),
+                error: None,
+            })
+            .into_response();
+            if let Ok(header_value) = HeaderValue::from_str(ui_logout_cookie_value()) {
+                resp.headers_mut().insert(SET_COOKIE, header_value);
+            }
+            resp
+        }
         Err(err) => Json(ApiResult::<serde_json::Value> {
             ok: false,
             data: None,
             error: Some(err),
-        }),
+        })
+        .into_response(),
     }
 }
 
@@ -3275,28 +3492,168 @@ fn load_admin_demo_index(state: &UiState) -> Result<AdminDemoIndex, String> {
 fn initial_admin_demo_state() -> AdminDemoState {
     let mut state = AdminDemoState {
         epoch: 0,
-        members: vec![AdminDemoMember {
+        leaf_slots: vec![Some(AdminDemoLeafSlot {
             username: "A".to_string(),
-            leaf_index: 0,
             key_generation: 1,
-        }],
+        })],
         logs: Vec::new(),
         last_action: Some("init: A".to_string()),
     };
     append_demo_log_block(
         &mut state,
         vec![
-            "MLS Demo init: created single-member group with A at leaf 0".to_string(),
-            "GroupContext epoch initialized to 0".to_string(),
+            "RFC9420 Demo Init: initialized single-member ratchet tree with A at LeafIndex=0 (NodeIndex=0, root)".to_string(),
+            "RFC9420 GroupContext: epoch set to 0".to_string(),
         ],
     );
     state
 }
 
-fn reindex_demo_members(members: &mut [AdminDemoMember]) {
-    for (idx, member) in members.iter_mut().enumerate() {
-        member.leaf_index = idx;
+fn migrate_legacy_admin_demo_state(legacy: LegacyAdminDemoState) -> Result<AdminDemoState, String> {
+    let mut leaf_slots: Vec<Option<AdminDemoLeafSlot>> = Vec::new();
+    let mut seen_leaf_indices = HashSet::new();
+    for member in legacy.members {
+        if member.username.trim().is_empty() {
+            return Err("legacy demo state contains empty member username".to_string());
+        }
+        if !seen_leaf_indices.insert(member.leaf_index) {
+            return Err(format!(
+                "legacy demo state contains duplicate leaf_index {}",
+                member.leaf_index
+            ));
+        }
+        if member.leaf_index >= leaf_slots.len() {
+            leaf_slots.resize(member.leaf_index + 1, None);
+        }
+        leaf_slots[member.leaf_index] = Some(AdminDemoLeafSlot {
+            username: member.username,
+            key_generation: member.key_generation,
+        });
     }
+    Ok(AdminDemoState {
+        epoch: legacy.epoch,
+        leaf_slots,
+        logs: legacy.logs,
+        last_action: legacy.last_action,
+    })
+}
+
+fn decode_admin_demo_state(bytes: &[u8]) -> Result<AdminDemoState, String> {
+    match serde_json::from_slice::<AdminDemoState>(bytes) {
+        Ok(state) => Ok(state),
+        Err(primary_err) => {
+            let legacy = serde_json::from_slice::<LegacyAdminDemoState>(bytes)
+                .map_err(|legacy_err| format!("parse demo state: {primary_err}; legacy parse failed: {legacy_err}"))?;
+            migrate_legacy_admin_demo_state(legacy)
+        }
+    }
+}
+
+fn active_members_from_leaf_slots(leaf_slots: &[Option<AdminDemoLeafSlot>]) -> Vec<AdminDemoMember> {
+    let mut members = Vec::new();
+    for (leaf_index, slot) in leaf_slots.iter().enumerate() {
+        if let Some(slot) = slot {
+            members.push(AdminDemoMember {
+                username: slot.username.clone(),
+                leaf_index,
+                key_generation: slot.key_generation,
+            });
+        }
+    }
+    members
+}
+
+fn find_leaf_index_for_username(
+    leaf_slots: &[Option<AdminDemoLeafSlot>],
+    username: &str,
+) -> Option<usize> {
+    leaf_slots.iter().enumerate().find_map(|(leaf_index, slot)| {
+        slot.as_ref().and_then(|slot| {
+            if slot.username == username {
+                Some(leaf_index)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn first_blank_demo_leaf_index(leaf_slots: &[Option<AdminDemoLeafSlot>]) -> Option<usize> {
+    leaf_slots
+        .iter()
+        .enumerate()
+        .find_map(|(leaf_index, slot)| if slot.is_none() { Some(leaf_index) } else { None })
+}
+
+fn active_member_count(leaf_slots: &[Option<AdminDemoLeafSlot>]) -> usize {
+    leaf_slots.iter().filter(|slot| slot.is_some()).count()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DemoAddPlacement {
+    ReusedBlankLeaf {
+        leaf_index: usize,
+    },
+    ExtendedTree {
+        leaf_index: usize,
+        previous_leaf_count: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DemoRemoveTrimResult {
+    previous_leaf_count: usize,
+    new_leaf_count: usize,
+}
+
+fn place_added_member_in_demo_tree(
+    leaf_slots: &mut Vec<Option<AdminDemoLeafSlot>>,
+    added_username: &str,
+) -> DemoAddPlacement {
+    if let Some(blank_leaf) = first_blank_demo_leaf_index(leaf_slots) {
+        leaf_slots[blank_leaf] = Some(AdminDemoLeafSlot {
+            username: added_username.to_string(),
+            key_generation: 1,
+        });
+        DemoAddPlacement::ReusedBlankLeaf {
+            leaf_index: blank_leaf,
+        }
+    } else {
+        let previous_leaf_count = leaf_slots.len();
+        leaf_slots.push(Some(AdminDemoLeafSlot {
+            username: added_username.to_string(),
+            key_generation: 1,
+        }));
+        DemoAddPlacement::ExtendedTree {
+            leaf_index: previous_leaf_count,
+            previous_leaf_count,
+        }
+    }
+}
+
+fn trim_trailing_blank_demo_leaves(
+    leaf_slots: &mut Vec<Option<AdminDemoLeafSlot>>,
+) -> DemoRemoveTrimResult {
+    let previous_leaf_count = leaf_slots.len();
+    while matches!(leaf_slots.last(), Some(None)) {
+        leaf_slots.pop();
+    }
+    DemoRemoveTrimResult {
+        previous_leaf_count,
+        new_leaf_count: leaf_slots.len(),
+    }
+}
+
+fn node_count_for_leaf_count(leaf_count: usize) -> usize {
+    if leaf_count == 0 {
+        0
+    } else {
+        2 * leaf_count - 1
+    }
+}
+
+fn leaf_node_index(leaf_index: usize) -> usize {
+    leaf_index.saturating_mul(2)
 }
 
 fn append_demo_log_block(demo_state: &mut AdminDemoState, lines: Vec<String>) {
@@ -3324,7 +3681,7 @@ fn load_admin_demo_state(state: &UiState, demo_id: &str) -> Result<AdminDemoStat
         ));
     }
     let bytes = fs::read(&path).map_err(|err| format!("read demo state: {err}"))?;
-    serde_json::from_slice(&bytes).map_err(|err| format!("parse demo state: {err}"))
+    decode_admin_demo_state(&bytes)
 }
 
 fn save_admin_demo_state(
@@ -3418,6 +3775,8 @@ fn load_admin_demo_detail(
     let demo_state = load_admin_demo_state(state, &record.id)?;
     let root = admin_demo_dir_path(&state.state_dir, &record.id);
     let manifest = admin_demo_manifest_path(&state.state_dir, &record.id);
+    let members = active_members_from_leaf_slots(&demo_state.leaf_slots);
+    let leaf_count = demo_state.leaf_slots.len();
     Ok(AdminDemoDetail {
         id: record.id,
         title: record.title,
@@ -3426,7 +3785,9 @@ fn load_admin_demo_detail(
         root_dir: root.to_string_lossy().to_string(),
         manifest_path: manifest.to_string_lossy().to_string(),
         epoch: demo_state.epoch,
-        members: demo_state.members,
+        leaf_count,
+        node_count: node_count_for_leaf_count(leaf_count),
+        members,
         logs: demo_state.logs,
     })
 }
@@ -3443,20 +3804,39 @@ fn apply_admin_demo_add_action(
         return Err("adder and added are required".to_string());
     }
     let mut demo_state = load_admin_demo_state(state, demo_id)?;
-    if !demo_state.members.iter().any(|m| m.username == adder) {
+    if find_leaf_index_for_username(&demo_state.leaf_slots, adder).is_none() {
         return Err(format!("adder {} is not a member", adder));
     }
-    if demo_state.members.iter().any(|m| m.username == added) {
+    if find_leaf_index_for_username(&demo_state.leaf_slots, added).is_some() {
         return Err(format!("member {} already exists", added));
     }
     let previous_epoch = demo_state.epoch;
-    let new_leaf_index = demo_state.members.len();
-    demo_state.members.push(AdminDemoMember {
-        username: added.to_string(),
-        leaf_index: new_leaf_index,
-        key_generation: 1,
-    });
-    reindex_demo_members(&mut demo_state.members);
+    let placement = place_added_member_in_demo_tree(&mut demo_state.leaf_slots, added);
+    let (new_leaf_index, placement_line) = match placement {
+        DemoAddPlacement::ReusedBlankLeaf { leaf_index } => (
+            leaf_index,
+            format!(
+                "RFC9420 RatchetTree Add: filled leftmost blank LeafIndex={} (NodeIndex={}) with {}",
+                leaf_index,
+                leaf_node_index(leaf_index),
+                added
+            ),
+        ),
+        DemoAddPlacement::ExtendedTree {
+            leaf_index,
+            previous_leaf_count,
+        } => (
+            leaf_index,
+            format!(
+                "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count {} -> {} and placed {} at LeafIndex={} (NodeIndex={})",
+                previous_leaf_count,
+                previous_leaf_count.saturating_add(1),
+                added,
+                leaf_index,
+                leaf_node_index(leaf_index)
+            ),
+        ),
+    };
     demo_state.epoch = demo_state.epoch.saturating_add(1);
     let new_epoch = demo_state.epoch;
     let action_line = format!("add: {} added {}", adder, added);
@@ -3464,12 +3844,21 @@ fn apply_admin_demo_add_action(
     append_demo_log_block(
         &mut demo_state,
         vec![
-            format!("Proposal(Add): sender={} target={}", adder, added),
             format!(
-                "TreeKEM: inserted member {} at provisional leaf {}",
-                added, new_leaf_index
+                "RFC9420 Proposal Add: sender={} target={} (KeyPackage owner)",
+                adder, added
             ),
-            format!("Commit: epoch {} -> {}", previous_epoch, new_epoch),
+            placement_line,
+            format!(
+                "RFC9420 RatchetTree Add result: {} mapped to LeafIndex={} (NodeIndex={})",
+                added,
+                new_leaf_index,
+                leaf_node_index(new_leaf_index)
+            ),
+            format!(
+                "RFC9420 Commit: GroupContext.epoch {} -> {}",
+                previous_epoch, new_epoch
+            ),
         ],
     );
     save_admin_demo_state(state, demo_id, &demo_state)?;
@@ -3477,7 +3866,7 @@ fn apply_admin_demo_add_action(
     Ok(AdminDemoActionResponse {
         action: action_line,
         epoch: demo_state.epoch,
-        members: demo_state.members,
+        members: active_members_from_leaf_slots(&demo_state.leaf_slots),
     })
 }
 
@@ -3493,24 +3882,29 @@ fn apply_admin_demo_remove_action(
         return Err("remover and removed are required".to_string());
     }
     let mut demo_state = load_admin_demo_state(state, demo_id)?;
-    if !demo_state.members.iter().any(|m| m.username == remover) {
+    if find_leaf_index_for_username(&demo_state.leaf_slots, remover).is_none() {
         return Err(format!("remover {} is not a member", remover));
     }
-    if !demo_state.members.iter().any(|m| m.username == removed) {
+    let Some(removed_leaf) = find_leaf_index_for_username(&demo_state.leaf_slots, removed) else {
         return Err(format!("member {} not found", removed));
-    }
-    if demo_state.members.len() <= 1 {
+    };
+    if active_member_count(&demo_state.leaf_slots) <= 1 {
         return Err("cannot remove the last remaining member".to_string());
     }
-    let removed_leaf = demo_state
-        .members
-        .iter()
-        .find(|m| m.username == removed)
-        .map(|m| m.leaf_index)
-        .unwrap_or(0);
     let previous_epoch = demo_state.epoch;
-    demo_state.members.retain(|m| m.username != removed);
-    reindex_demo_members(&mut demo_state.members);
+    demo_state.leaf_slots[removed_leaf] = None;
+    let trim_result = trim_trailing_blank_demo_leaves(&mut demo_state.leaf_slots);
+    let trim_line = if trim_result.new_leaf_count < trim_result.previous_leaf_count {
+        format!(
+            "RFC9420 RatchetTree Remove: trimmed trailing blank leaves (leaf_count {} -> {})",
+            trim_result.previous_leaf_count, trim_result.new_leaf_count
+        )
+    } else {
+        format!(
+            "RFC9420 RatchetTree Remove: no trailing blank leaves to trim (leaf_count stays {})",
+            trim_result.new_leaf_count
+        )
+    };
     demo_state.epoch = demo_state.epoch.saturating_add(1);
     let new_epoch = demo_state.epoch;
     let action_line = format!("remove: {} removed {}", remover, removed);
@@ -3518,12 +3912,18 @@ fn apply_admin_demo_remove_action(
     append_demo_log_block(
         &mut demo_state,
         vec![
-            format!("Proposal(Remove): sender={} target={}", remover, removed),
+            format!("RFC9420 Proposal Remove: sender={} target={}", remover, removed),
             format!(
-                "TreeKEM: blanked leaf {} for member {}",
-                removed_leaf, removed
+                "RFC9420 RatchetTree Remove: blanked LeafIndex={} (NodeIndex={}) for {}",
+                removed_leaf,
+                leaf_node_index(removed_leaf),
+                removed
             ),
-            format!("Commit: epoch {} -> {}", previous_epoch, new_epoch),
+            trim_line,
+            format!(
+                "RFC9420 Commit: GroupContext.epoch {} -> {}",
+                previous_epoch, new_epoch
+            ),
         ],
     );
     save_admin_demo_state(state, demo_id, &demo_state)?;
@@ -3531,7 +3931,7 @@ fn apply_admin_demo_remove_action(
     Ok(AdminDemoActionResponse {
         action: action_line,
         epoch: demo_state.epoch,
-        members: demo_state.members,
+        members: active_members_from_leaf_slots(&demo_state.leaf_slots),
     })
 }
 
@@ -3547,18 +3947,18 @@ fn apply_admin_demo_update_action(
     }
     let mut demo_state = load_admin_demo_state(state, demo_id)?;
     let previous_epoch = demo_state.epoch;
-    let (previous_generation, new_generation) = {
-        let Some(member) = demo_state
-            .members
-            .iter_mut()
-            .find(|member| member.username == updater)
-        else {
-            return Err(format!("updater {} is not a member", updater));
-        };
-        let previous_generation = member.key_generation;
-        member.key_generation = member.key_generation.saturating_add(1);
-        (previous_generation, member.key_generation)
+    let Some(updater_leaf_index) = find_leaf_index_for_username(&demo_state.leaf_slots, updater) else {
+        return Err(format!("updater {} is not a member", updater));
     };
+    let (previous_generation, new_generation) =
+        match demo_state.leaf_slots.get_mut(updater_leaf_index) {
+            Some(Some(member)) => {
+                let previous_generation = member.key_generation;
+                member.key_generation = member.key_generation.saturating_add(1);
+                (previous_generation, member.key_generation)
+            }
+            _ => return Err(format!("updater {} is not a member", updater)),
+        };
     demo_state.epoch = demo_state.epoch.saturating_add(1);
     let new_epoch = demo_state.epoch;
     let action_line = format!(
@@ -3569,12 +3969,22 @@ fn apply_admin_demo_update_action(
     append_demo_log_block(
         &mut demo_state,
         vec![
-            format!("Proposal(Update): sender={} target={}", updater, updater),
             format!(
-                "PathUpdate: {} key_generation {} -> {}",
-                updater, previous_generation, new_generation
+                "RFC9420 Proposal Update: sender={} target={}",
+                updater, updater
             ),
-            format!("Commit: epoch {} -> {}", previous_epoch, new_epoch),
+            format!(
+                "RFC9420 Path Update: {} at LeafIndex={} (NodeIndex={}) key_generation {} -> {}",
+                updater,
+                updater_leaf_index,
+                leaf_node_index(updater_leaf_index),
+                previous_generation,
+                new_generation
+            ),
+            format!(
+                "RFC9420 Commit: GroupContext.epoch {} -> {}",
+                previous_epoch, new_epoch
+            ),
         ],
     );
     save_admin_demo_state(state, demo_id, &demo_state)?;
@@ -3582,7 +3992,7 @@ fn apply_admin_demo_update_action(
     Ok(AdminDemoActionResponse {
         action: action_line,
         epoch: demo_state.epoch,
-        members: demo_state.members,
+        members: active_members_from_leaf_slots(&demo_state.leaf_slots),
     })
 }
 
@@ -6371,6 +6781,7 @@ mod tests {
     use hybrid_mls::ds::config::StorageConfig;
     use hybrid_mls::ds::http::{self as ds_http, ApiState as DsApiState};
     use serde_json::json;
+    use std::collections::{BTreeMap, HashSet};
     use std::future::Future;
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
@@ -6444,6 +6855,25 @@ mod tests {
         text
     }
 
+    async fn get_text_with_cookie(client: &Client, url: &str, cookie: &str) -> String {
+        let resp = client
+            .get(url)
+            .header("Cookie", cookie)
+            .send()
+            .await
+            .expect("get request with cookie");
+        let status = resp.status();
+        let text = resp.text().await.expect("response text");
+        assert!(
+            status.is_success(),
+            "unexpected status {} for {} with body {}",
+            status,
+            url,
+            text
+        );
+        text
+    }
+
     fn run_async_test_on_large_stack<F>(name: &str, fut: F)
     where
         F: Future<Output = ()> + Send + 'static,
@@ -6460,6 +6890,302 @@ mod tests {
             })
             .expect("spawn large-stack test thread");
         handle.join().expect("join large-stack test thread");
+    }
+
+    fn test_client() -> Client {
+        Client::new()
+    }
+
+    fn assert_admin_demo_detail_layout_invariants(detail: &serde_json::Value) {
+        let leaf_count = detail["data"]["leaf_count"]
+            .as_u64()
+            .expect("leaf_count as u64");
+        let node_count = detail["data"]["node_count"]
+            .as_u64()
+            .expect("node_count as u64");
+        let expected_nodes = if leaf_count == 0 {
+            0
+        } else {
+            2 * leaf_count - 1
+        };
+        assert_eq!(
+            node_count, expected_nodes,
+            "node_count must follow 2*leaf_count-1 invariant"
+        );
+        let members = detail["data"]["members"].as_array().expect("members array");
+        for member in members {
+            let leaf_index = member["leaf_index"].as_u64().expect("member leaf_index");
+            assert!(
+                leaf_index < leaf_count,
+                "member leaf_index {} must be < leaf_count {}",
+                leaf_index,
+                leaf_count
+            );
+        }
+    }
+
+    fn admin_demo_member_leaf_map(detail: &serde_json::Value) -> BTreeMap<String, u64> {
+        let members = detail["data"]["members"].as_array().expect("members array");
+        let mut by_name = BTreeMap::new();
+        for member in members {
+            let username = member["username"]
+                .as_str()
+                .expect("member username")
+                .to_string();
+            let leaf_index = member["leaf_index"].as_u64().expect("member leaf index");
+            by_name.insert(username, leaf_index);
+        }
+        by_name
+    }
+
+    #[test]
+    fn admin_demo_decode_migrates_legacy_members_state() {
+        let legacy = json!({
+            "epoch": 7,
+            "members": [
+                {"username": "A", "leaf_index": 0, "key_generation": 3},
+                {"username": "C", "leaf_index": 3, "key_generation": 5}
+            ],
+            "logs": [],
+            "last_action": "legacy"
+        });
+        let bytes = serde_json::to_vec(&legacy).expect("serialize legacy");
+        let migrated = decode_admin_demo_state(&bytes).expect("migrate legacy state");
+
+        assert_eq!(migrated.epoch, 7);
+        assert_eq!(migrated.leaf_slots.len(), 4);
+        assert!(
+            matches!(
+                migrated.leaf_slots[0].as_ref(),
+                Some(slot) if slot.username == "A" && slot.key_generation == 3
+            ),
+            "expected A at leaf 0"
+        );
+        assert!(
+            migrated.leaf_slots[1].is_none() && migrated.leaf_slots[2].is_none(),
+            "expected intermediate blank leaves to be preserved"
+        );
+        assert!(
+            matches!(
+                migrated.leaf_slots[3].as_ref(),
+                Some(slot) if slot.username == "C" && slot.key_generation == 5
+            ),
+            "expected C at leaf 3"
+        );
+    }
+
+    #[test]
+    fn admin_demo_decode_rejects_legacy_duplicate_leaf_indices() {
+        let legacy = json!({
+            "epoch": 2,
+            "members": [
+                {"username": "A", "leaf_index": 0, "key_generation": 1},
+                {"username": "B", "leaf_index": 0, "key_generation": 1}
+            ],
+            "logs": [],
+            "last_action": "legacy"
+        });
+        let bytes = serde_json::to_vec(&legacy).expect("serialize legacy");
+        let err = decode_admin_demo_state(&bytes).expect_err("duplicate leaf_index must fail");
+        assert!(
+            err.contains("duplicate leaf_index"),
+            "unexpected decode error: {err}"
+        );
+    }
+
+    #[test]
+    fn demo_add_placement_reuses_leftmost_blank_before_extending() {
+        let mut leaf_slots = vec![
+            Some(AdminDemoLeafSlot {
+                username: "A".to_string(),
+                key_generation: 1,
+            }),
+            None,
+            Some(AdminDemoLeafSlot {
+                username: "C".to_string(),
+                key_generation: 2,
+            }),
+            None,
+        ];
+
+        let p1 = place_added_member_in_demo_tree(&mut leaf_slots, "D");
+        assert_eq!(p1, DemoAddPlacement::ReusedBlankLeaf { leaf_index: 1 });
+        assert_eq!(leaf_slots.len(), 4);
+        assert!(
+            matches!(
+                leaf_slots[1].as_ref(),
+                Some(slot) if slot.username == "D"
+            ),
+            "expected D at reused leftmost blank leaf 1"
+        );
+
+        let p2 = place_added_member_in_demo_tree(&mut leaf_slots, "E");
+        assert_eq!(p2, DemoAddPlacement::ReusedBlankLeaf { leaf_index: 3 });
+        assert_eq!(leaf_slots.len(), 4);
+        assert!(
+            matches!(
+                leaf_slots[3].as_ref(),
+                Some(slot) if slot.username == "E"
+            ),
+            "expected E at reused leftmost blank leaf 3"
+        );
+
+        let p3 = place_added_member_in_demo_tree(&mut leaf_slots, "F");
+        assert_eq!(
+            p3,
+            DemoAddPlacement::ExtendedTree {
+                leaf_index: 4,
+                previous_leaf_count: 4
+            }
+        );
+        assert_eq!(leaf_slots.len(), 5);
+        assert!(
+            matches!(
+                leaf_slots[4].as_ref(),
+                Some(slot) if slot.username == "F"
+            ),
+            "expected F at newly extended leaf 4"
+        );
+    }
+
+    #[test]
+    fn demo_remove_trim_truncates_only_right_edge_blanks() {
+        let mut leaf_slots = vec![
+            Some(AdminDemoLeafSlot {
+                username: "A".to_string(),
+                key_generation: 1,
+            }),
+            None,
+            Some(AdminDemoLeafSlot {
+                username: "C".to_string(),
+                key_generation: 2,
+            }),
+            None,
+            None,
+        ];
+
+        let trim = trim_trailing_blank_demo_leaves(&mut leaf_slots);
+        assert_eq!(
+            trim,
+            DemoRemoveTrimResult {
+                previous_leaf_count: 5,
+                new_leaf_count: 3
+            }
+        );
+        assert_eq!(leaf_slots.len(), 3);
+        assert!(
+            leaf_slots[1].is_none(),
+            "middle blank leaf must be preserved (no compaction)"
+        );
+
+        let trim_again = trim_trailing_blank_demo_leaves(&mut leaf_slots);
+        assert_eq!(
+            trim_again,
+            DemoRemoveTrimResult {
+                previous_leaf_count: 3,
+                new_leaf_count: 3
+            }
+        );
+    }
+
+    #[test]
+    fn demo_binary_topology_indices_follow_left_balanced_invariants() {
+        fn left_subtree_size(leaf_count: usize) -> usize {
+            if leaf_count <= 1 {
+                return 1;
+            }
+            let mut size = 1usize;
+            let target = leaf_count - 1;
+            while (size << 1) <= target {
+                size <<= 1;
+            }
+            size
+        }
+
+        fn root_index_for_range(start_leaf: usize, leaf_count: usize) -> usize {
+            if leaf_count <= 1 {
+                return leaf_node_index(start_leaf);
+            }
+            let left_count = left_subtree_size(leaf_count);
+            leaf_node_index(start_leaf) + (2 * left_count - 1)
+        }
+
+        fn collect_nodes(
+            start_leaf: usize,
+            leaf_count: usize,
+            out: &mut Vec<(usize, Option<usize>)>,
+        ) {
+            let root = root_index_for_range(start_leaf, leaf_count);
+            if leaf_count <= 1 {
+                out.push((root, Some(start_leaf)));
+                return;
+            }
+            out.push((root, None));
+            let left_count = left_subtree_size(leaf_count);
+            let right_start = start_leaf + left_count;
+            let right_count = leaf_count - left_count;
+            collect_nodes(start_leaf, left_count, out);
+            collect_nodes(right_start, right_count, out);
+        }
+
+        for leaf_count in 1usize..=12 {
+            let mut nodes = Vec::new();
+            collect_nodes(0, leaf_count, &mut nodes);
+            assert_eq!(
+                nodes.len(),
+                node_count_for_leaf_count(leaf_count),
+                "unexpected node count for {} leaves",
+                leaf_count
+            );
+
+            let mut unique = HashSet::new();
+            for (node_index, _) in &nodes {
+                assert!(
+                    unique.insert(*node_index),
+                    "duplicate node index {} for leaf_count {}",
+                    node_index,
+                    leaf_count
+                );
+            }
+
+            let mut leaf_nodes: Vec<(usize, usize)> = nodes
+                .iter()
+                .filter_map(|(node_index, leaf_index)| leaf_index.map(|leaf| (*node_index, leaf)))
+                .collect();
+            leaf_nodes.sort_by_key(|(_, leaf_index)| *leaf_index);
+            assert_eq!(
+                leaf_nodes.len(),
+                leaf_count,
+                "unexpected leaf node count for {} leaves",
+                leaf_count
+            );
+            for (expected_leaf, (node_index, leaf_index)) in leaf_nodes.iter().enumerate() {
+                assert_eq!(*leaf_index, expected_leaf);
+                assert_eq!(
+                    *node_index,
+                    leaf_node_index(*leaf_index),
+                    "leaf node must map to even NodeIndex"
+                );
+                assert_eq!(*node_index % 2, 0, "leaf node index must be even");
+            }
+
+            for (node_index, leaf_index) in &nodes {
+                if leaf_index.is_none() {
+                    assert_eq!(*node_index % 2, 1, "parent node index must be odd");
+                }
+            }
+
+            let expected_root = root_index_for_range(0, leaf_count);
+            assert!(
+                nodes.iter().any(|(node_index, _)| *node_index == expected_root),
+                "root NodeIndex {} missing for leaf_count {}",
+                expected_root,
+                leaf_count
+            );
+            if leaf_count > 1 {
+                assert_eq!(expected_root % 2, 1, "non-trivial root must be odd");
+            }
+        }
     }
 
     #[test]
@@ -6489,7 +7215,7 @@ mod tests {
         let ui_router = build_ui_router(ui_state.clone());
         let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
 
-        let client = Client::new();
+        let client = test_client();
         let group_id = "g-ui-test";
 
         let register_a = post_json(
@@ -6695,7 +7421,7 @@ mod tests {
         let ui_router = build_ui_router(ui_state.clone());
         let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
 
-        let client = Client::new();
+        let client = test_client();
         let group_id = "admin-visible";
 
         let register = post_json(
@@ -6782,6 +7508,115 @@ mod tests {
     }
 
     #[test]
+    fn ui_admin_routes_require_admin_cookie_session() {
+        run_async_test_on_large_stack("ui-admin-route-guard", async move {
+            let run_dir = test_run_dir("ui-admin-route-guard");
+            let ds_data_dir = run_dir.join("data");
+            let ds_db_path = run_dir.join("ds.sqlite");
+            fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+
+            let mut ds_state = DsApiState::default();
+            ds_state.min_proposals_per_commit = 1;
+            ds_state.storage = StorageConfig::new(
+                ds_data_dir.to_string_lossy().as_ref(),
+                ds_db_path.to_string_lossy().as_ref(),
+            );
+            let ds_router = ds_http::router(ds_state);
+            let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+
+            let ui_state_dir = run_dir.join("ui-state");
+            fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+            let ui_state = UiState {
+                base_url: ds_base_url,
+                state_dir: ui_state_dir,
+                client: Client::new(),
+            };
+            let ui_router = build_ui_router(ui_state);
+            let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
+
+            let bootstrap_client = test_client();
+            let login_page = get_text(&bootstrap_client, &format!("{}/ui/login", ui_base_url)).await;
+            assert!(
+                login_page.contains("username === 'admin' ? '/ui/admin' : '/ui/groups'"),
+                "login UI should route admin users to /ui/admin"
+            );
+
+            let non_admin_client = test_client();
+            let register_user = post_json(
+                &non_admin_client,
+                &format!("{}/ui/api/register", ui_base_url),
+                json!({
+                    "username": "parsania",
+                    "password": "1234"
+                }),
+            )
+            .await;
+            assert_eq!(register_user["ok"].as_bool(), Some(true));
+
+            let denied_admin_page = get_text_with_cookie(
+                &non_admin_client,
+                &format!("{}/ui/admin", ui_base_url),
+                "ui_username=parsania",
+            )
+            .await;
+            assert!(
+                denied_admin_page.contains("Sign In or Register"),
+                "non-admin access to /ui/admin should be redirected to login page"
+            );
+
+            let admin_client = test_client();
+            let admin_login = post_json(
+                &admin_client,
+                &format!("{}/ui/api/login", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "password": "admin@123"
+                }),
+            )
+            .await;
+            assert_eq!(admin_login["ok"].as_bool(), Some(true));
+
+            let admin_page = get_text_with_cookie(
+                &admin_client,
+                &format!("{}/ui/admin", ui_base_url),
+                "ui_username=admin",
+            )
+            .await;
+            assert!(
+                admin_page.contains("Global Overview"),
+                "admin should be able to access /ui/admin"
+            );
+
+            let create_demo = post_json(
+                &admin_client,
+                &format!("{}/ui/api/admin/demos", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "title": "Access Guard Demo"
+                }),
+            )
+            .await;
+            assert_eq!(create_demo["ok"].as_bool(), Some(true));
+            let demo_id = create_demo["data"]["id"].as_str().expect("demo id");
+
+            let denied_demo_page = get_text_with_cookie(
+                &non_admin_client,
+                &format!("{}/ui/admin/demos/{}", ui_base_url, demo_id),
+                "ui_username=parsania",
+            )
+            .await;
+            assert!(
+                denied_demo_page.contains("Sign In or Register"),
+                "non-admin access to /ui/admin/demos/:id should be redirected to login page"
+            );
+
+            ui_handle.abort();
+            ds_handle.abort();
+            let _ = fs::remove_dir_all(&run_dir);
+        });
+    }
+
+    #[test]
     fn ui_admin_demo_index_create_and_open() {
         run_async_test_on_large_stack("ui-admin-demo-index", async move {
             let run_dir = test_run_dir("ui-admin-demo-index");
@@ -6808,7 +7643,7 @@ mod tests {
             let ui_router = build_ui_router(ui_state);
             let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
 
-            let client = Client::new();
+            let client = test_client();
             let admin_login = post_json(
                 &client,
                 &format!("{}/ui/api/login", ui_base_url),
@@ -6949,35 +7784,36 @@ mod tests {
                     entry
                         .get("line")
                         .and_then(|v| v.as_str())
-                        .map(|line| line.contains("Proposal(Add)"))
+                        .map(|line| line.contains("RFC9420 Proposal Add"))
                         .unwrap_or(false)
                 }),
-                "expected Proposal(Add) log line"
+                "expected RFC9420 Proposal Add log line"
             );
             assert!(
                 logs_after.iter().any(|entry| {
                     entry
                         .get("line")
                         .and_then(|v| v.as_str())
-                        .map(|line| line.contains("Proposal(Update)"))
+                        .map(|line| line.contains("RFC9420 Proposal Update"))
                         .unwrap_or(false)
                 }),
-                "expected Proposal(Update) log line"
+                "expected RFC9420 Proposal Update log line"
             );
             assert!(
                 logs_after.iter().any(|entry| {
                     entry
                         .get("line")
                         .and_then(|v| v.as_str())
-                        .map(|line| line.contains("Proposal(Remove)"))
+                        .map(|line| line.contains("RFC9420 Proposal Remove"))
                         .unwrap_or(false)
                 }),
-                "expected Proposal(Remove) log line"
+                "expected RFC9420 Proposal Remove log line"
             );
 
-            let demo_page = get_text(
+            let demo_page = get_text_with_cookie(
                 &client,
                 &format!("{}/ui/admin/demos/{}", ui_base_url, demo_id),
+                "ui_username=admin",
             )
             .await;
             assert!(demo_page.contains("demo-layout"));
@@ -6988,6 +7824,932 @@ mod tests {
             assert!(demo_page.contains("demo-remove-remover"));
             assert!(demo_page.contains("demo-update-updater"));
             assert!(demo_page.contains("demo-log-list"));
+            assert!(demo_page.contains("demo-tree-legend"));
+            assert!(demo_page.contains("LeafIndex (L)"));
+
+            ui_handle.abort();
+            ds_handle.abort();
+            let _ = fs::remove_dir_all(&run_dir);
+        });
+    }
+
+    #[test]
+    fn ui_admin_demo_legacy_state_migrates_and_persists_new_schema_after_action() {
+        run_async_test_on_large_stack("ui-admin-demo-legacy-migrate", async move {
+            let run_dir = test_run_dir("ui-admin-demo-legacy-migrate");
+            let ds_data_dir = run_dir.join("data");
+            let ds_db_path = run_dir.join("ds.sqlite");
+            fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+
+            let mut ds_state = DsApiState::default();
+            ds_state.min_proposals_per_commit = 1;
+            ds_state.storage = StorageConfig::new(
+                ds_data_dir.to_string_lossy().as_ref(),
+                ds_db_path.to_string_lossy().as_ref(),
+            );
+            let ds_router = ds_http::router(ds_state);
+            let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+
+            let ui_state_dir = run_dir.join("ui-state");
+            fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+            let ui_state = UiState {
+                base_url: ds_base_url,
+                state_dir: ui_state_dir.clone(),
+                client: Client::new(),
+            };
+            let ui_router = build_ui_router(ui_state);
+            let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
+
+            let client = test_client();
+            let admin_login = post_json(
+                &client,
+                &format!("{}/ui/api/login", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "password": "admin@123"
+                }),
+            )
+            .await;
+            assert_eq!(admin_login["ok"].as_bool(), Some(true));
+
+            let create_demo = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "title": "Legacy Migration"
+                }),
+            )
+            .await;
+            assert_eq!(create_demo["ok"].as_bool(), Some(true));
+            let demo_id = create_demo["data"]["id"]
+                .as_str()
+                .expect("demo id")
+                .to_string();
+
+            let legacy_state = json!({
+                "epoch": 4,
+                "members": [
+                    {"username": "A", "leaf_index": 0, "key_generation": 2},
+                    {"username": "C", "leaf_index": 2, "key_generation": 7}
+                ],
+                "logs": [
+                    {"timestamp": 111, "line": "legacy log", "separator": false}
+                ],
+                "last_action": "legacy-seed"
+            });
+            let state_path = admin_demo_state_path(&ui_state_dir, &demo_id);
+            fs::write(
+                &state_path,
+                serde_json::to_vec_pretty(&legacy_state).expect("serialize legacy state"),
+            )
+            .expect("write legacy state");
+
+            let migrated_detail = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(migrated_detail["ok"].as_bool(), Some(true));
+            assert_eq!(migrated_detail["data"]["epoch"].as_u64(), Some(4));
+            assert_eq!(migrated_detail["data"]["leaf_count"].as_u64(), Some(3));
+            assert_eq!(migrated_detail["data"]["node_count"].as_u64(), Some(5));
+            let migrated_members = migrated_detail["data"]["members"]
+                .as_array()
+                .expect("migrated members");
+            assert_eq!(migrated_members.len(), 2);
+            assert!(migrated_members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("A")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(0)
+            }));
+            assert!(migrated_members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("C")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(2)
+            }));
+
+            let update_a = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos/{}/actions/update", ui_base_url, demo_id),
+                json!({
+                    "username": "admin",
+                    "updater": "A"
+                }),
+            )
+            .await;
+            assert_eq!(update_a["ok"].as_bool(), Some(true));
+
+            let migrated_bytes = fs::read(&state_path).expect("read migrated state");
+            let new_state: AdminDemoState =
+                serde_json::from_slice(&migrated_bytes).expect("parse migrated new schema");
+            assert_eq!(new_state.epoch, 5);
+            assert_eq!(new_state.leaf_slots.len(), 3);
+            assert!(
+                matches!(
+                    new_state.leaf_slots[0].as_ref(),
+                    Some(slot) if slot.username == "A" && slot.key_generation == 3
+                ),
+                "expected A migrated at leaf 0 with incremented key_generation"
+            );
+            assert!(new_state.leaf_slots[1].is_none(), "expected blank leaf slot 1");
+            assert!(
+                matches!(
+                    new_state.leaf_slots[2].as_ref(),
+                    Some(slot) if slot.username == "C" && slot.key_generation == 7
+                ),
+                "expected C migrated at leaf 2"
+            );
+
+            ui_handle.abort();
+            ds_handle.abort();
+            let _ = fs::remove_dir_all(&run_dir);
+        });
+    }
+
+    #[test]
+    fn ui_admin_demo_remove_preserves_remaining_leaf_indices() {
+        run_async_test_on_large_stack("ui-admin-demo-leaf-stability", async move {
+            let run_dir = test_run_dir("ui-admin-demo-leaf-stability");
+            let ds_data_dir = run_dir.join("data");
+            let ds_db_path = run_dir.join("ds.sqlite");
+            fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+
+            let mut ds_state = DsApiState::default();
+            ds_state.min_proposals_per_commit = 1;
+            ds_state.storage = StorageConfig::new(
+                ds_data_dir.to_string_lossy().as_ref(),
+                ds_db_path.to_string_lossy().as_ref(),
+            );
+            let ds_router = ds_http::router(ds_state);
+            let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+
+            let ui_state_dir = run_dir.join("ui-state");
+            fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+            let ui_state = UiState {
+                base_url: ds_base_url,
+                state_dir: ui_state_dir,
+                client: Client::new(),
+            };
+            let ui_router = build_ui_router(ui_state);
+            let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
+
+            let client = test_client();
+            let admin_login = post_json(
+                &client,
+                &format!("{}/ui/api/login", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "password": "admin@123"
+                }),
+            )
+            .await;
+            assert_eq!(admin_login["ok"].as_bool(), Some(true));
+
+            let create_demo = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "title": "Leaf Stability"
+                }),
+            )
+            .await;
+            assert_eq!(create_demo["ok"].as_bool(), Some(true));
+            let demo_id = create_demo["data"]["id"]
+                .as_str()
+                .expect("demo id")
+                .to_string();
+
+            let add_b = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos/{}/actions/add", ui_base_url, demo_id),
+                json!({
+                    "username": "admin",
+                    "adder": "A",
+                    "added": "B"
+                }),
+            )
+            .await;
+            assert_eq!(add_b["ok"].as_bool(), Some(true));
+
+            let add_c = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos/{}/actions/add", ui_base_url, demo_id),
+                json!({
+                    "username": "admin",
+                    "adder": "A",
+                    "added": "C"
+                }),
+            )
+            .await;
+            assert_eq!(add_c["ok"].as_bool(), Some(true));
+
+            let remove_b = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos/{}/actions/remove", ui_base_url, demo_id),
+                json!({
+                    "username": "admin",
+                    "remover": "A",
+                    "removed": "B"
+                }),
+            )
+            .await;
+            assert_eq!(remove_b["ok"].as_bool(), Some(true));
+
+            let detail = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(detail["ok"].as_bool(), Some(true));
+            assert_eq!(detail["data"]["leaf_count"].as_u64(), Some(3));
+            assert_eq!(detail["data"]["node_count"].as_u64(), Some(5));
+
+            let members = detail["data"]["members"].as_array().expect("members");
+            assert_eq!(members.len(), 2);
+            assert!(members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("A")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(0)
+            }));
+            assert!(members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("C")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(2)
+            }));
+            let logs = detail["data"]["logs"].as_array().expect("logs");
+            assert!(logs.iter().any(|entry| {
+                entry
+                    .get("line")
+                    .and_then(|v| v.as_str())
+                    .map(|line| line.contains("no trailing blank leaves to trim"))
+                    .unwrap_or(false)
+            }));
+
+            ui_handle.abort();
+            ds_handle.abort();
+            let _ = fs::remove_dir_all(&run_dir);
+        });
+    }
+
+    #[test]
+    fn ui_admin_demo_add_reuses_leftmost_blank_leaf() {
+        run_async_test_on_large_stack("ui-admin-demo-add-placement", async move {
+            let run_dir = test_run_dir("ui-admin-demo-add-placement");
+            let ds_data_dir = run_dir.join("data");
+            let ds_db_path = run_dir.join("ds.sqlite");
+            fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+
+            let mut ds_state = DsApiState::default();
+            ds_state.min_proposals_per_commit = 1;
+            ds_state.storage = StorageConfig::new(
+                ds_data_dir.to_string_lossy().as_ref(),
+                ds_db_path.to_string_lossy().as_ref(),
+            );
+            let ds_router = ds_http::router(ds_state);
+            let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+
+            let ui_state_dir = run_dir.join("ui-state");
+            fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+            let ui_state = UiState {
+                base_url: ds_base_url,
+                state_dir: ui_state_dir,
+                client: Client::new(),
+            };
+            let ui_router = build_ui_router(ui_state);
+            let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
+
+            let client = test_client();
+            let admin_login = post_json(
+                &client,
+                &format!("{}/ui/api/login", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "password": "admin@123"
+                }),
+            )
+            .await;
+            assert_eq!(admin_login["ok"].as_bool(), Some(true));
+
+            let create_demo = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "title": "Add Placement"
+                }),
+            )
+            .await;
+            assert_eq!(create_demo["ok"].as_bool(), Some(true));
+            let demo_id = create_demo["data"]["id"]
+                .as_str()
+                .expect("demo id")
+                .to_string();
+
+            for added in ["B", "C", "D"] {
+                let add = post_json(
+                    &client,
+                    &format!("{}/ui/api/admin/demos/{}/actions/add", ui_base_url, demo_id),
+                    json!({
+                        "username": "admin",
+                        "adder": "A",
+                        "added": added
+                    }),
+                )
+                .await;
+                assert_eq!(add["ok"].as_bool(), Some(true));
+            }
+
+            let remove_c = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos/{}/actions/remove", ui_base_url, demo_id),
+                json!({
+                    "username": "admin",
+                    "remover": "A",
+                    "removed": "C"
+                }),
+            )
+            .await;
+            assert_eq!(remove_c["ok"].as_bool(), Some(true));
+
+            let detail_before = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(detail_before["ok"].as_bool(), Some(true));
+            assert_eq!(detail_before["data"]["leaf_count"].as_u64(), Some(4));
+            let before_members = detail_before["data"]["members"].as_array().expect("members");
+            assert!(before_members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("D")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(3)
+            }));
+
+            let add_e = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos/{}/actions/add", ui_base_url, demo_id),
+                json!({
+                    "username": "admin",
+                    "adder": "A",
+                    "added": "E"
+                }),
+            )
+            .await;
+            assert_eq!(add_e["ok"].as_bool(), Some(true));
+
+            let detail_after = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(detail_after["ok"].as_bool(), Some(true));
+            assert_eq!(
+                detail_after["data"]["leaf_count"].as_u64(),
+                Some(4),
+                "blank-leaf reuse must not extend leaf count"
+            );
+            let after_members = detail_after["data"]["members"].as_array().expect("members");
+            assert!(after_members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("E")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(2)
+            }));
+            assert!(after_members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("D")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(3)
+            }));
+
+            let logs = detail_after["data"]["logs"].as_array().expect("logs");
+            assert!(logs.iter().any(|entry| {
+                entry
+                    .get("line")
+                    .and_then(|v| v.as_str())
+                    .map(|line| line.contains("filled leftmost blank LeafIndex=2"))
+                    .unwrap_or(false)
+            }));
+
+            ui_handle.abort();
+            ds_handle.abort();
+            let _ = fs::remove_dir_all(&run_dir);
+        });
+    }
+
+    #[test]
+    fn ui_admin_demo_remove_truncates_when_tail_leaf_becomes_blank() {
+        run_async_test_on_large_stack("ui-admin-demo-remove-trim", async move {
+            let run_dir = test_run_dir("ui-admin-demo-remove-trim");
+            let ds_data_dir = run_dir.join("data");
+            let ds_db_path = run_dir.join("ds.sqlite");
+            fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+
+            let mut ds_state = DsApiState::default();
+            ds_state.min_proposals_per_commit = 1;
+            ds_state.storage = StorageConfig::new(
+                ds_data_dir.to_string_lossy().as_ref(),
+                ds_db_path.to_string_lossy().as_ref(),
+            );
+            let ds_router = ds_http::router(ds_state);
+            let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+
+            let ui_state_dir = run_dir.join("ui-state");
+            fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+            let ui_state = UiState {
+                base_url: ds_base_url,
+                state_dir: ui_state_dir,
+                client: Client::new(),
+            };
+            let ui_router = build_ui_router(ui_state);
+            let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
+
+            let client = test_client();
+            let admin_login = post_json(
+                &client,
+                &format!("{}/ui/api/login", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "password": "admin@123"
+                }),
+            )
+            .await;
+            assert_eq!(admin_login["ok"].as_bool(), Some(true));
+
+            let create_demo = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "title": "Remove Trim"
+                }),
+            )
+            .await;
+            assert_eq!(create_demo["ok"].as_bool(), Some(true));
+            let demo_id = create_demo["data"]["id"]
+                .as_str()
+                .expect("demo id")
+                .to_string();
+
+            for added in ["B", "C", "D"] {
+                let add = post_json(
+                    &client,
+                    &format!("{}/ui/api/admin/demos/{}/actions/add", ui_base_url, demo_id),
+                    json!({
+                        "username": "admin",
+                        "adder": "A",
+                        "added": added
+                    }),
+                )
+                .await;
+                assert_eq!(add["ok"].as_bool(), Some(true));
+            }
+
+            let detail_before_remove = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(detail_before_remove["ok"].as_bool(), Some(true));
+            assert_eq!(detail_before_remove["data"]["leaf_count"].as_u64(), Some(4));
+            assert_eq!(detail_before_remove["data"]["node_count"].as_u64(), Some(7));
+
+            let remove_d = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos/{}/actions/remove", ui_base_url, demo_id),
+                json!({
+                    "username": "admin",
+                    "remover": "A",
+                    "removed": "D"
+                }),
+            )
+            .await;
+            assert_eq!(remove_d["ok"].as_bool(), Some(true));
+
+            let detail_after_remove = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(detail_after_remove["ok"].as_bool(), Some(true));
+            assert_eq!(
+                detail_after_remove["data"]["leaf_count"].as_u64(),
+                Some(3),
+                "tail blank leaf should be trimmed"
+            );
+            assert_eq!(detail_after_remove["data"]["node_count"].as_u64(), Some(5));
+
+            let members = detail_after_remove["data"]["members"]
+                .as_array()
+                .expect("members after remove");
+            assert_eq!(members.len(), 3);
+            assert!(members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("A")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(0)
+            }));
+            assert!(members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("B")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(1)
+            }));
+            assert!(members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("C")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(2)
+            }));
+
+            let logs = detail_after_remove["data"]["logs"]
+                .as_array()
+                .expect("logs after remove");
+            assert!(logs.iter().any(|entry| {
+                entry
+                    .get("line")
+                    .and_then(|v| v.as_str())
+                    .map(|line| line.contains("trimmed trailing blank leaves (leaf_count 4 -> 3)"))
+                    .unwrap_or(false)
+            }));
+
+            ui_handle.abort();
+            ds_handle.abort();
+            let _ = fs::remove_dir_all(&run_dir);
+        });
+    }
+
+    #[test]
+    fn ui_admin_demo_indices_stable_across_epoch_chain_and_layout_invariants_hold() {
+        run_async_test_on_large_stack("ui-admin-demo-index-invariants", async move {
+            let run_dir = test_run_dir("ui-admin-demo-index-invariants");
+            let ds_data_dir = run_dir.join("data");
+            let ds_db_path = run_dir.join("ds.sqlite");
+            fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+
+            let mut ds_state = DsApiState::default();
+            ds_state.min_proposals_per_commit = 1;
+            ds_state.storage = StorageConfig::new(
+                ds_data_dir.to_string_lossy().as_ref(),
+                ds_db_path.to_string_lossy().as_ref(),
+            );
+            let ds_router = ds_http::router(ds_state);
+            let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+
+            let ui_state_dir = run_dir.join("ui-state");
+            fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+            let ui_state = UiState {
+                base_url: ds_base_url,
+                state_dir: ui_state_dir,
+                client: Client::new(),
+            };
+            let ui_router = build_ui_router(ui_state);
+            let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
+
+            let client = test_client();
+            let admin_login = post_json(
+                &client,
+                &format!("{}/ui/api/login", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "password": "admin@123"
+                }),
+            )
+            .await;
+            assert_eq!(admin_login["ok"].as_bool(), Some(true));
+
+            let create_demo = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "title": "Index Stability"
+                }),
+            )
+            .await;
+            assert_eq!(create_demo["ok"].as_bool(), Some(true));
+            let demo_id = create_demo["data"]["id"]
+                .as_str()
+                .expect("demo id")
+                .to_string();
+
+            for added in ["B", "C", "D"] {
+                let add = post_json(
+                    &client,
+                    &format!("{}/ui/api/admin/demos/{}/actions/add", ui_base_url, demo_id),
+                    json!({
+                        "username": "admin",
+                        "adder": "A",
+                        "added": added
+                    }),
+                )
+                .await;
+                assert_eq!(add["ok"].as_bool(), Some(true));
+            }
+
+            let after_initial_adds = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(after_initial_adds["ok"].as_bool(), Some(true));
+            assert_eq!(after_initial_adds["data"]["epoch"].as_u64(), Some(3));
+            assert_admin_demo_detail_layout_invariants(&after_initial_adds);
+            assert_eq!(
+                admin_demo_member_leaf_map(&after_initial_adds),
+                BTreeMap::from([
+                    ("A".to_string(), 0),
+                    ("B".to_string(), 1),
+                    ("C".to_string(), 2),
+                    ("D".to_string(), 3),
+                ])
+            );
+
+            let update_b = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos/{}/actions/update", ui_base_url, demo_id),
+                json!({
+                    "username": "admin",
+                    "updater": "B"
+                }),
+            )
+            .await;
+            assert_eq!(update_b["ok"].as_bool(), Some(true));
+
+            let after_update_b = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(after_update_b["ok"].as_bool(), Some(true));
+            assert_eq!(after_update_b["data"]["epoch"].as_u64(), Some(4));
+            assert_admin_demo_detail_layout_invariants(&after_update_b);
+            assert_eq!(
+                admin_demo_member_leaf_map(&after_update_b),
+                BTreeMap::from([
+                    ("A".to_string(), 0),
+                    ("B".to_string(), 1),
+                    ("C".to_string(), 2),
+                    ("D".to_string(), 3),
+                ]),
+                "update must not change member leaf indices"
+            );
+
+            let remove_c = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos/{}/actions/remove", ui_base_url, demo_id),
+                json!({
+                    "username": "admin",
+                    "remover": "A",
+                    "removed": "C"
+                }),
+            )
+            .await;
+            assert_eq!(remove_c["ok"].as_bool(), Some(true));
+
+            let after_remove_c = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(after_remove_c["ok"].as_bool(), Some(true));
+            assert_eq!(after_remove_c["data"]["epoch"].as_u64(), Some(5));
+            assert_eq!(after_remove_c["data"]["leaf_count"].as_u64(), Some(4));
+            assert_admin_demo_detail_layout_invariants(&after_remove_c);
+            assert_eq!(
+                admin_demo_member_leaf_map(&after_remove_c),
+                BTreeMap::from([
+                    ("A".to_string(), 0),
+                    ("B".to_string(), 1),
+                    ("D".to_string(), 3),
+                ]),
+                "non-tail remove must keep unaffected leaf indices stable"
+            );
+
+            let update_d = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos/{}/actions/update", ui_base_url, demo_id),
+                json!({
+                    "username": "admin",
+                    "updater": "D"
+                }),
+            )
+            .await;
+            assert_eq!(update_d["ok"].as_bool(), Some(true));
+
+            let after_update_d = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(after_update_d["ok"].as_bool(), Some(true));
+            assert_eq!(after_update_d["data"]["epoch"].as_u64(), Some(6));
+            assert_admin_demo_detail_layout_invariants(&after_update_d);
+            assert_eq!(
+                admin_demo_member_leaf_map(&after_update_d),
+                BTreeMap::from([
+                    ("A".to_string(), 0),
+                    ("B".to_string(), 1),
+                    ("D".to_string(), 3),
+                ]),
+                "update after remove must not alter leaf placement"
+            );
+
+            let add_e = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos/{}/actions/add", ui_base_url, demo_id),
+                json!({
+                    "username": "admin",
+                    "adder": "A",
+                    "added": "E"
+                }),
+            )
+            .await;
+            assert_eq!(add_e["ok"].as_bool(), Some(true));
+
+            let after_add_e = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(after_add_e["ok"].as_bool(), Some(true));
+            assert_eq!(after_add_e["data"]["epoch"].as_u64(), Some(7));
+            assert_eq!(after_add_e["data"]["leaf_count"].as_u64(), Some(4));
+            assert_admin_demo_detail_layout_invariants(&after_add_e);
+            assert_eq!(
+                admin_demo_member_leaf_map(&after_add_e),
+                BTreeMap::from([
+                    ("A".to_string(), 0),
+                    ("B".to_string(), 1),
+                    ("D".to_string(), 3),
+                    ("E".to_string(), 2),
+                ]),
+                "Add must reuse the first blank leaf to preserve topology width"
+            );
+
+            let logs = after_add_e["data"]["logs"].as_array().expect("logs after add E");
+            assert!(logs.iter().any(|entry| {
+                entry
+                    .get("line")
+                    .and_then(|v| v.as_str())
+                    .map(|line| line.contains("RFC9420 Path Update: D at LeafIndex=3 (NodeIndex=6)"))
+                    .unwrap_or(false)
+            }));
+            assert!(logs.iter().any(|entry| {
+                entry
+                    .get("line")
+                    .and_then(|v| v.as_str())
+                    .map(|line| line.contains("RFC9420 RatchetTree Add: filled leftmost blank LeafIndex=2 (NodeIndex=4) with E"))
+                    .unwrap_or(false)
+            }));
+
+            ui_handle.abort();
+            ds_handle.abort();
+            let _ = fs::remove_dir_all(&run_dir);
+        });
+    }
+
+    #[test]
+    fn ui_admin_demo_tree_renderer_root_and_blank_labels_after_add_remove_chain() {
+        run_async_test_on_large_stack("ui-admin-demo-tree-labels", async move {
+            let run_dir = test_run_dir("ui-admin-demo-tree-labels");
+            let ds_data_dir = run_dir.join("data");
+            let ds_db_path = run_dir.join("ds.sqlite");
+            fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+
+            let mut ds_state = DsApiState::default();
+            ds_state.min_proposals_per_commit = 1;
+            ds_state.storage = StorageConfig::new(
+                ds_data_dir.to_string_lossy().as_ref(),
+                ds_db_path.to_string_lossy().as_ref(),
+            );
+            let ds_router = ds_http::router(ds_state);
+            let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+
+            let ui_state_dir = run_dir.join("ui-state");
+            fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+            let ui_state = UiState {
+                base_url: ds_base_url,
+                state_dir: ui_state_dir,
+                client: Client::new(),
+            };
+            let ui_router = build_ui_router(ui_state);
+            let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
+
+            let client = test_client();
+            let admin_login = post_json(
+                &client,
+                &format!("{}/ui/api/login", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "password": "admin@123"
+                }),
+            )
+            .await;
+            assert_eq!(admin_login["ok"].as_bool(), Some(true));
+
+            let create_demo = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "title": "Tree Label Regression"
+                }),
+            )
+            .await;
+            assert_eq!(create_demo["ok"].as_bool(), Some(true));
+            let demo_id = create_demo["data"]["id"]
+                .as_str()
+                .expect("demo id")
+                .to_string();
+
+            for added in ["B", "C", "D"] {
+                let add = post_json(
+                    &client,
+                    &format!("{}/ui/api/admin/demos/{}/actions/add", ui_base_url, demo_id),
+                    json!({
+                        "username": "admin",
+                        "adder": "A",
+                        "added": added
+                    }),
+                )
+                .await;
+                assert_eq!(add["ok"].as_bool(), Some(true));
+            }
+
+            let remove_c = post_json(
+                &client,
+                &format!("{}/ui/api/admin/demos/{}/actions/remove", ui_base_url, demo_id),
+                json!({
+                    "username": "admin",
+                    "remover": "A",
+                    "removed": "C"
+                }),
+            )
+            .await;
+            assert_eq!(remove_c["ok"].as_bool(), Some(true));
+
+            let detail = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/admin/demos/{}?username=admin",
+                    ui_base_url, demo_id
+                ),
+            )
+            .await;
+            assert_eq!(detail["ok"].as_bool(), Some(true));
+            assert_eq!(
+                detail["data"]["leaf_count"].as_u64(),
+                Some(4),
+                "after removing non-tail member C, blank leaf should persist"
+            );
+            assert_eq!(detail["data"]["node_count"].as_u64(), Some(7));
+            let members = detail["data"]["members"].as_array().expect("members");
+            assert_eq!(members.len(), 3);
+            assert!(members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("A")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(0)
+            }));
+            assert!(members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("B")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(1)
+            }));
+            assert!(members.iter().any(|m| {
+                m.get("username").and_then(|v| v.as_str()) == Some("D")
+                    && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(3)
+            }));
+
+            let demo_page = get_text_with_cookie(
+                &client,
+                &format!("{}/ui/admin/demos/{}", ui_base_url, demo_id),
+                "ui_username=admin",
+            )
+            .await;
+            assert!(demo_page.contains("demo-tree-legend"));
+            assert!(demo_page.contains("blank leaves are labeled `blank`"));
+            assert!(demo_page.contains("const isRoot = Number(node.node_index) === Number(rootNodeIndex);"));
+            assert!(demo_page.contains("const userLabel = isBlank ? 'blank'"));
+            assert!(demo_page.contains("root N${rootNodeIndex}"));
 
             ui_handle.abort();
             ds_handle.abort();
@@ -7022,7 +8784,7 @@ mod tests {
             let ui_router = build_ui_router(ui_state.clone());
             let (ui_base_url, ui_handle_1) = spawn_router(ui_router).await;
 
-            let client = Client::new();
+            let client = test_client();
             let admin_login = post_json(
                 &client,
                 &format!("{}/ui/api/login", ui_base_url),
@@ -7154,10 +8916,10 @@ mod tests {
                         entry
                             .get("line")
                             .and_then(|v| v.as_str())
-                            .map(|line| line.contains("Proposal(Add)"))
+                            .map(|line| line.contains("RFC9420 Proposal Add"))
                             .unwrap_or(false)
                     }),
-                "expected persisted Proposal(Add) log line after reload"
+                "expected persisted RFC9420 Proposal Add log line after reload"
             );
 
             let create_demo_2 = post_json(
