@@ -1322,16 +1322,6 @@ async fn fetch_keypackage(
         .into_response()
 }
 
-fn not_implemented(endpoint: &str) -> (StatusCode, Json<ApiError>) {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ApiError {
-            code: "not_implemented".to_string(),
-            message: format!("endpoint {endpoint} is not implemented yet"),
-        }),
-    )
-}
-
 fn decode_b64(value: &str) -> Result<Vec<u8>, Response> {
     STANDARD.decode(value).map_err(|_| {
         (

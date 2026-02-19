@@ -1069,6 +1069,8 @@ impl RatchetTree {
         Some(())
     }
 
+    /// Internal helper used by parent-hash/path-secret logic.
+    /// Returns `(parent, copath)` pairs in root-to-leaf order.
     fn direct_path_with_copath(&self, leaf_index: usize) -> Option<Vec<(usize, usize)>> {
         let mut path = Vec::new();
         let mut current = self.root_index()?;
@@ -1092,23 +1094,34 @@ impl RatchetTree {
         Some(path)
     }
 
-    /// Direct path from the leaf's parent up to the root.
+    /// Direct path from the leaf's parent up to the root (leaf-to-root order).
     pub fn direct_path(&self, leaf_index: usize) -> Option<Vec<usize>> {
-        let path = self.direct_path_with_copath(leaf_index)?;
-        Some(path.into_iter().map(|(parent, _)| parent).collect())
+        let mut direct_path: Vec<usize> = self
+            .direct_path_with_copath(leaf_index)?
+            .into_iter()
+            .map(|(parent, _)| parent)
+            .collect();
+        direct_path.reverse();
+        Some(direct_path)
     }
 
-    /// Copath nodes corresponding to the direct path.
+    /// Copath nodes corresponding to the direct path (leaf-to-root order).
     pub fn copath(&self, leaf_index: usize) -> Option<Vec<usize>> {
-        let path = self.direct_path_with_copath(leaf_index)?;
-        Some(path.into_iter().map(|(_, copath)| copath).collect())
+        let mut copath: Vec<usize> = self
+            .direct_path_with_copath(leaf_index)?
+            .into_iter()
+            .map(|(_, copath)| copath)
+            .collect();
+        copath.reverse();
+        Some(copath)
     }
 
-    /// Filtered direct path: include only parents whose copath resolution is non-empty.
+    /// Filtered direct path in leaf-to-root order:
+    /// include only parents whose copath resolution is non-empty.
     pub fn filtered_direct_path(&self, leaf_index: usize) -> Option<Vec<usize>> {
         let path = self.direct_path_with_copath(leaf_index)?;
         let mut filtered = Vec::new();
-        for (parent, copath) in path {
+        for (parent, copath) in path.into_iter().rev() {
             let resolution = self.resolution(copath)?;
             if !resolution.is_empty() {
                 filtered.push(parent);
@@ -2785,6 +2798,46 @@ mod tests {
         encode_u32(&mut missing_second_level, 0); // level[0] count
                                                   // level[1] count is missing
         assert!(PathUpdate::decode(&missing_second_level).is_none());
+    }
+
+    #[test]
+    fn direct_path_and_copath_are_leaf_to_root_ordered() {
+        let tree = RatchetTree::from_leaves(vec![
+            make_leaf(90),
+            make_leaf(91),
+            make_leaf(92),
+            make_leaf(93),
+        ]);
+
+        let direct = tree.direct_path(0).expect("direct path");
+        let copath = tree.copath(0).expect("copath");
+
+        assert_eq!(direct, vec![1, 3], "expected leaf->root direct path");
+        assert_eq!(copath, vec![2, 5], "expected leaf->root copath");
+    }
+
+    #[test]
+    fn filtered_direct_path_preserves_leaf_to_root_order() {
+        let mut tree = RatchetTree::from_leaves(vec![
+            make_leaf(100),
+            make_leaf(101),
+            make_leaf(102),
+            make_leaf(103),
+        ]);
+
+        let direct = tree.direct_path(0).expect("direct path");
+        let filtered = tree
+            .filtered_direct_path(0)
+            .expect("filtered direct path");
+        assert_eq!(filtered, direct);
+
+        tree.nodes[RatchetTree::leaf_to_node_index(1)] = Node::Blank;
+        tree.nodes[RatchetTree::leaf_to_node_index(2)] = Node::Blank;
+        tree.nodes[RatchetTree::leaf_to_node_index(3)] = Node::Blank;
+        let filtered_after_blank = tree
+            .filtered_direct_path(0)
+            .expect("filtered direct path after blanking");
+        assert_eq!(filtered_after_blank, Vec::<usize>::new());
     }
 
     #[test]

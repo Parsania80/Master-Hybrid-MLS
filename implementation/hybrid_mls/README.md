@@ -9,7 +9,7 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 
 **Status**
 - Progress tracking is maintained in `PROJECT.md`.
-- Current implementation priority is Part 8 UI/Admin demo work, now moved to Task 8 (Admin demo index) after completing Part 10 Task 15 and Part 8 Task 7.
+- Current implementation priority is Part 11 (RFC tree semantics bug fixes for Admin Demo UI/state).
 - RFC compliance note: beyond Welcome, remaining work includes full MLS wire framing, transcript/confirmation/membership authentication pipeline, full proposal set, and deeper RFC key-schedule alignment.
 - Post-Welcome RFC hardening tasks are tracked in `PROJECT.md` Part 10.
 - `PreSharedKey` proposal support is now implemented in the tree/commit model (`Proposal::PreSharedKey { psk_id }`) with encode/decode and validation coverage.
@@ -32,6 +32,26 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 - Task 15 now stores deterministic envelope binary fixtures under `tests/vectors/*_envelope_vector.bin` (`proposal`, `commit`, `path_update`), and `src/envelope.rs` tests validate exact bytes + fixed SHA3-256 digests + decode/re-encode stability.
 - Task 15 now also includes fixture-hash manifest validation (`tests/vectors/MANIFEST.sha3`, `tests/vector_manifest.rs`), malformed envelope fixture corpus (`tests/vectors/malformed/*`), and DS-backed fixture byte-stability round-trip verification (`tests/ds_fetch_apply_e2e.rs`).
 - Part 8 Task 7 is complete: DS bootstraps deterministic `admin/admin@123`, exposes signed admin-only list APIs (`/v1/admin/users`, `/v1/admin/groups`), and UI gateway includes an admin panel at `/ui/admin`.
+- Part 8 Task 8 is complete: admin demo index now supports list/create/open flows; demos are persisted under `ui-state/demo/<id>` with index/manifest metadata.
+- Part 8 Task 9 is complete: admin demo page now uses a two-pane layout (left actions/logs split, right tree panel) with responsive behavior and demo metadata loading.
+- Part 8 Task 10 is complete: admin demo Add/Remove/Update actions are wired end-to-end with persisted deterministic state transitions (epoch advance, member set changes, key-generation increments).
+- Part 8 Task 11 is complete: admin demo now records timestamped MLS-style logs for init/Add/Remove/Update with separator lines (`--------------------`) and persists them in per-demo state.
+- Part 8 Task 12 is complete: admin demo persistence is enforced end-to-end (state survives UI reload/restart, new demos start clean with A-only baseline, and missing-demo actions fail closed without creating orphan state).
+- Review note (2026-02-19): earlier admin demo versions used a simplified member-list model and star renderer; Part 11 migrated this to explicit tree topology + binary render.
+- Part 11 Task 1 is complete: admin demo state now persists explicit topology as `leaf_slots` (`Vec<Option<...>>`) with legacy `members`-state migration, and demo detail API now exposes derived `leaf_count`/`node_count`.
+- Part 11 Task 2 is complete: admin demo Add placement is now explicit and test-backed (`reuse leftmost blank leaf` before any tree extension), with integration coverage asserting stable leaf indices and width when blank reuse is possible.
+- Part 11 Task 3 is complete: admin demo Remove behavior now uses explicit blank+trim semantics (blank target leaf, truncate only right-edge blank leaves, no leaf compaction/reindex), with strict unit and DS-backed integration tests.
+- Part 11 Task 4 is complete: admin demo tree panel now renders a real left-balanced binary topology (parent-child edges, internal nodes, blank leaves, and topology-derived leaf/node counts) instead of root-to-all star rendering.
+- Part 11 Task 5 is complete: tree labels now explicitly present both LeafIndex and NodeIndex in-node (`Lx/Ny` for leaves, `Ny` for parents), and legend text now clarifies index semantics and the even-node leaf rule.
+- Part 11 Task 6 is complete: admin demo logs now use RFC-style operation wording (`RFC9420 Proposal Add/Remove/Update`, `RFC9420 RatchetTree`, `RFC9420 Path Update`, `RFC9420 Commit`) with explicit `LeafIndex`, `NodeIndex`, and `GroupContext.epoch` transitions.
+- Added DS-backed UI regression coverage for admin demo tree label behavior after add/remove chains, asserting root/blank label markers remain present while a non-tail remove preserves a blank leaf slot in topology state.
+- Part 11 Task 7 is complete: regression coverage now includes binary-topology index invariants (left-balanced node index rules, even/odd leaf/parent mapping, unique node IDs) and DS-backed epoch-chain index stability checks across Add/Update/Remove/Add flows.
+- Part 11 Task 8 is complete: legacy admin-demo `members` state migration is now hardened with validation (reject duplicate legacy `leaf_index` and empty usernames) plus DS-backed migration integration coverage that verifies legacy detail load + rewrite to new `leaf_slots` schema after action apply.
+- Admin UI page access is now server-guarded: `/ui/admin` and `/ui/admin/demos/:id` require an active admin UI session (cookie + local session state), and non-admin access redirects to `/ui/login`.
+- Login UX now routes admin users directly to `/ui/admin` (non-admin users continue to `/ui/groups`).
+- Admin demo tree visualization is now significantly enlarged for readability: the demo page uses a wider panel, a right-heavy 3x-style layout ratio, larger node circles/fonts, and taller tree canvas spacing so `LeafIndex`/`NodeIndex` labels are easy to read.
+- Tree helper alignment fix: `RatchetTree::direct_path`, `copath`, and `filtered_direct_path` now expose leaf-to-root ordering (matching RFC direct-path semantics), with regression tests in `src/tree.rs`.
+- Warning debt cleanup: removed dead code `not_implemented` helper in `src/ds/http.rs`; `cargo check` now runs clean with no warnings.
 
 **Architecture**
 - `src/crypto.rs` implements hybrid KEM, hybrid signatures, serialization helpers, and HPKE-style path secret encryption.
@@ -246,6 +266,7 @@ Leaf labels use known usernames when available (own leaf and locally mapped adde
 Important MLS flow note: `Add` proposal does not make a user a member by itself. A `Commit` containing that proposal must be created and applied before the added user can join/sync.
 For an added user (for example Peyman), visibility is commit-driven: after creator submits Add and Commit, the added user must run `Sync + Apply Latest` with receiver private material; only then local state reflects membership and the group appears in that user’s tracked list.
 Troubleshooting: if the added user still sees no group, check that the user has a local tracked group entry and a valid local group-state baseline for that group. Current UI sync operates on locally tracked groups and does not yet auto-discover/join unknown groups solely from DS message history.
+Troubleshooting (Admin Demo): if admin sees no demos, first create one from `/ui/admin` (demos are not pre-seeded). Demo records are stored in UI gateway local state (`DS_UI_STATE_DIR`, default `./ui-state/demo`), so using a different working directory or state dir shows a different/empty demo list.
 The group Actions panel now includes `Create + Submit Commit` to build a real commit from local pending proposals and submit it to DS in one step.
 The same panel now includes `Sync + Apply Latest` to fetch DS commits/path updates and apply them into local `ClientGroupState`, so newly added members can materialize membership after commit publication.
 The same panel now also includes `Join from latest Welcome` for joiner onboarding when local group state does not exist yet.
@@ -464,4 +485,4 @@ Sync notes:
 - `--watch` enables continuous polling; use `--poll-interval-ms` and optional `--max-polls` to control loop behavior.
 - `show-derived-secrets` is debug-only and intentionally exposes secret material; use only in local test/demo environments.
 
-Last updated: 2026-02-11 14:56
+Last updated: 2026-02-19 21:17

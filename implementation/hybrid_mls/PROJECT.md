@@ -37,7 +37,7 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 |---|------|--------|-------|
 | 1 | Implement integrated ratchet tree indexing and node model | ✅ Done | Leaf/parent/blank model implemented in `src/tree.rs`. |
 | 2 | Implement parent hash computation and update propagation | ✅ Done | Parent hash logic and recomputation implemented. |
-| 3 | Implement tree resolution and direct path helpers | ✅ Done | `direct_path`, `filtered_direct_path`, `resolution` implemented. |
+| 3 | Implement tree resolution and direct path helpers | ✅ Done | `direct_path`, `filtered_direct_path`, `resolution` implemented; direct-path/copath public ordering aligned to leaf-to-root semantics in `src/tree.rs` with regression tests. |
 | 4 | Add encode/decode coverage for tree and commit payloads | ✅ Done | Round-trip tests exist. |
 
 ### Part 3: Engine (Proposals & Commits)
@@ -93,11 +93,11 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 5 | Group page action menu | ✅ Done | Actions menu now creates Add/Remove/Update proposals, supports Create+Submit Commit from pending proposals, and includes Sync+Apply Latest to consume DS commit/path-update streams into local state. Added stack-safe large-stack worker execution for UI/DS hybrid signing and keypackage verification in proposal flow, plus UI+DS end-to-end test coverage for register/bootstrap/add/commit/sync/relogin group visibility. Top-bar Sync + Apply Latest is now available and auto-sync runs on groups/group page load for logged-in users. Added MLS-aligned joiner-onboarding endpoint/button (`join-from-latest`) that reconstructs a pre-commit base tree from ordered base-member keypackages, applies the matched Add commit + path update, and persists local state. |
 | 6 | Tree structure view | ✅ Done | Group UI now renders local ratchet tree nodes (leaf/parent/blank) with short key fingerprints and metadata. |
 | 7 | Admin account bootstrap | ✅ Done | DS now bootstraps deterministic `admin/admin@123` on storage open, exposes signed admin-only APIs for listing all users/groups (`/v1/admin/users`, `/v1/admin/groups`), and UI gateway includes `/ui/admin` with admin panel + integration tests. |
-| 8 | Admin demo index | ⬜ Todo | Admin “Demo” menu lists demos, allows create/open; demos stored under `ui-state/demo/<id>`. |
-| 9 | Admin demo UI layout | ⬜ Todo | Two-column layout: right tree view; left split into actions (top) and logs (bottom). |
-| 10 | Admin demo actions | ⬜ Todo | Add/Remove/Update actions with inputs (adder, added; remover; updater) and deterministic flow. |
-| 11 | Admin demo logging | ⬜ Todo | Timestamped MLS-style step logs with separators; logs persisted in `ui-state/demo/<id>`. |
-| 12 | Admin demo persistence | ⬜ Todo | Demo state reload on open; “new demo” initializes A-only tree and clean logs. |
+| 8 | Admin demo index | ✅ Done | Added admin demo index flow in UI gateway: admin panel now lists demos, supports creating new demos, and supports opening demo detail pages; persisted under `ui-state/demo/<id>` with index + manifest files. |
+| 9 | Admin demo UI layout | ✅ Done | Added `/ui/admin/demos/:demo_id` two-pane layout: right tree panel, left split into actions (top) and logs (bottom), responsive collapse for smaller screens, with demo metadata wiring. |
+| 10 | Admin demo actions | ✅ Done | Wired demo action APIs and UI controls for Add/Remove/Update (`adder/added`, `remover/removed`, `updater`) with deterministic state transitions, epoch bumping, member reindexing, and persisted demo state updates. |
+| 11 | Admin demo logging | ✅ Done | Added timestamped MLS-style log entries for init/Add/Remove/Update transitions with `--------------------` separators; log entries persist in `ui-state/demo/<id>/state.json` and render in demo UI. |
+| 12 | Admin demo persistence | ✅ Done | Enforced persisted demo state usage across reloads and strict missing-state handling (no implicit reset). Added UI “Reload Demo” control and end-to-end integration test covering restart/reload persistence, clean new-demo initialization, and missing-demo action rejection without orphan state writes. |
 
 ### Part 9: RFC 9420 Welcome (Hybrid)
 | # | Task | Status | Notes |
@@ -130,6 +130,18 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 14 | Relax and harden commit policy for multiple Add proposals | ✅ Done | Removed single-Add restriction and replaced it with robust Add-target checks: invalid Add keypackage rejection, existing-member identity rejection, and duplicate Add target rejection (identity/init-key). Added unit + DS-backed integration coverage. |
 | 15 | Add RFC conformance test matrix and vectors | ✅ Done | Completed deterministic fixture suite: `AuthenticatedContent`, `PublicMessage`/`PrivateMessage`, and `ProposalEnvelope`/`CommitEnvelope`/`PathUpdateEnvelope` binary fixtures; added fixture hash manifest validation (`tests/vector_manifest.rs` + `tests/vectors/MANIFEST.sha3`), malformed fixture corpus, and DS-backed byte-stability round-trip assertions. |
 
+### Part 11: RFC Tree Semantics Bug Fixes (UI/Admin Demo)
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 1 | Replace demo member-list model with explicit tree model (leaf/node indices + blank nodes) | ✅ Done | Migrated admin demo persistence from `members` vector to explicit `leaf_slots` topology (`Vec<Option<...>>`) with legacy state migration support and derived `leaf_count`/`node_count` in detail API. |
+| 2 | Enforce RFC-style Add placement in demo flow | ✅ Done | Formalized Add placement via explicit helper (`reused leftmost blank` vs `extend tree`), updated MLS-style logs accordingly, and added strict unit/integration tests for blank-reuse before extension and stable leaf-index behavior after add. |
+| 3 | Enforce RFC-style Remove behavior in demo flow | ✅ Done | Remove now follows explicit blank+trim policy: blank target leaf, truncate only trailing blank leaves (no compaction/reindex), and emit deterministic truncation/no-truncation logs. Added strict unit + DS-backed integration coverage. |
+| 4 | Render real binary tree in admin demo UI from node topology | ✅ Done | Replaced star renderer with topology-driven left-balanced binary render based on leaf span (`leaf_count`), parent/child edges, and explicit blank/internal node visualization; tree header now reports epoch/leaves/nodes. |
+| 5 | Show both `LeafIndex` and `NodeIndex` in UI labels | ✅ Done | Tree nodes now render explicit index labels (`Lx / Ny` for leaves, `Ny` for parents) with root marker, key-generation/user tags, and polished legend text clarifying `LeafIndex` vs `NodeIndex` semantics including even-node leaf rule. |
+| 6 | Align demo logs with exact RFC-style tree operations | ✅ Done | Admin demo logs now use RFC-style wording across init/Add/Remove/Update/Commit entries with explicit `GroupContext.epoch`, `LeafIndex`, and `NodeIndex` semantics plus trim/no-trim outcomes. |
+| 7 | Add regression tests for demo tree semantics | ✅ Done | Completed coverage for add-reuse-blank, remove-without-reindex, index stability across epochs, and binary layout invariants via new unit + DS-backed integration tests in `src/bin/ds_ui_gateway.rs`. |
+| 8 | Add migration/compatibility for existing demo state files | ✅ Done | Added migration hardening for legacy `members` state: duplicate `leaf_index` and empty-username legacy records are now rejected; added DS-backed integration coverage that injects legacy state, verifies migrated detail API topology, and confirms persistence rewrites to new `leaf_slots` schema after action apply. |
+
 ---
-Current: `Part 8 / Task 8 - Admin demo index`
-Next: `Part 8 / Task 9 - Admin demo UI layout`
+Current: `Part 7 / Task 6 - Add multi-VM deployment/test guide and automation`
+Next: `Part 8 / UX hardening follow-ups (admin/page access + onboarding polish)`

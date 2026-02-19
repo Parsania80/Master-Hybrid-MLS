@@ -1,0 +1,194 @@
+{
+  "epoch": 7,
+  "leaf_slots": [
+    {
+      "username": "A",
+      "key_generation": 1
+    },
+    {
+      "username": "C",
+      "key_generation": 1
+    },
+    {
+      "username": "D",
+      "key_generation": 1
+    },
+    {
+      "username": "M",
+      "key_generation": 1
+    }
+  ],
+  "logs": [
+    {
+      "timestamp": 1771517963,
+      "line": "MLS Demo init: created single-member group with A at leaf 0",
+      "separator": false
+    },
+    {
+      "timestamp": 1771517963,
+      "line": "GroupContext epoch initialized to 0",
+      "separator": false
+    },
+    {
+      "timestamp": 1771517963,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771517987,
+      "line": "Proposal(Add): sender=A target=B",
+      "separator": false
+    },
+    {
+      "timestamp": 1771517987,
+      "line": "TreeKEM: inserted member B at provisional leaf 1",
+      "separator": false
+    },
+    {
+      "timestamp": 1771517987,
+      "line": "Commit: epoch 0 -> 1",
+      "separator": false
+    },
+    {
+      "timestamp": 1771517987,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771518035,
+      "line": "Proposal(Add): sender=A target=C",
+      "separator": false
+    },
+    {
+      "timestamp": 1771518035,
+      "line": "TreeKEM: inserted member C at provisional leaf 2",
+      "separator": false
+    },
+    {
+      "timestamp": 1771518035,
+      "line": "Commit: epoch 1 -> 2",
+      "separator": false
+    },
+    {
+      "timestamp": 1771518035,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771518039,
+      "line": "Proposal(Add): sender=A target=D",
+      "separator": false
+    },
+    {
+      "timestamp": 1771518039,
+      "line": "TreeKEM: inserted member D at provisional leaf 3",
+      "separator": false
+    },
+    {
+      "timestamp": 1771518039,
+      "line": "Commit: epoch 2 -> 3",
+      "separator": false
+    },
+    {
+      "timestamp": 1771518039,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771518057,
+      "line": "Proposal(Remove): sender=A target=C",
+      "separator": false
+    },
+    {
+      "timestamp": 1771518057,
+      "line": "TreeKEM: blanked leaf 2 for member C",
+      "separator": false
+    },
+    {
+      "timestamp": 1771518057,
+      "line": "Commit: epoch 3 -> 4",
+      "separator": false
+    },
+    {
+      "timestamp": 1771518057,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771522762,
+      "line": "RFC9420 Proposal Remove: sender=A target=B",
+      "separator": false
+    },
+    {
+      "timestamp": 1771522762,
+      "line": "RFC9420 RatchetTree Remove: blanked LeafIndex=1 (NodeIndex=2) for B",
+      "separator": false
+    },
+    {
+      "timestamp": 1771522762,
+      "line": "RFC9420 RatchetTree Remove: no trailing blank leaves to trim (leaf_count stays 3)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771522762,
+      "line": "RFC9420 Commit: GroupContext.epoch 4 -> 5",
+      "separator": false
+    },
+    {
+      "timestamp": 1771522762,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771522770,
+      "line": "RFC9420 Proposal Add: sender=A target=C (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771522770,
+      "line": "RFC9420 RatchetTree Add: filled leftmost blank LeafIndex=1 (NodeIndex=2) with C",
+      "separator": false
+    },
+    {
+      "timestamp": 1771522770,
+      "line": "RFC9420 RatchetTree Add result: C mapped to LeafIndex=1 (NodeIndex=2)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771522770,
+      "line": "RFC9420 Commit: GroupContext.epoch 5 -> 6",
+      "separator": false
+    },
+    {
+      "timestamp": 1771522770,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771522774,
+      "line": "RFC9420 Proposal Add: sender=A target=M (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771522774,
+      "line": "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count 3 -> 4 and placed M at LeafIndex=3 (NodeIndex=6)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771522774,
+      "line": "RFC9420 RatchetTree Add result: M mapped to LeafIndex=3 (NodeIndex=6)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771522774,
+      "line": "RFC9420 Commit: GroupContext.epoch 6 -> 7",
+      "separator": false
+    },
+    {
+      "timestamp": 1771522774,
+      "line": "--------------------",
+      "separator": true
+    }
+  ],
+  "last_action": "add: A added M"
+}
