@@ -149,8 +149,8 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 1 | Define explicit `leaf_secret` / `path_secret` / `node_secret` data model and invariants | ✅ Done | Added explicit TreeKEM secret model in `src/tree.rs` (`LeafSecret`, `DirectPathSecretLevel`, `DirectPathSecretModel`) with structural validation (`DirectPathSecretModelError`) and invariant-focused tests. |
 | 2 | Replace random parent-key generation with deterministic derivation from node secrets | ✅ Done | Added deterministic node-secret-to-public-key derivation in `src/tree.rs` and switched commit builders in `src/bin/ds_client.rs` and `src/bin/ds_ui_gateway.rs` to use `DirectPathSecretModel::parent_updates_leaf_to_root()` instead of random parent keys. |
 | 3 | Implement sender direct-path secret chain exactly from leaf secret to root | ✅ Done | Tightened sender semantics by adding explicit node-secret transform policy (`node_secret = KDF(path_secret, parent_node, level_from_leaf)`) and model validation checks in `src/tree.rs`, plus derivation/domain-separation tests. |
-| 4 | Bind Commit `path` parent public keys to derived node secrets with strict validation | 🔄 Current | Commit creation is now deterministic from node secrets; next step is strict receiver/commit validation that rejects mismatched parent public keys. |
-| 5 | Upgrade receiver path-update processing to reconstruct/verify node-secret lineage | ⬜ Todo | Receiver should validate decoded path secrets and derived node public keys against commit path entries. |
+| 4 | Bind Commit `path` parent public keys to derived node secrets with strict validation | ✅ Done | `apply_commit_with_path_update` now performs strict lineage validation in `src/tree.rs` by recomputing expected parent keys from derived node secrets and rejecting mismatches; added regression test for tampered commit parent key rejection. |
+| 5 | Upgrade receiver path-update processing to reconstruct/verify node-secret lineage | 🔄 Current | Receiver now validates known/available lineage during commit+path apply; next step is extending strictness coverage for partial/encoded path-update cases and DS-backed negative sync cases. |
 | 6 | Feed commit-secret from TreeKEM path lineage into key schedule entry points | ⬜ Todo | Reduce remaining root-only/proxy inputs and tighten RFC-style linkage between tree update and schedule update. |
 | 7 | Add deterministic vectors for leaf/path/node secret chain and derived parent keys | ⬜ Todo | Include fixed fixtures for both hybrid key branches (classic + PQ). |
 | 8 | Add DS-backed end-to-end tests for Add/Update/Remove with strict secret-lineage checks | ⬜ Todo | Include negative cases for tampered parent path keys, tampered path secrets, and inconsistent commit/path payloads. |
@@ -158,5 +158,5 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 10 | Add RFC mapping notes for final TreeKEM lineage model in protocol docs | ⬜ Todo | Update `protocl-actions/*` and README with section-by-section mapping and residual deviations. |
 
 ---
-Current: `Part 12 / Task 4 - Bind Commit path parent public keys to derived node secrets with strict validation`
-Next: `Part 12 / Task 5 - Upgrade receiver path-update processing to reconstruct/verify node-secret lineage`
+Current: `Part 12 / Task 5 - Upgrade receiver path-update processing to reconstruct/verify node-secret lineage`
+Next: `Part 12 / Task 6 - Feed commit-secret from TreeKEM lineage into key schedule entry points`

@@ -6,6 +6,7 @@ Use this template to document one protocol action in a code-grounded, RFC-ground
 ## File Naming Rule
 - Put each action in its own file under `protocl-actions/`.
 - Use kebab-case names, for example: `create-group-protocol.md`, `add-member-protocol.md`.
+- Do **not** create new protocol-action style/template files unless the Operator explicitly asks for it.
 
 ## Required Sections
 

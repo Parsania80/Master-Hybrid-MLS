@@ -500,5 +500,7 @@ Sync notes:
 - Added Agent protocol rule in `agent.md`: after any auto context compaction, the agent must re-read `agent.md`, `PROJECT.md`, and recent `SESSION-LOG.md` lines (including archive fallback if needed) before continuing.
 - Part 12 / Task 3 is now implemented: sender direct-path semantics now enforce an explicit node-secret transform policy (`node_secret = KDF(path_secret, parent_node, level_from_leaf)`) with invariant/domain-separation tests in `src/tree.rs`.
 - Deterministic commit-path semantics changed one `ds_client` welcome vector; test fixture value was rebaselined in `src/bin/ds_client.rs`.
+- Part 12 / Task 4 is now implemented: receiver commit+path apply enforces strict parent-key lineage checks by recomputing expected parent public keys from derived node secrets and rejecting mismatches.
+- Added new regression test in `src/tree.rs` to assert malformed/tampered commit parent path keys are rejected under strict lineage validation.
 
-Last updated: 2026-02-23 22:02
+Last updated: 2026-02-23 22:11

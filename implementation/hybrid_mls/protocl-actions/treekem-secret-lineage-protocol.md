@@ -20,7 +20,8 @@
 | 4 | Materialize explicit per-level model entries with explicit node-secret transform. | `node_secret_i = KDF_node(path_secret_i, parent_node, level_from_leaf)` | `src/tree.rs:892` to `src/tree.rs:899`, `src/tree.rs:1554` to `src/tree.rs:1558` | §7.5 / §7.6 | Implemented | Node secret is now domain-separated from path secret. |
 | 5 | Derive commit parent public keys deterministically from each node secret. | `classic_secret = KDF("derive node classic secret", context, node_secret)`; `pq_seed = KDF("derive node pq seed 0/1", context, node_secret)`; `parent_public = (X25519Pub(classic_secret), ML-KEM-Pub(pq_seed))`. | `src/tree.rs:169` to `src/tree.rs:186`, `src/tree.rs:1534` to `src/tree.rs:1561` | §7.5 / §7.6 | Implemented | Commit path now uses `parent_updates_leaf_to_root()` (no random parent keys). |
 | 6 | Validate model against tree topology and ordering invariants. | Verify tuple `(parent,copath,level_from_leaf)` against expected direct-path shape. | `src/tree.rs:177` to `src/tree.rs:238` | §7 tree integrity expectations | Implemented | Rejects parent/copath/level/node-secret mismatches. |
-| 7 | Use model to produce PathUpdate ciphertexts and path-secret list. | HPKE-style encrypt over each copath resolution node with per-level path secret. | `src/tree.rs:897` to `src/tree.rs:926` | §7.6 | Implemented | Existing wire behavior preserved. |
+| 7 | Enforce commit-path parent-key lineage during receiver apply. | For each known path secret: `expected_parent_pub = DerivePub(KDF_node(path_secret,...))`; reject if `commit.path[level].public_key != expected_parent_pub`. | `src/tree.rs:867` to `src/tree.rs:886`, `src/tree.rs:1127` to `src/tree.rs:1179` | §7.5 / §7.6 | Implemented | Strict rejection now happens in `apply_commit_with_path_update`. |
+| 8 | Use model to produce PathUpdate ciphertexts and path-secret list. | HPKE-style encrypt over each copath resolution node with per-level path secret. | `src/tree.rs:904` to `src/tree.rs:933` | §7.6 | Implemented | Existing wire behavior preserved. |
 
 ## Security-Critical Material Tracking
 | Material | Produced At | Consumed At | Place in Code | RFC 9420 Mapping | Notes |
@@ -32,8 +33,7 @@
 ## Gaps / Suspicious Items
 | Item | Why Suspicious | Evidence (Code) | RFC Impact | Suggested Fix |
 |---|---|---|---|---|
-| Parent-key validation not yet strict on receiver | Sender now derives parent keys from node secrets, but receiver-side strict key-to-secret verification is still pending. | `src/tree.rs` commit apply path does not yet validate parent keys against derived node secrets. | Remaining gap in strict lineage enforcement. | Implement Part 12 / Task 4 and Task 5. |
-| Sender-side lineage not yet verified receiver-side | Sender derives/uses node secrets, but receiver does not yet strictly reject mismatched commit parent keys by recomputing expected node-secret lineage. | `src/tree.rs` apply path currently sets parent keys from commit path without derivation check. | Remaining gap in strict lineage enforcement. | Implement Part 12 / Task 4 and Task 5 strict checks. |
+| Encoded PathUpdate omits explicit path-secrets | Receiver can only validate levels for which it can reconstruct/decrypt path secrets; full-level validation depends on visibility. | `src/tree.rs:577` to `src/tree.rs:616`, `src/tree.rs:1149` to `src/tree.rs:1154` | Partial verification surface for some receivers. | Consider carrying authenticated secret commitments per level for universal validation. |
 
 ## Verification
 ```bash

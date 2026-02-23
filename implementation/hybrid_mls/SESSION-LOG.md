@@ -435,3 +435,8 @@
 [2026-02-23 22:02] [AGENT] Rebaselined deterministic welcome joiner-secret vector in `src/bin/ds_client.rs` after Task 3 derivation-policy change.
 [2026-02-23 22:02] [AGENT] Verification passed: `cargo test --bin ds_client`, `cargo test --lib`, and `cargo test --bin ds_ui_gateway` all green.
 [2026-02-23 22:02] [AGENT] Updated docs: `PROJECT.md` (Part 12 Task 3 done, Task 4 current), `README.md`, `protocl-actions/treekem-secret-lineage-protocol.md`, and `protocl-actions/create-group-protocol.md`.
+[2026-02-23 22:11] [AGENT] Updated `protocl-actions/protocl-style.md` with explicit rule: do not create new protocol-action style/template files unless Operator requests it.
+[2026-02-23 22:11] [AGENT] Started and completed Part 12 / Task 4 by adding strict commit/path parent-key lineage validation in `src/tree.rs` (`validate_commit_path_against_node_secret_lineage`) and enforcing it in `apply_commit_with_path_update`.
+[2026-02-23 22:11] [AGENT] Updated Tree tests to use deterministic parent updates derived from the same leaf secret as path update material, and added negative regression `apply_commit_with_path_update_rejects_mismatched_commit_parent_key`.
+[2026-02-23 22:11] [AGENT] Verification passed: `cargo test --lib`, `cargo test --bin ds_client`, and `cargo test --bin ds_ui_gateway` all green.
+[2026-02-23 22:11] [AGENT] Updated `PROJECT.md` (Task 4 done, Task 5 current), `README.md`, and TreeKEM protocol mapping notes.
