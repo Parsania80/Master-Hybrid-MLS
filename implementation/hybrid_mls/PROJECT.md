@@ -146,8 +146,8 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 ### Part 12: RFC 9420 TreeKEM Secret-Lineage Alignment (Core Crypto Fix)
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 1 | Define explicit `leaf_secret` / `path_secret` / `node_secret` data model and invariants | ⬜ Todo | Document exact lifecycle and mapping to RFC 9420 tree secret concepts before changing code paths. |
-| 2 | Replace random parent-key generation with deterministic derivation from node secrets | ⬜ Todo | Current `create-commit` path uses random parent public keys; migrate to node-secret-driven key derivation for both classic and PQ components. |
+| 1 | Define explicit `leaf_secret` / `path_secret` / `node_secret` data model and invariants | ✅ Done | Added explicit TreeKEM secret model in `src/tree.rs` (`LeafSecret`, `DirectPathSecretLevel`, `DirectPathSecretModel`) with structural validation (`DirectPathSecretModelError`) and invariant-focused tests. |
+| 2 | Replace random parent-key generation with deterministic derivation from node secrets | 🔄 Current | Current `create-commit` path still uses random parent public keys; next step is node-secret-driven derivation for both classic and PQ components. |
 | 3 | Implement sender direct-path secret chain exactly from leaf secret to root | ⬜ Todo | Ensure each direct-path level has deterministic secret progression and explicit relation to parent node key material. |
 | 4 | Bind Commit `path` parent public keys to derived node secrets with strict validation | ⬜ Todo | Reject commits where public keys do not match secret-derived expectations. |
 | 5 | Upgrade receiver path-update processing to reconstruct/verify node-secret lineage | ⬜ Todo | Receiver should validate decoded path secrets and derived node public keys against commit path entries. |
@@ -158,5 +158,5 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 10 | Add RFC mapping notes for final TreeKEM lineage model in protocol docs | ⬜ Todo | Update `protocl-actions/*` and README with section-by-section mapping and residual deviations. |
 
 ---
-Current: `Part 7 / Task 6 - Add multi-VM deployment/test guide and automation`
-Next: `Part 12 / Task 1 - Define explicit leaf/path/node secret model and invariants`
+Current: `Part 12 / Task 2 - Replace random parent-key generation with deterministic node-secret derivation`
+Next: `Part 12 / Task 3 - Implement sender direct-path secret chain to root with explicit node-key linkage`

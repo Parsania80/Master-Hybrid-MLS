@@ -494,5 +494,7 @@ Sync notes:
 - `create-group-protocol.md` now includes explicit math for state init, tree indexing, tree hash, init secret, full epoch-0 chain (`commit/joiner/welcome/epoch/root`), and derived stage/app secrets.
 - TreeKEM lineage gap is now explicitly tracked in roadmap `Part 12`: current code derives/encrypts path secrets, but parent path public keys are still generated randomly in commit build path instead of being fully node-secret-derived end-to-end.
 - `PROJECT.md` now includes a dedicated RFC 9420 alignment workstream to migrate sender/receiver commit-path logic to explicit `leaf_secret -> path_secret -> node_secret -> parent_key` lineage with deterministic vectors and DS-backed negatives.
+- Part 12 / Task 1 is now implemented in code: explicit secret model structs (`LeafSecret`, `DirectPathSecretLevel`, `DirectPathSecretModel`) and validation invariants were added in `src/tree.rs`, and `build_path_update` now consumes the model while preserving wire behavior.
+- Added `protocl-actions/treekem-secret-lineage-protocol.md` to document the current TreeKEM secret-lineage baseline, math flow, and remaining RFC-hardening gaps.
 
-Last updated: 2026-02-23 21:19
+Last updated: 2026-02-23 21:33
