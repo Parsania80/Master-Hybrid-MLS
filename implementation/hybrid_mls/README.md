@@ -502,5 +502,7 @@ Sync notes:
 - Deterministic commit-path semantics changed one `ds_client` welcome vector; test fixture value was rebaselined in `src/bin/ds_client.rs`.
 - Part 12 / Task 4 is now implemented: receiver commit+path apply enforces strict parent-key lineage checks by recomputing expected parent public keys from derived node secrets and rejecting mismatches.
 - Added new regression test in `src/tree.rs` to assert malformed/tampered commit parent path keys are rejected under strict lineage validation.
+- Part 12 / Task 5 has started with receiver-side hardening for encoded/partial path updates: per-level ciphertext-width checks across the full direct path, multi-level decrypt/reconstruct cross-checks, and lineage validation when encoded path payloads omit `path_secrets`.
+- Added new tree tests for encoded-path edge cases (`mismatched non-receiver level width`, `mismatched commit parent key with encoded path payload`).
 
-Last updated: 2026-02-23 22:11
+Last updated: 2026-02-23 22:20

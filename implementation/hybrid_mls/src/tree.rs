@@ -971,35 +971,35 @@ impl RatchetTree {
         }
 
         let receiver_node = leaf_to_node_index(receiver_leaf);
-        let mut found_index: Option<usize> = None;
-        let mut found_secret: Option<[u8; 32]> = None;
+        let mut decrypted_at_level = vec![None; path.len()];
 
-        for idx in (0..path.len()).rev() {
+        for idx in 0..path.len() {
             let (parent_index, copath_index) = path[idx];
             let resolution = self.resolution(copath_index)?;
+            let level_cts = update.ciphertexts.get(idx)?;
+            // For strict encoded-payload handling, every level must match resolution width.
+            if level_cts.len() != resolution.len() {
+                return None;
+            }
             if resolution.is_empty() {
                 continue;
             }
             let pos = resolution.iter().position(|node| *node == receiver_node);
             if let Some(pos) = pos {
-                let level_cts = update.ciphertexts.get(idx)?;
-                if level_cts.len() != resolution.len() {
-                    return None;
-                }
                 let ct = level_cts.get(pos)?;
                 let ctx = path_secret_encryption_context(sender, parent_index, receiver_node);
 
                 let shared = hybrid_kem_decapsulate(receiver_private, &ct.kem, &ctx);
                 let secret = decrypt_path_secret(&shared, &ctx, &ct.payload)?;
-                found_index = Some(idx);
-                found_secret = Some(secret);
-                break;
+                decrypted_at_level[idx] = Some(secret);
             }
         }
 
-        let start_index = found_index?;
+        let start_index = decrypted_at_level
+            .iter()
+            .rposition(|s| s.is_some())?;
         let mut secrets = vec![None; path.len()];
-        let mut current = found_secret?;
+        let mut current = decrypted_at_level[start_index]?;
         secrets[start_index] = Some(current);
 
         if start_index > 0 {
@@ -1009,6 +1009,19 @@ impl RatchetTree {
                 let next = derive_path_secret(&current, parent_index, level);
                 secrets[k] = Some(next);
                 current = next;
+            }
+        }
+
+        // If we could decrypt at multiple levels, reconstructed chain must agree.
+        for idx in 0..path.len() {
+            if let Some(observed) = decrypted_at_level[idx] {
+                if let Some(reconstructed) = secrets[idx] {
+                    if reconstructed != observed {
+                        return None;
+                    }
+                } else {
+                    secrets[idx] = Some(observed);
+                }
             }
         }
 
@@ -2271,6 +2284,113 @@ mod tests {
             .expect("path update");
 
         let result = tree.apply_commit_with_path_update(&commit, &path_update, 1, &bob_priv);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn apply_commit_with_path_update_rejects_encoded_path_with_non_receiver_level_width_mismatch() {
+        let leaf0 = make_leaf(47);
+        let leaf1 = make_leaf(48);
+        let leaf2 = make_leaf(49);
+        let mut tree = RatchetTree::from_leaves(vec![leaf0, leaf1, leaf2]);
+
+        let (receiver_kp, receiver_priv) = {
+            let kp = make_key_package(49);
+            let kem_seed = Seed::from([49u8; 64]);
+            let kyber_priv = KyberPriv::from_seed(kem_seed);
+            let classic_priv = X25519Priv::from([49u8; 32]);
+            let priv_key = HybridPrivateKey {
+                classic: classic_priv,
+                pq: kyber_priv,
+            };
+            (kp, priv_key)
+        };
+        tree.update_leaf(2, &receiver_kp).expect("receiver leaf update");
+
+        let mut tree_after = tree.clone();
+        let sender_update_kp = make_key_package(50);
+        tree_after
+            .update_leaf(0, &sender_update_kp)
+            .expect("sender update preview");
+        let leaf_secret = [0x0Au8; 32];
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::Update {
+                leaf_index: 0,
+                key_package: sender_update_kp,
+            }],
+            path: parent_updates_from_leaf_secret(&tree_after, 0, leaf_secret),
+        };
+        let mut rng = TestRng(0x7777_7777_7777_7777);
+        let path_update = tree_after
+            .build_path_update(&mut rng, 0, leaf_secret)
+            .expect("path update");
+
+        let path = tree_after
+            .direct_path_with_copath(0)
+            .expect("direct path with copath");
+        let receiver_node = RatchetTree::leaf_to_node_index(2);
+        let mismatch_level = path
+            .iter()
+            .enumerate()
+            .find_map(|(idx, (_, copath))| {
+                let resolution = tree_after.resolution(*copath)?;
+                if !resolution.contains(&receiver_node) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .expect("expected a non-receiver level");
+
+        let encoded = path_update.encode();
+        let mut decoded = PathUpdate::decode(&encoded).expect("decode");
+        assert!(decoded.path_secrets.is_empty(), "encoded path omits path_secrets");
+        let _ = decoded.ciphertexts[mismatch_level].pop();
+
+        let result = tree.apply_commit_with_path_update(&commit, &decoded, 2, &receiver_priv);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn apply_commit_with_path_update_rejects_mismatched_commit_parent_key_when_encoded() {
+        let sender_leaf = make_leaf(51);
+        let mut tree = RatchetTree::from_leaves(vec![sender_leaf]);
+
+        let (bob_kp, bob_priv) = {
+            let kp = make_key_package(52);
+            let kem_seed = Seed::from([52u8; 64]);
+            let kyber_priv = KyberPriv::from_seed(kem_seed);
+            let classic_priv = X25519Priv::from([52u8; 32]);
+            let priv_key = HybridPrivateKey {
+                classic: classic_priv,
+                pq: kyber_priv,
+            };
+            (kp, priv_key)
+        };
+
+        let mut tree_after = tree.clone();
+        tree_after
+            .insert_key_package(&bob_kp)
+            .expect("insert into temp tree");
+
+        let leaf_secret = [0x0Bu8; 32];
+        let mut commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::Add(bob_kp.clone())],
+            path: parent_updates_from_leaf_secret(&tree_after, 0, leaf_secret),
+        };
+        commit.path[0].public_key = hybrid_public_key(201);
+
+        let mut rng = TestRng(0x8a8a8a8a8a8a8a8a);
+        let path_update = tree_after
+            .build_path_update(&mut rng, 0, leaf_secret)
+            .expect("path update");
+        let encoded = path_update.encode();
+        let decoded = PathUpdate::decode(&encoded).expect("decode");
+        assert!(decoded.path_secrets.is_empty(), "encoded path omits path_secrets");
+
+        let result = tree.apply_commit_with_path_update(&commit, &decoded, 1, &bob_priv);
         assert!(result.is_none());
     }
 

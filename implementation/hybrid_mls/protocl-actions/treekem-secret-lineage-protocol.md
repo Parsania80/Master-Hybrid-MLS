@@ -21,7 +21,8 @@
 | 5 | Derive commit parent public keys deterministically from each node secret. | `classic_secret = KDF("derive node classic secret", context, node_secret)`; `pq_seed = KDF("derive node pq seed 0/1", context, node_secret)`; `parent_public = (X25519Pub(classic_secret), ML-KEM-Pub(pq_seed))`. | `src/tree.rs:169` to `src/tree.rs:186`, `src/tree.rs:1534` to `src/tree.rs:1561` | §7.5 / §7.6 | Implemented | Commit path now uses `parent_updates_leaf_to_root()` (no random parent keys). |
 | 6 | Validate model against tree topology and ordering invariants. | Verify tuple `(parent,copath,level_from_leaf)` against expected direct-path shape. | `src/tree.rs:177` to `src/tree.rs:238` | §7 tree integrity expectations | Implemented | Rejects parent/copath/level/node-secret mismatches. |
 | 7 | Enforce commit-path parent-key lineage during receiver apply. | For each known path secret: `expected_parent_pub = DerivePub(KDF_node(path_secret,...))`; reject if `commit.path[level].public_key != expected_parent_pub`. | `src/tree.rs:867` to `src/tree.rs:886`, `src/tree.rs:1127` to `src/tree.rs:1179` | §7.5 / §7.6 | Implemented | Strict rejection now happens in `apply_commit_with_path_update`. |
-| 8 | Use model to produce PathUpdate ciphertexts and path-secret list. | HPKE-style encrypt over each copath resolution node with per-level path secret. | `src/tree.rs:904` to `src/tree.rs:933` | §7.6 | Implemented | Existing wire behavior preserved. |
+| 8 | Strengthen receiver reconstruction for encoded/partial path updates. | Collect decryptable per-level secrets across whole path; require `ciphertext_count(level) == resolution_count(level)` for every level; verify reconstructed chain matches all observed decryptions. | `src/tree.rs:940` to `src/tree.rs:1008` | §7.6 | Implemented | Handles encoded payloads where `path_secrets` are omitted. |
+| 9 | Use model to produce PathUpdate ciphertexts and path-secret list. | HPKE-style encrypt over each copath resolution node with per-level path secret. | `src/tree.rs:904` to `src/tree.rs:933` | §7.6 | Implemented | Existing wire behavior preserved. |
 
 ## Security-Critical Material Tracking
 | Material | Produced At | Consumed At | Place in Code | RFC 9420 Mapping | Notes |
@@ -33,7 +34,7 @@
 ## Gaps / Suspicious Items
 | Item | Why Suspicious | Evidence (Code) | RFC Impact | Suggested Fix |
 |---|---|---|---|---|
-| Encoded PathUpdate omits explicit path-secrets | Receiver can only validate levels for which it can reconstruct/decrypt path secrets; full-level validation depends on visibility. | `src/tree.rs:577` to `src/tree.rs:616`, `src/tree.rs:1149` to `src/tree.rs:1154` | Partial verification surface for some receivers. | Consider carrying authenticated secret commitments per level for universal validation. |
+| Encoded PathUpdate omits explicit path-secrets | Receiver validates all levels it can decrypt/reconstruct, but universal all-level verification is not possible without extra commitments. | `src/tree.rs:577` to `src/tree.rs:616`, `src/tree.rs:940` to `src/tree.rs:1008` | Partial verification surface for some receivers. | Consider authenticated per-level secret commitments if full universal validation is required. |
 
 ## Verification
 ```bash

@@ -440,3 +440,7 @@
 [2026-02-23 22:11] [AGENT] Updated Tree tests to use deterministic parent updates derived from the same leaf secret as path update material, and added negative regression `apply_commit_with_path_update_rejects_mismatched_commit_parent_key`.
 [2026-02-23 22:11] [AGENT] Verification passed: `cargo test --lib`, `cargo test --bin ds_client`, and `cargo test --bin ds_ui_gateway` all green.
 [2026-02-23 22:11] [AGENT] Updated `PROJECT.md` (Task 4 done, Task 5 current), `README.md`, and TreeKEM protocol mapping notes.
+[2026-02-23 22:20] [AGENT] Started Part 12 / Task 5 by strengthening receiver reconstruction/verification for partial/encoded path updates in `src/tree.rs` (`process_path_update_for_leaf`): full per-level ciphertext-width checks, multi-level decrypt collection, and reconstructed-vs-observed chain consistency checks.
+[2026-02-23 22:20] [AGENT] Extended strict lineage validation path for encoded payloads (where `PathUpdate::decode` omits `path_secrets`) and added negative tests: encoded non-receiver-level width mismatch rejection, encoded commit-parent-key mismatch rejection.
+[2026-02-23 22:20] [AGENT] Verification passed: `cargo test --lib`, `cargo test --bin ds_client`, and `cargo test --bin ds_ui_gateway` all green.
+[2026-02-23 22:20] [AGENT] Updated `PROJECT.md` Task 5 notes, README status bullets, and `protocl-actions/treekem-secret-lineage-protocol.md` mapping for encoded/partial receiver checks.
