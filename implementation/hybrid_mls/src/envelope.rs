@@ -400,7 +400,9 @@ mod tests {
             ),
             (
                 "path_trailing",
-                include_bytes!("../tests/vectors/malformed/path_update_envelope_vector_trailing.bin"),
+                include_bytes!(
+                    "../tests/vectors/malformed/path_update_envelope_vector_trailing.bin"
+                ),
             ),
         ];
         for (name, bytes) in path_cases {

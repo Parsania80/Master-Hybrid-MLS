@@ -45,9 +45,7 @@ use hybrid_mls::ds::admin::{derive_admin_key_material, ADMIN_PASSWORD, ADMIN_USE
 use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
 use hybrid_mls::key_schedule::tree_snapshot_hash;
 use hybrid_mls::transcript::{derive_confirmation_tag, verify_confirmation_tag};
-use hybrid_mls::tree::{
-    Commit, KeyPackage, LeafNode, Node, PathUpdate, Proposal, RatchetTree,
-};
+use hybrid_mls::tree::{Commit, KeyPackage, LeafNode, Node, PathUpdate, Proposal, RatchetTree};
 use hybrid_mls::welcome::{EncryptedGroupSecrets, GroupInfo, GroupSecrets, Welcome};
 
 #[derive(Clone)]
@@ -2737,7 +2735,9 @@ async fn api_register(
                 error: None,
             })
             .into_response();
-            if let Ok(header_value) = HeaderValue::from_str(&ui_login_cookie_value(&payload.username)) {
+            if let Ok(header_value) =
+                HeaderValue::from_str(&ui_login_cookie_value(&payload.username))
+            {
                 resp.headers_mut().insert(SET_COOKIE, header_value);
             }
             resp
@@ -2763,7 +2763,9 @@ async fn api_login(
                 error: None,
             })
             .into_response();
-            if let Ok(header_value) = HeaderValue::from_str(&ui_login_cookie_value(&payload.username)) {
+            if let Ok(header_value) =
+                HeaderValue::from_str(&ui_login_cookie_value(&payload.username))
+            {
                 resp.headers_mut().insert(SET_COOKIE, header_value);
             }
             resp
@@ -3547,14 +3549,18 @@ fn decode_admin_demo_state(bytes: &[u8]) -> Result<AdminDemoState, String> {
     match serde_json::from_slice::<AdminDemoState>(bytes) {
         Ok(state) => Ok(state),
         Err(primary_err) => {
-            let legacy = serde_json::from_slice::<LegacyAdminDemoState>(bytes)
-                .map_err(|legacy_err| format!("parse demo state: {primary_err}; legacy parse failed: {legacy_err}"))?;
+            let legacy =
+                serde_json::from_slice::<LegacyAdminDemoState>(bytes).map_err(|legacy_err| {
+                    format!("parse demo state: {primary_err}; legacy parse failed: {legacy_err}")
+                })?;
             migrate_legacy_admin_demo_state(legacy)
         }
     }
 }
 
-fn active_members_from_leaf_slots(leaf_slots: &[Option<AdminDemoLeafSlot>]) -> Vec<AdminDemoMember> {
+fn active_members_from_leaf_slots(
+    leaf_slots: &[Option<AdminDemoLeafSlot>],
+) -> Vec<AdminDemoMember> {
     let mut members = Vec::new();
     for (leaf_index, slot) in leaf_slots.iter().enumerate() {
         if let Some(slot) = slot {
@@ -3572,22 +3578,31 @@ fn find_leaf_index_for_username(
     leaf_slots: &[Option<AdminDemoLeafSlot>],
     username: &str,
 ) -> Option<usize> {
-    leaf_slots.iter().enumerate().find_map(|(leaf_index, slot)| {
-        slot.as_ref().and_then(|slot| {
-            if slot.username == username {
-                Some(leaf_index)
-            } else {
-                None
-            }
+    leaf_slots
+        .iter()
+        .enumerate()
+        .find_map(|(leaf_index, slot)| {
+            slot.as_ref().and_then(|slot| {
+                if slot.username == username {
+                    Some(leaf_index)
+                } else {
+                    None
+                }
+            })
         })
-    })
 }
 
 fn first_blank_demo_leaf_index(leaf_slots: &[Option<AdminDemoLeafSlot>]) -> Option<usize> {
     leaf_slots
         .iter()
         .enumerate()
-        .find_map(|(leaf_index, slot)| if slot.is_none() { Some(leaf_index) } else { None })
+        .find_map(|(leaf_index, slot)| {
+            if slot.is_none() {
+                Some(leaf_index)
+            } else {
+                None
+            }
+        })
 }
 
 fn active_member_count(leaf_slots: &[Option<AdminDemoLeafSlot>]) -> usize {
@@ -3680,10 +3695,7 @@ fn append_demo_log_block(demo_state: &mut AdminDemoState, lines: Vec<String>) {
 fn load_admin_demo_state(state: &UiState, demo_id: &str) -> Result<AdminDemoState, String> {
     let path = admin_demo_state_path(&state.state_dir, demo_id);
     if !path.exists() {
-        return Err(format!(
-            "demo state missing at {}",
-            path.to_string_lossy()
-        ));
+        return Err(format!("demo state missing at {}", path.to_string_lossy()));
     }
     let bytes = fs::read(&path).map_err(|err| format!("read demo state: {err}"))?;
     decode_admin_demo_state(&bytes)
@@ -3701,7 +3713,11 @@ fn save_admin_demo_state(
     fs::write(path, bytes).map_err(|err| format!("write demo state: {err}"))
 }
 
-fn touch_admin_demo_updated_at(state: &UiState, demo_id: &str, updated_at: i64) -> Result<(), String> {
+fn touch_admin_demo_updated_at(
+    state: &UiState,
+    demo_id: &str,
+    updated_at: i64,
+) -> Result<(), String> {
     let mut index = load_admin_demo_index(state)?;
     if let Some(item) = index.items.iter_mut().find(|item| item.id == demo_id) {
         item.updated_at = updated_at;
@@ -3917,7 +3933,10 @@ fn apply_admin_demo_remove_action(
     append_demo_log_block(
         &mut demo_state,
         vec![
-            format!("RFC9420 Proposal Remove: sender={} target={}", remover, removed),
+            format!(
+                "RFC9420 Proposal Remove: sender={} target={}",
+                remover, removed
+            ),
             format!(
                 "RFC9420 RatchetTree Remove: blanked LeafIndex={} (NodeIndex={}) for {}",
                 removed_leaf,
@@ -3952,7 +3971,8 @@ fn apply_admin_demo_update_action(
     }
     let mut demo_state = load_admin_demo_state(state, demo_id)?;
     let previous_epoch = demo_state.epoch;
-    let Some(updater_leaf_index) = find_leaf_index_for_username(&demo_state.leaf_slots, updater) else {
+    let Some(updater_leaf_index) = find_leaf_index_for_username(&demo_state.leaf_slots, updater)
+    else {
         return Err(format!("updater {} is not a member", updater));
     };
     let (previous_generation, new_generation) =
@@ -3966,10 +3986,7 @@ fn apply_admin_demo_update_action(
         };
     demo_state.epoch = demo_state.epoch.saturating_add(1);
     let new_epoch = demo_state.epoch;
-    let action_line = format!(
-        "update: {} key_generation={}",
-        updater, new_generation
-    );
+    let action_line = format!("update: {} key_generation={}", updater, new_generation);
     demo_state.last_action = Some(action_line.clone());
     append_demo_log_block(
         &mut demo_state,
@@ -7158,7 +7175,9 @@ mod tests {
 
             let expected_root = root_index_for_range(0, leaf_count);
             assert!(
-                nodes.iter().any(|(node_index, _)| *node_index == expected_root),
+                nodes
+                    .iter()
+                    .any(|(node_index, _)| *node_index == expected_root),
                 "root NodeIndex {} missing for leaf_count {}",
                 expected_root,
                 leaf_count
@@ -7172,319 +7191,321 @@ mod tests {
     #[test]
     fn ui_add_member_flow_keeps_group_visible_after_relogin() {
         run_async_test_on_large_stack("ui-add-member-flow", async move {
-        let run_dir = test_run_dir("ui-gateway-e2e");
-        let ds_data_dir = run_dir.join("data");
-        let ds_db_path = run_dir.join("ds.sqlite");
-        fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+            let run_dir = test_run_dir("ui-gateway-e2e");
+            let ds_data_dir = run_dir.join("data");
+            let ds_db_path = run_dir.join("ds.sqlite");
+            fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
 
-        let mut ds_state = DsApiState::default();
-        ds_state.min_proposals_per_commit = 1;
-        ds_state.storage = StorageConfig::new(
-            ds_data_dir.to_string_lossy().as_ref(),
-            ds_db_path.to_string_lossy().as_ref(),
-        );
-        let ds_router = ds_http::router(ds_state);
-        let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+            let mut ds_state = DsApiState::default();
+            ds_state.min_proposals_per_commit = 1;
+            ds_state.storage = StorageConfig::new(
+                ds_data_dir.to_string_lossy().as_ref(),
+                ds_db_path.to_string_lossy().as_ref(),
+            );
+            let ds_router = ds_http::router(ds_state);
+            let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
 
-        let ui_state_dir = run_dir.join("ui-state");
-        fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
-        let ui_state = UiState {
-            base_url: ds_base_url.clone(),
-            state_dir: ui_state_dir.clone(),
-            client: Client::new(),
-        };
-        let ui_router = build_ui_router(ui_state.clone());
-        let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
+            let ui_state_dir = run_dir.join("ui-state");
+            fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+            let ui_state = UiState {
+                base_url: ds_base_url.clone(),
+                state_dir: ui_state_dir.clone(),
+                client: Client::new(),
+            };
+            let ui_router = build_ui_router(ui_state.clone());
+            let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
 
-        let client = test_client();
-        let group_id = "g-ui-test";
+            let client = test_client();
+            let group_id = "g-ui-test";
 
-        let register_a = post_json(
-            &client,
-            &format!("{}/ui/api/register", ui_base_url),
-            json!({
-                "username": "parsania",
-                "password": "1234"
-            }),
-        )
-        .await;
-        assert_eq!(register_a["ok"].as_bool(), Some(true));
+            let register_a = post_json(
+                &client,
+                &format!("{}/ui/api/register", ui_base_url),
+                json!({
+                    "username": "parsania",
+                    "password": "1234"
+                }),
+            )
+            .await;
+            assert_eq!(register_a["ok"].as_bool(), Some(true));
 
-        let register_b = post_json(
-            &client,
-            &format!("{}/ui/api/register", ui_base_url),
-            json!({
-                "username": "peyman",
-                "password": "1234"
-            }),
-        )
-        .await;
-        assert_eq!(register_b["ok"].as_bool(), Some(true));
+            let register_b = post_json(
+                &client,
+                &format!("{}/ui/api/register", ui_base_url),
+                json!({
+                    "username": "peyman",
+                    "password": "1234"
+                }),
+            )
+            .await;
+            assert_eq!(register_b["ok"].as_bool(), Some(true));
 
-        let open_group_a = post_json(
-            &client,
-            &format!("{}/ui/api/groups/open", ui_base_url),
-            json!({
-                "username": "parsania",
-                "group_id": group_id
-            }),
-        )
-        .await;
-        assert_eq!(open_group_a["ok"].as_bool(), Some(true));
+            let open_group_a = post_json(
+                &client,
+                &format!("{}/ui/api/groups/open", ui_base_url),
+                json!({
+                    "username": "parsania",
+                    "group_id": group_id
+                }),
+            )
+            .await;
+            assert_eq!(open_group_a["ok"].as_bool(), Some(true));
 
-        let bootstrap_a = post_json(
-            &client,
-            &format!("{}/ui/api/groups/{}/bootstrap", ui_base_url, group_id),
-            json!({
-                "username": "parsania"
-            }),
-        )
-        .await;
-        assert_eq!(bootstrap_a["ok"].as_bool(), Some(true));
+            let bootstrap_a = post_json(
+                &client,
+                &format!("{}/ui/api/groups/{}/bootstrap", ui_base_url, group_id),
+                json!({
+                    "username": "parsania"
+                }),
+            )
+            .await;
+            assert_eq!(bootstrap_a["ok"].as_bool(), Some(true));
 
-        let b_keygen = post_json(
-            &client,
-            &format!("{}/ui/api/keypackages/generate", ui_base_url),
-            json!({
-                "username": "peyman"
-            }),
-        )
-        .await;
-        assert_eq!(b_keygen["ok"].as_bool(), Some(true));
-        let receiver_private_path = b_keygen["data"]["receiver_private_path"]
-            .as_str()
-            .expect("receiver path")
-            .to_string();
+            let b_keygen = post_json(
+                &client,
+                &format!("{}/ui/api/keypackages/generate", ui_base_url),
+                json!({
+                    "username": "peyman"
+                }),
+            )
+            .await;
+            assert_eq!(b_keygen["ok"].as_bool(), Some(true));
+            let receiver_private_path = b_keygen["data"]["receiver_private_path"]
+                .as_str()
+                .expect("receiver path")
+                .to_string();
 
-        let fetch_b_keypackage = get_json(
-            &client,
-            &format!(
-                "{}/ui/api/keypackages/peyman?username=parsania",
-                ui_base_url
-            ),
-        )
-        .await;
-        assert_eq!(fetch_b_keypackage["ok"].as_bool(), Some(true));
-        let b_keypackage_b64 = fetch_b_keypackage["data"]["keypackage_bytes"]
-            .as_str()
-            .expect("b keypackage")
-            .to_string();
+            let fetch_b_keypackage = get_json(
+                &client,
+                &format!(
+                    "{}/ui/api/keypackages/peyman?username=parsania",
+                    ui_base_url
+                ),
+            )
+            .await;
+            assert_eq!(fetch_b_keypackage["ok"].as_bool(), Some(true));
+            let b_keypackage_b64 = fetch_b_keypackage["data"]["keypackage_bytes"]
+                .as_str()
+                .expect("b keypackage")
+                .to_string();
 
-        let add_proposal = post_json(
-            &client,
-            &format!("{}/ui/api/groups/{}/actions/add", ui_base_url, group_id),
-            json!({
-                "username": "parsania",
-                "target_username": "peyman",
-                "keypackage_b64": b_keypackage_b64,
-                "sender_leaf": null,
-                "submit": true
-            }),
-        )
-        .await;
-        assert_eq!(add_proposal["ok"].as_bool(), Some(true));
+            let add_proposal = post_json(
+                &client,
+                &format!("{}/ui/api/groups/{}/actions/add", ui_base_url, group_id),
+                json!({
+                    "username": "parsania",
+                    "target_username": "peyman",
+                    "keypackage_b64": b_keypackage_b64,
+                    "sender_leaf": null,
+                    "submit": true
+                }),
+            )
+            .await;
+            assert_eq!(add_proposal["ok"].as_bool(), Some(true));
 
-        let commit = post_json(
-            &client,
-            &format!(
-                "{}/ui/api/groups/{}/commit-from-pending",
-                ui_base_url, group_id
-            ),
-            json!({
-                "username": "parsania",
-                "sender_leaf": null
-            }),
-        )
-        .await;
-        assert_eq!(commit["ok"].as_bool(), Some(true));
+            let commit = post_json(
+                &client,
+                &format!(
+                    "{}/ui/api/groups/{}/commit-from-pending",
+                    ui_base_url, group_id
+                ),
+                json!({
+                    "username": "parsania",
+                    "sender_leaf": null
+                }),
+            )
+            .await;
+            assert_eq!(commit["ok"].as_bool(), Some(true));
 
-        let join_b = post_json(
-            &client,
-            &format!(
-                "{}/ui/api/groups/{}/join-from-latest",
-                ui_base_url, group_id
-            ),
-            json!({
-                "username": "peyman",
-                "base_member_usernames": ["parsania"],
-                "limit": 50,
-                "receiver_private_path": receiver_private_path
-            }),
-        )
-        .await;
-        assert_eq!(
-            join_b["ok"].as_bool(),
-            Some(true),
-            "join response: {}",
-            join_b
-        );
-        assert!(join_b["data"]["joined"].as_bool().expect("joined flag"));
-        assert!(
-            join_b["data"]["applied_after_join"]
-                .as_u64()
-                .expect("applied count")
-                <= 1
-        );
+            let join_b = post_json(
+                &client,
+                &format!(
+                    "{}/ui/api/groups/{}/join-from-latest",
+                    ui_base_url, group_id
+                ),
+                json!({
+                    "username": "peyman",
+                    "base_member_usernames": ["parsania"],
+                    "limit": 50,
+                    "receiver_private_path": receiver_private_path
+                }),
+            )
+            .await;
+            assert_eq!(
+                join_b["ok"].as_bool(),
+                Some(true),
+                "join response: {}",
+                join_b
+            );
+            assert!(join_b["data"]["joined"].as_bool().expect("joined flag"));
+            assert!(
+                join_b["data"]["applied_after_join"]
+                    .as_u64()
+                    .expect("applied count")
+                    <= 1
+            );
 
-        let b_groups = get_json(
-            &client,
-            &format!("{}/ui/api/groups?username=peyman", ui_base_url),
-        )
-        .await;
-        assert_eq!(b_groups["ok"].as_bool(), Some(true));
-        let groups = b_groups["data"]["groups"].as_array().expect("groups array");
-        assert!(groups.iter().any(|g| g.as_str() == Some(group_id)));
+            let b_groups = get_json(
+                &client,
+                &format!("{}/ui/api/groups?username=peyman", ui_base_url),
+            )
+            .await;
+            assert_eq!(b_groups["ok"].as_bool(), Some(true));
+            let groups = b_groups["data"]["groups"].as_array().expect("groups array");
+            assert!(groups.iter().any(|g| g.as_str() == Some(group_id)));
 
-        let logout_b = post_json(
-            &client,
-            &format!("{}/ui/api/logout", ui_base_url),
-            json!({
-                "username": "peyman"
-            }),
-        )
-        .await;
-        assert_eq!(logout_b["ok"].as_bool(), Some(true));
+            let logout_b = post_json(
+                &client,
+                &format!("{}/ui/api/logout", ui_base_url),
+                json!({
+                    "username": "peyman"
+                }),
+            )
+            .await;
+            assert_eq!(logout_b["ok"].as_bool(), Some(true));
 
-        let login_b = post_json(
-            &client,
-            &format!("{}/ui/api/login", ui_base_url),
-            json!({
-                "username": "peyman",
-                "password": "1234"
-            }),
-        )
-        .await;
-        assert_eq!(login_b["ok"].as_bool(), Some(true));
+            let login_b = post_json(
+                &client,
+                &format!("{}/ui/api/login", ui_base_url),
+                json!({
+                    "username": "peyman",
+                    "password": "1234"
+                }),
+            )
+            .await;
+            assert_eq!(login_b["ok"].as_bool(), Some(true));
 
-        let b_groups_after_login = get_json(
-            &client,
-            &format!("{}/ui/api/groups?username=peyman", ui_base_url),
-        )
-        .await;
-        assert_eq!(b_groups_after_login["ok"].as_bool(), Some(true));
-        let groups_after_login = b_groups_after_login["data"]["groups"]
-            .as_array()
-            .expect("groups array after login");
-        assert!(groups_after_login
-            .iter()
-            .any(|g| g.as_str() == Some(group_id)));
+            let b_groups_after_login = get_json(
+                &client,
+                &format!("{}/ui/api/groups?username=peyman", ui_base_url),
+            )
+            .await;
+            assert_eq!(b_groups_after_login["ok"].as_bool(), Some(true));
+            let groups_after_login = b_groups_after_login["data"]["groups"]
+                .as_array()
+                .expect("groups array after login");
+            assert!(groups_after_login
+                .iter()
+                .any(|g| g.as_str() == Some(group_id)));
 
-        ui_handle.abort();
-        ds_handle.abort();
-        let _ = fs::remove_dir_all(&run_dir);
+            ui_handle.abort();
+            ds_handle.abort();
+            let _ = fs::remove_dir_all(&run_dir);
         });
     }
 
     #[test]
     fn ui_admin_login_and_global_lists() {
         run_async_test_on_large_stack("ui-admin-flow", async move {
-        let run_dir = test_run_dir("ui-admin");
-        let ds_data_dir = run_dir.join("data");
-        let ds_db_path = run_dir.join("ds.sqlite");
-        fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
+            let run_dir = test_run_dir("ui-admin");
+            let ds_data_dir = run_dir.join("data");
+            let ds_db_path = run_dir.join("ds.sqlite");
+            fs::create_dir_all(&ds_data_dir).expect("create ds data dir");
 
-        let mut ds_state = DsApiState::default();
-        ds_state.min_proposals_per_commit = 1;
-        ds_state.storage = StorageConfig::new(
-            ds_data_dir.to_string_lossy().as_ref(),
-            ds_db_path.to_string_lossy().as_ref(),
-        );
-        let ds_router = ds_http::router(ds_state);
-        let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
+            let mut ds_state = DsApiState::default();
+            ds_state.min_proposals_per_commit = 1;
+            ds_state.storage = StorageConfig::new(
+                ds_data_dir.to_string_lossy().as_ref(),
+                ds_db_path.to_string_lossy().as_ref(),
+            );
+            let ds_router = ds_http::router(ds_state);
+            let (ds_base_url, ds_handle) = spawn_router(ds_router).await;
 
-        let ui_state_dir = run_dir.join("ui-state");
-        fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
-        let ui_state = UiState {
-            base_url: ds_base_url.clone(),
-            state_dir: ui_state_dir.clone(),
-            client: Client::new(),
-        };
-        let ui_router = build_ui_router(ui_state.clone());
-        let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
+            let ui_state_dir = run_dir.join("ui-state");
+            fs::create_dir_all(&ui_state_dir).expect("create ui state dir");
+            let ui_state = UiState {
+                base_url: ds_base_url.clone(),
+                state_dir: ui_state_dir.clone(),
+                client: Client::new(),
+            };
+            let ui_router = build_ui_router(ui_state.clone());
+            let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
 
-        let client = test_client();
-        let group_id = "admin-visible";
+            let client = test_client();
+            let group_id = "admin-visible";
 
-        let register = post_json(
-            &client,
-            &format!("{}/ui/api/register", ui_base_url),
-            json!({
-                "username": "parsania",
-                "password": "1234"
-            }),
-        )
-        .await;
-        assert_eq!(register["ok"].as_bool(), Some(true));
+            let register = post_json(
+                &client,
+                &format!("{}/ui/api/register", ui_base_url),
+                json!({
+                    "username": "parsania",
+                    "password": "1234"
+                }),
+            )
+            .await;
+            assert_eq!(register["ok"].as_bool(), Some(true));
 
-        let open_group = post_json(
-            &client,
-            &format!("{}/ui/api/groups/open", ui_base_url),
-            json!({
-                "username": "parsania",
-                "group_id": group_id
-            }),
-        )
-        .await;
-        assert_eq!(open_group["ok"].as_bool(), Some(true));
+            let open_group = post_json(
+                &client,
+                &format!("{}/ui/api/groups/open", ui_base_url),
+                json!({
+                    "username": "parsania",
+                    "group_id": group_id
+                }),
+            )
+            .await;
+            assert_eq!(open_group["ok"].as_bool(), Some(true));
 
-        let bootstrap = post_json(
-            &client,
-            &format!("{}/ui/api/groups/{}/bootstrap", ui_base_url, group_id),
-            json!({
-                "username": "parsania"
-            }),
-        )
-        .await;
-        assert_eq!(bootstrap["ok"].as_bool(), Some(true));
+            let bootstrap = post_json(
+                &client,
+                &format!("{}/ui/api/groups/{}/bootstrap", ui_base_url, group_id),
+                json!({
+                    "username": "parsania"
+                }),
+            )
+            .await;
+            assert_eq!(bootstrap["ok"].as_bool(), Some(true));
 
-        let send_message = post_json(
-            &client,
-            &format!("{}/ui/api/groups/{}/app-messages", ui_base_url, group_id),
-            json!({
-                "username": "parsania",
-                "message": "hello from parsania"
-            }),
-        )
-        .await;
-        assert_eq!(send_message["ok"].as_bool(), Some(true));
+            let send_message = post_json(
+                &client,
+                &format!("{}/ui/api/groups/{}/app-messages", ui_base_url, group_id),
+                json!({
+                    "username": "parsania",
+                    "message": "hello from parsania"
+                }),
+            )
+            .await;
+            assert_eq!(send_message["ok"].as_bool(), Some(true));
 
-        let admin_login = post_json(
-            &client,
-            &format!("{}/ui/api/login", ui_base_url),
-            json!({
-                "username": "admin",
-                "password": "admin@123"
-            }),
-        )
-        .await;
-        assert_eq!(admin_login["ok"].as_bool(), Some(true));
+            let admin_login = post_json(
+                &client,
+                &format!("{}/ui/api/login", ui_base_url),
+                json!({
+                    "username": "admin",
+                    "password": "admin@123"
+                }),
+            )
+            .await;
+            assert_eq!(admin_login["ok"].as_bool(), Some(true));
 
-        let admin_users = get_json(
-            &client,
-            &format!("{}/ui/api/admin/users?username=admin", ui_base_url),
-        )
-        .await;
-        assert_eq!(admin_users["ok"].as_bool(), Some(true));
-        let users = admin_users["data"]["users"].as_array().expect("users array");
-        assert!(users.iter().any(|u| u.as_str() == Some("admin")));
-        assert!(users.iter().any(|u| u.as_str() == Some("parsania")));
+            let admin_users = get_json(
+                &client,
+                &format!("{}/ui/api/admin/users?username=admin", ui_base_url),
+            )
+            .await;
+            assert_eq!(admin_users["ok"].as_bool(), Some(true));
+            let users = admin_users["data"]["users"]
+                .as_array()
+                .expect("users array");
+            assert!(users.iter().any(|u| u.as_str() == Some("admin")));
+            assert!(users.iter().any(|u| u.as_str() == Some("parsania")));
 
-        let admin_groups = get_json(
-            &client,
-            &format!("{}/ui/api/admin/groups?username=admin", ui_base_url),
-        )
-        .await;
-        assert_eq!(admin_groups["ok"].as_bool(), Some(true));
-        let groups = admin_groups["data"]["groups"]
-            .as_array()
-            .expect("groups array");
-        assert!(groups.iter().any(|g| {
-            g.get("group_id").and_then(|x| x.as_str()) == Some(group_id)
-        }));
+            let admin_groups = get_json(
+                &client,
+                &format!("{}/ui/api/admin/groups?username=admin", ui_base_url),
+            )
+            .await;
+            assert_eq!(admin_groups["ok"].as_bool(), Some(true));
+            let groups = admin_groups["data"]["groups"]
+                .as_array()
+                .expect("groups array");
+            assert!(groups
+                .iter()
+                .any(|g| { g.get("group_id").and_then(|x| x.as_str()) == Some(group_id) }));
 
-        ui_handle.abort();
-        ds_handle.abort();
-        let _ = fs::remove_dir_all(&run_dir);
+            ui_handle.abort();
+            ds_handle.abort();
+            let _ = fs::remove_dir_all(&run_dir);
         });
     }
 
@@ -7516,7 +7537,8 @@ mod tests {
             let (ui_base_url, ui_handle) = spawn_router(ui_router).await;
 
             let bootstrap_client = test_client();
-            let login_page = get_text(&bootstrap_client, &format!("{}/ui/login", ui_base_url)).await;
+            let login_page =
+                get_text(&bootstrap_client, &format!("{}/ui/login", ui_base_url)).await;
             assert!(
                 login_page.contains("username === 'admin' ? '/ui/admin' : '/ui/groups'"),
                 "login UI should route admin users to /ui/admin"
@@ -7679,10 +7701,7 @@ mod tests {
 
             let add_action = post_json(
                 &client,
-                &format!(
-                    "{}/ui/api/admin/demos/{}/actions/add",
-                    ui_base_url, demo_id
-                ),
+                &format!("{}/ui/api/admin/demos/{}/actions/add", ui_base_url, demo_id),
                 json!({
                     "username": "admin",
                     "adder": "A",
@@ -7913,7 +7932,10 @@ mod tests {
 
             let update_a = post_json(
                 &client,
-                &format!("{}/ui/api/admin/demos/{}/actions/update", ui_base_url, demo_id),
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/update",
+                    ui_base_url, demo_id
+                ),
                 json!({
                     "username": "admin",
                     "updater": "A"
@@ -7934,7 +7956,10 @@ mod tests {
                 ),
                 "expected A migrated at leaf 0 with incremented key_generation"
             );
-            assert!(new_state.leaf_slots[1].is_none(), "expected blank leaf slot 1");
+            assert!(
+                new_state.leaf_slots[1].is_none(),
+                "expected blank leaf slot 1"
+            );
             assert!(
                 matches!(
                     new_state.leaf_slots[2].as_ref(),
@@ -8029,7 +8054,10 @@ mod tests {
 
             let remove_b = post_json(
                 &client,
-                &format!("{}/ui/api/admin/demos/{}/actions/remove", ui_base_url, demo_id),
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/remove",
+                    ui_base_url, demo_id
+                ),
                 json!({
                     "username": "admin",
                     "remover": "A",
@@ -8146,7 +8174,10 @@ mod tests {
 
             let remove_c = post_json(
                 &client,
-                &format!("{}/ui/api/admin/demos/{}/actions/remove", ui_base_url, demo_id),
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/remove",
+                    ui_base_url, demo_id
+                ),
                 json!({
                     "username": "admin",
                     "remover": "A",
@@ -8166,7 +8197,9 @@ mod tests {
             .await;
             assert_eq!(detail_before["ok"].as_bool(), Some(true));
             assert_eq!(detail_before["data"]["leaf_count"].as_u64(), Some(4));
-            let before_members = detail_before["data"]["members"].as_array().expect("members");
+            let before_members = detail_before["data"]["members"]
+                .as_array()
+                .expect("members");
             assert!(before_members.iter().any(|m| {
                 m.get("username").and_then(|v| v.as_str()) == Some("D")
                     && m.get("leaf_index").and_then(|v| v.as_u64()) == Some(3)
@@ -8305,7 +8338,10 @@ mod tests {
 
             let remove_d = post_json(
                 &client,
-                &format!("{}/ui/api/admin/demos/{}/actions/remove", ui_base_url, demo_id),
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/remove",
+                    ui_base_url, demo_id
+                ),
                 json!({
                     "username": "admin",
                     "remover": "A",
@@ -8456,7 +8492,10 @@ mod tests {
 
             let update_b = post_json(
                 &client,
-                &format!("{}/ui/api/admin/demos/{}/actions/update", ui_base_url, demo_id),
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/update",
+                    ui_base_url, demo_id
+                ),
                 json!({
                     "username": "admin",
                     "updater": "B"
@@ -8489,7 +8528,10 @@ mod tests {
 
             let remove_c = post_json(
                 &client,
-                &format!("{}/ui/api/admin/demos/{}/actions/remove", ui_base_url, demo_id),
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/remove",
+                    ui_base_url, demo_id
+                ),
                 json!({
                     "username": "admin",
                     "remover": "A",
@@ -8523,7 +8565,10 @@ mod tests {
 
             let update_d = post_json(
                 &client,
-                &format!("{}/ui/api/admin/demos/{}/actions/update", ui_base_url, demo_id),
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/update",
+                    ui_base_url, demo_id
+                ),
                 json!({
                     "username": "admin",
                     "updater": "D"
@@ -8588,12 +8633,16 @@ mod tests {
                 "Add must reuse the first blank leaf to preserve topology width"
             );
 
-            let logs = after_add_e["data"]["logs"].as_array().expect("logs after add E");
+            let logs = after_add_e["data"]["logs"]
+                .as_array()
+                .expect("logs after add E");
             assert!(logs.iter().any(|entry| {
                 entry
                     .get("line")
                     .and_then(|v| v.as_str())
-                    .map(|line| line.contains("RFC9420 Path Update: D at LeafIndex=3 (NodeIndex=6)"))
+                    .map(|line| {
+                        line.contains("RFC9420 Path Update: D at LeafIndex=3 (NodeIndex=6)")
+                    })
                     .unwrap_or(false)
             }));
             assert!(logs.iter().any(|entry| {
@@ -8680,7 +8729,10 @@ mod tests {
 
             let remove_c = post_json(
                 &client,
-                &format!("{}/ui/api/admin/demos/{}/actions/remove", ui_base_url, demo_id),
+                &format!(
+                    "{}/ui/api/admin/demos/{}/actions/remove",
+                    ui_base_url, demo_id
+                ),
                 json!({
                     "username": "admin",
                     "remover": "A",
@@ -8728,7 +8780,8 @@ mod tests {
             .await;
             assert!(demo_page.contains("demo-tree-legend"));
             assert!(demo_page.contains("blank leaves are labeled `blank`"));
-            assert!(demo_page.contains("const isRoot = Number(node.node_index) === Number(rootNodeIndex);"));
+            assert!(demo_page
+                .contains("const isRoot = Number(node.node_index) === Number(rootNodeIndex);"));
             assert!(demo_page.contains("const userLabel = isBlank ? 'blank'"));
             assert!(demo_page.contains("root N${rootNodeIndex}"));
 
@@ -8883,7 +8936,10 @@ mod tests {
             )
             .await;
             assert_eq!(detail_demo_1_after_reload["ok"].as_bool(), Some(true));
-            assert_eq!(detail_demo_1_after_reload["data"]["epoch"].as_u64(), Some(1));
+            assert_eq!(
+                detail_demo_1_after_reload["data"]["epoch"].as_u64(),
+                Some(1)
+            );
             let demo_1_members_after = detail_demo_1_after_reload["data"]["members"]
                 .as_array()
                 .expect("demo1 members after reload");
@@ -8934,11 +8990,10 @@ mod tests {
                 .expect("demo2 members");
             assert_eq!(demo_2_members.len(), 1);
             assert_eq!(demo_2_members[0]["username"].as_str(), Some("A"));
-            let demo_2_logs = detail_demo_2["data"]["logs"].as_array().expect("demo2 logs");
-            assert!(
-                demo_2_logs.len() >= 2,
-                "expected initial logs for new demo"
-            );
+            let demo_2_logs = detail_demo_2["data"]["logs"]
+                .as_array()
+                .expect("demo2 logs");
+            assert!(demo_2_logs.len() >= 2, "expected initial logs for new demo");
             assert!(
                 demo_2_logs.iter().all(|entry| {
                     entry

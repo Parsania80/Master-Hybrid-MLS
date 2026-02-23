@@ -134,7 +134,10 @@ pub struct DirectPathSecretModel {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DirectPathSecretModelError {
     SenderOutOfBounds,
-    PathLengthMismatch { expected: usize, actual: usize },
+    PathLengthMismatch {
+        expected: usize,
+        actual: usize,
+    },
     ParentNodeMismatch {
         level: usize,
         expected: usize,
@@ -150,7 +153,9 @@ pub enum DirectPathSecretModelError {
         expected: u32,
         actual: u32,
     },
-    NodeSecretMismatch { level: usize },
+    NodeSecretMismatch {
+        level: usize,
+    },
 }
 
 impl DirectPathSecretModel {
@@ -180,10 +185,7 @@ impl DirectPathSecretModel {
     }
 
     /// Validate structural and ordering invariants against a specific tree snapshot.
-    pub fn validate_for_tree(
-        &self,
-        tree: &RatchetTree,
-    ) -> Result<(), DirectPathSecretModelError> {
+    pub fn validate_for_tree(&self, tree: &RatchetTree) -> Result<(), DirectPathSecretModelError> {
         if self.sender_leaf >= tree.leaf_count() {
             return Err(DirectPathSecretModelError::SenderOutOfBounds);
         }
@@ -224,11 +226,8 @@ impl DirectPathSecretModel {
                     actual: level.level_from_leaf,
                 });
             }
-            let expected_node_secret = derive_node_secret(
-                &level.path_secret,
-                level.parent_node,
-                level.level_from_leaf,
-            );
+            let expected_node_secret =
+                derive_node_secret(&level.path_secret, level.parent_node, level.level_from_leaf);
             if level.node_secret != expected_node_secret {
                 return Err(DirectPathSecretModelError::NodeSecretMismatch { level: idx });
             }
@@ -995,9 +994,7 @@ impl RatchetTree {
             }
         }
 
-        let start_index = decrypted_at_level
-            .iter()
-            .rposition(|s| s.is_some())?;
+        let start_index = decrypted_at_level.iter().rposition(|s| s.is_some())?;
         let mut secrets = vec![None; path.len()];
         let mut current = decrypted_at_level[start_index]?;
         secrets[start_index] = Some(current);
@@ -2305,7 +2302,8 @@ mod tests {
             };
             (kp, priv_key)
         };
-        tree.update_leaf(2, &receiver_kp).expect("receiver leaf update");
+        tree.update_leaf(2, &receiver_kp)
+            .expect("receiver leaf update");
 
         let mut tree_after = tree.clone();
         let sender_update_kp = make_key_package(50);
@@ -2345,7 +2343,10 @@ mod tests {
 
         let encoded = path_update.encode();
         let mut decoded = PathUpdate::decode(&encoded).expect("decode");
-        assert!(decoded.path_secrets.is_empty(), "encoded path omits path_secrets");
+        assert!(
+            decoded.path_secrets.is_empty(),
+            "encoded path omits path_secrets"
+        );
         let _ = decoded.ciphertexts[mismatch_level].pop();
 
         let result = tree.apply_commit_with_path_update(&commit, &decoded, 2, &receiver_priv);
@@ -2388,7 +2389,10 @@ mod tests {
             .expect("path update");
         let encoded = path_update.encode();
         let decoded = PathUpdate::decode(&encoded).expect("decode");
-        assert!(decoded.path_secrets.is_empty(), "encoded path omits path_secrets");
+        assert!(
+            decoded.path_secrets.is_empty(),
+            "encoded path omits path_secrets"
+        );
 
         let result = tree.apply_commit_with_path_update(&commit, &decoded, 1, &bob_priv);
         assert!(result.is_none());
@@ -3253,9 +3257,7 @@ mod tests {
         ]);
 
         let direct = tree.direct_path(0).expect("direct path");
-        let filtered = tree
-            .filtered_direct_path(0)
-            .expect("filtered direct path");
+        let filtered = tree.filtered_direct_path(0).expect("filtered direct path");
         assert_eq!(filtered, direct);
 
         tree.nodes[RatchetTree::leaf_to_node_index(1)] = Node::Blank;
@@ -3286,11 +3288,8 @@ mod tests {
         assert_eq!(model.levels_root_to_leaf[0].level_from_leaf, 1);
         assert_eq!(model.levels_root_to_leaf[1].level_from_leaf, 0);
         for level in &model.levels_root_to_leaf {
-            let expected = derive_node_secret(
-                &level.path_secret,
-                level.parent_node,
-                level.level_from_leaf,
-            );
+            let expected =
+                derive_node_secret(&level.path_secret, level.parent_node, level.level_from_leaf);
             assert_eq!(level.node_secret, expected);
         }
     }

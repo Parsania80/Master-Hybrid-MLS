@@ -34,12 +34,12 @@ fn vector_manifest_sha3_matches_all_fixtures() {
         let bytes = fs::read(vectors_dir.join(filename))
             .unwrap_or_else(|e| panic!("read fixture {filename}: {e}"));
         let actual = sha3_hex(&bytes);
-        assert_eq!(
-            actual, expected,
-            "fixture hash mismatch for {filename}"
-        );
+        assert_eq!(actual, expected, "fixture hash mismatch for {filename}");
         validated += 1;
     }
 
-    assert!(validated > 0, "manifest should validate at least one fixture");
+    assert!(
+        validated > 0,
+        "manifest should validate at least one fixture"
+    );
 }

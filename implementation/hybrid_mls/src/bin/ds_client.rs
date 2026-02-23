@@ -33,9 +33,7 @@ use hybrid_mls::crypto::{
 use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
 use hybrid_mls::key_schedule::tree_snapshot_hash;
 use hybrid_mls::transcript::{derive_confirmation_tag, verify_confirmation_tag};
-use hybrid_mls::tree::{
-    Commit, KeyPackage, LeafNode, Node, PathUpdate, Proposal, RatchetTree,
-};
+use hybrid_mls::tree::{Commit, KeyPackage, LeafNode, Node, PathUpdate, Proposal, RatchetTree};
 use hybrid_mls::welcome::{EncryptedGroupSecrets, GroupInfo, GroupSecrets, Welcome};
 
 #[derive(Parser, Debug)]
