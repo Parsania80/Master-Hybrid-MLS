@@ -487,5 +487,12 @@ Sync notes:
 - If `--receiver-private-file` is provided, path updates are consumed and derived secrets can be exported via `--derived-out`.
 - `--watch` enables continuous polling; use `--poll-interval-ms` and optional `--max-polls` to control loop behavior.
 - `show-derived-secrets` is debug-only and intentionally exposes secret material; use only in local test/demo environments.
+- Protocol flow documentation templates now live under `protocl-actions/`:
+  - `protocl-actions/protocl-style.md` (template)
+  - `protocl-actions/create-group-protocol.md` (code+RFC mapped example with explicit gap flags)
+- Protocol flow template now enforces a `Math Action` column in flow tables so each cryptographic/state step shows its equation/primitive inputs.
+- `create-group-protocol.md` now includes explicit math for state init, tree indexing, tree hash, init secret, full epoch-0 chain (`commit/joiner/welcome/epoch/root`), and derived stage/app secrets.
+- TreeKEM lineage gap is now explicitly tracked in roadmap `Part 12`: current code derives/encrypts path secrets, but parent path public keys are still generated randomly in commit build path instead of being fully node-secret-derived end-to-end.
+- `PROJECT.md` now includes a dedicated RFC 9420 alignment workstream to migrate sender/receiver commit-path logic to explicit `leaf_secret -> path_secret -> node_secret -> parent_key` lineage with deterministic vectors and DS-backed negatives.
 
-Last updated: 2026-02-21 20:58
+Last updated: 2026-02-23 21:19
