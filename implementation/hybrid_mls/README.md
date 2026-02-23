@@ -50,6 +50,9 @@ This repository implements a Hybrid Messaging Layer Security (MLS) protocol in R
 - Admin UI page access is now server-guarded: `/ui/admin` and `/ui/admin/demos/:id` require an active admin UI session (cookie + local session state), and non-admin access redirects to `/ui/login`.
 - Login UX now routes admin users directly to `/ui/admin` (non-admin users continue to `/ui/groups`).
 - Admin demo tree visualization is now significantly enlarged for readability: the demo page uses a wider panel, a right-heavy 3x-style layout ratio, larger node circles/fonts, and taller tree canvas spacing so `LeafIndex`/`NodeIndex` labels are easy to read.
+- Q/A coverage in `QUESTIONS.md` now explicitly documents client-side group state fields, DS persisted data model, and admin-demo Add semantics (simulation vs real DS user creation), with code pointers.
+- Client-state example snapshots for `ratchet_tree`, `group_context_extensions`, `key_schedule`, and `transcript_state` are now documented in assistant guidance with direct struct references for inspection (`src/client_state.rs`, `src/tree.rs`, `src/key_schedule.rs`, `src/transcript.rs`).
+- Assistant guidance now also includes code-level flow notes for: why `ParentNode.parent_hash` exists, where root/epoch secrets are derived in key schedule, and how Add + PathUpdate changes tree keys and receiver-derived path secrets.
 - Tree helper alignment fix: `RatchetTree::direct_path`, `copath`, and `filtered_direct_path` now expose leaf-to-root ordering (matching RFC direct-path semantics), with regression tests in `src/tree.rs`.
 - Warning debt cleanup: removed dead code `not_implemented` helper in `src/ds/http.rs`; `cargo check` now runs clean with no warnings.
 
@@ -485,4 +488,4 @@ Sync notes:
 - `--watch` enables continuous polling; use `--poll-interval-ms` and optional `--max-polls` to control loop behavior.
 - `show-derived-secrets` is debug-only and intentionally exposes secret material; use only in local test/demo environments.
 
-Last updated: 2026-02-19 21:17
+Last updated: 2026-02-21 20:58
