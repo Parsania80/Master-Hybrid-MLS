@@ -103,11 +103,11 @@ impl ClientGroupState {
 
     pub fn set_epoch(&mut self, epoch: u64) {
         self.epoch = epoch;
-        self.sync_key_schedule_epoch(None);
+        self.sync_key_schedule_epoch(None, None);
     }
 
     pub fn advance_epoch_with_context(&mut self, commit_context: Option<&[u8]>) {
-        self.advance_epoch_with_context_and_confirmation(commit_context, None);
+        self.advance_epoch_internal(commit_context, None, None);
     }
 
     pub fn advance_epoch_with_context_and_confirmation(
@@ -115,12 +115,29 @@ impl ClientGroupState {
         commit_context: Option<&[u8]>,
         confirmation_tag: Option<&[u8; 32]>,
     ) {
+        self.advance_epoch_internal(commit_context, confirmation_tag, None);
+    }
+
+    pub fn advance_epoch_with_context_and_tree_commit_secret(
+        &mut self,
+        commit_context: Option<&[u8]>,
+        tree_commit_secret: Option<[u8; 32]>,
+    ) {
+        self.advance_epoch_internal(commit_context, None, tree_commit_secret);
+    }
+
+    fn advance_epoch_internal(
+        &mut self,
+        commit_context: Option<&[u8]>,
+        confirmation_tag: Option<&[u8; 32]>,
+        tree_commit_secret: Option<[u8; 32]>,
+    ) {
         if let Some(context) = commit_context {
             let predicted_confirmed = self
                 .transcript_state
                 .predict_confirmed_after_commit(context);
             self.epoch = self.epoch.saturating_add(1);
-            self.sync_key_schedule_epoch(commit_context);
+            self.sync_key_schedule_epoch(commit_context, tree_commit_secret);
 
             let derived_tag = match confirmation_tag {
                 Some(tag) => Some(*tag),
@@ -137,7 +154,7 @@ impl ClientGroupState {
             return;
         }
         self.epoch = self.epoch.saturating_add(1);
-        self.sync_key_schedule_epoch(commit_context);
+        self.sync_key_schedule_epoch(commit_context, None);
     }
 
     pub fn current_epoch_derived_secrets(&self) -> Option<EpochDerivedSecrets> {
@@ -409,7 +426,7 @@ impl ClientGroupState {
                 return None;
             }
         } else {
-            decoded.sync_key_schedule_epoch(None);
+            decoded.sync_key_schedule_epoch(None, None);
         }
         if decoded.ensure_key_schedule_consistency().is_err() {
             return None;
@@ -431,17 +448,22 @@ impl ClientGroupState {
         Self::decode(&bytes).ok_or(ClientStateError::CorruptState)
     }
 
-    fn sync_key_schedule_epoch(&mut self, commit_context: Option<&[u8]>) {
+    fn sync_key_schedule_epoch(
+        &mut self,
+        commit_context: Option<&[u8]>,
+        tree_commit_secret: Option<[u8; 32]>,
+    ) {
         let tree_hash = current_tree_hash(&self.ratchet_tree);
         if self.key_schedule.current_epoch > self.epoch {
             self.key_schedule =
                 KeyScheduleState::bootstrap_to_epoch(&self.group_id, self.epoch, tree_hash);
         } else {
-            let _ = self.key_schedule.ensure_epoch(
+            let _ = self.key_schedule.ensure_epoch_with_tree_commit_secret(
                 self.epoch,
                 &self.group_id,
                 tree_hash,
                 commit_context,
+                tree_commit_secret.as_ref(),
             );
         }
     }
@@ -801,6 +823,33 @@ mod tests {
         assert_eq!(state.epoch, 1);
         assert_eq!(state.key_schedule.current_epoch, 1);
         assert_ne!(root0, root1);
+    }
+
+    #[test]
+    fn advance_epoch_with_tree_commit_secret_changes_key_schedule_chain() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(16)]);
+        let mut default_state = ClientGroupState::new("group-lineage-state", tree.clone(), 0);
+        let mut lineage_state = ClientGroupState::new("group-lineage-state", tree, 0);
+        let tree_commit_secret = [0x3Cu8; 32];
+
+        default_state.advance_epoch_with_context(Some(b"commit-lineage-1"));
+        lineage_state.advance_epoch_with_context_and_tree_commit_secret(
+            Some(b"commit-lineage-1"),
+            Some(tree_commit_secret),
+        );
+
+        let default_chain = default_state
+            .key_schedule
+            .chain_secrets_for_epoch(1)
+            .expect("default epoch 1 chain");
+        let lineage_chain = lineage_state
+            .key_schedule
+            .chain_secrets_for_epoch(1)
+            .expect("lineage epoch 1 chain");
+
+        assert_ne!(default_chain.commit_secret, lineage_chain.commit_secret);
+        assert_ne!(default_chain.joiner_secret, lineage_chain.joiner_secret);
+        assert_ne!(default_chain.root_secret, lineage_chain.root_secret);
     }
 
     #[test]

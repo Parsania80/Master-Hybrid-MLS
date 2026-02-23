@@ -504,5 +504,7 @@ Sync notes:
 - Added new regression test in `src/tree.rs` to assert malformed/tampered commit parent path keys are rejected under strict lineage validation.
 - Part 12 / Task 5 is complete: receiver-side encoded/partial path handling now enforces per-level ciphertext-width checks across the full direct path, multi-level decrypt/reconstruct cross-checks, and strict parent-key lineage validation when encoded payloads omit `path_secrets`.
 - Added DS-backed malformed encoded path-update stream negatives (`non-receiver level underflow/overflow`) in `tests/ds_fetch_apply_e2e.rs`, asserting strict receiver rejection with no epoch advance.
+- Part 12 / Task 6 is complete: key schedule transitions now accept TreeKEM lineage commit-secret input via `ensure_epoch_with_tree_commit_secret` (`src/key_schedule.rs`) and this is wired from sender/receiver/joiner commit-apply paths in `src/client_state.rs`, `src/bin/ds_client.rs`, and `src/bin/ds_ui_gateway.rs`.
+- Added lineage key-schedule tests in `src/key_schedule.rs` and `src/client_state.rs`, plus rebaselined deterministic welcome joiner-secret vector in `src/bin/ds_client.rs`.
 
-Last updated: 2026-02-23 22:48
+Last updated: 2026-02-23 23:10

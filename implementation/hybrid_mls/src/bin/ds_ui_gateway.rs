@@ -5730,13 +5730,15 @@ fn build_welcome_for_commit(
     let next_epoch = state.epoch.saturating_add(1);
     let commit_context = commit.encode();
     let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
+    let tree_commit_secret = path_update.path_secrets.first().copied();
 
     let mut key_schedule = state.key_schedule.clone();
-    let _ = key_schedule.ensure_epoch(
+    let _ = key_schedule.ensure_epoch_with_tree_commit_secret(
         next_epoch,
         &state.group_id,
         tree_hash,
         Some(&commit_context),
+        tree_commit_secret.as_ref(),
     );
     let chain = key_schedule
         .chain_secrets_for_epoch(next_epoch)
@@ -5892,7 +5894,10 @@ fn build_join_state_from_commit_material(
 
     group_state.clear_pending_proposals();
     let commit_context = commit.commit.encode();
-    group_state.advance_epoch_with_context(Some(&commit_context));
+    group_state.advance_epoch_with_context_and_tree_commit_secret(
+        Some(&commit_context),
+        derived.first().copied().flatten(),
+    );
     ensure_group_state_consistency(&group_state, "join-from-latest apply")?;
 
     Ok((group_state, derived))
@@ -6381,6 +6386,7 @@ async fn fetch_and_apply_latest_once(
             continue;
         }
 
+        let mut derived_for_commit: Option<Vec<Option<[u8; 32]>>> = None;
         if let Some(receiver_private) = receiver_private {
             let mut matched_path_update: Option<PathUpdateEnvelope> = None;
             let candidate_path_ids = candidate_path_update_ids(*commit_id, next_commit, &path_ids);
@@ -6410,7 +6416,7 @@ async fn fetch_and_apply_latest_once(
                     commit_id, commit_env.group_id, commit_env.epoch, commit_env.sender_leaf
                 )
             })?;
-            group_state
+            let derived = group_state
                 .ratchet_tree
                 .apply_commit_with_path_update(
                     &commit_env.commit,
@@ -6419,6 +6425,7 @@ async fn fetch_and_apply_latest_once(
                     receiver_private,
                 )
                 .ok_or_else(|| "failed to apply commit+path update during sync".to_string())?;
+            derived_for_commit = Some(derived);
         } else {
             group_state
                 .ratchet_tree
@@ -6428,7 +6435,13 @@ async fn fetch_and_apply_latest_once(
         group_state.apply_group_context_extensions_from_proposals(&commit_env.commit.proposals);
 
         group_state.clear_pending_proposals();
-        group_state.advance_epoch_with_context(Some(&commit_bytes));
+        let tree_commit_secret = derived_for_commit
+            .as_ref()
+            .and_then(|secrets| secrets.first().copied().flatten());
+        group_state.advance_epoch_with_context_and_tree_commit_secret(
+            Some(&commit_bytes),
+            tree_commit_secret,
+        );
         ensure_group_state_consistency(group_state, "sync-apply-latest commit apply")?;
         group_state.mark_applied_commit_id(*commit_id);
         applied = applied.saturating_add(1);
@@ -6452,6 +6465,7 @@ async fn action_commit_from_pending(
 
     let sender_leaf = resolve_sender_leaf(&group_state, payload.sender_leaf)?;
     let (commit, path_update) = build_commit_from_pending(&group_state, sender_leaf)?;
+    let tree_commit_secret = path_update.path_secrets.first().copied();
     let welcome = build_welcome_for_commit(&group_state, &commit, &path_update)?;
     let commit_envelope = CommitEnvelope {
         group_id: group_state.group_id.clone(),
@@ -6486,7 +6500,10 @@ async fn action_commit_from_pending(
         .ok_or_else(|| "failed to apply generated commit to local state".to_string())?;
     group_state.apply_group_context_extensions_from_proposals(&commit.proposals);
     group_state.clear_pending_proposals();
-    group_state.advance_epoch_with_context(Some(&commit_context));
+    group_state.advance_epoch_with_context_and_tree_commit_secret(
+        Some(&commit_context),
+        tree_commit_secret,
+    );
     ensure_group_state_consistency(&group_state, "commit-from-pending apply")?;
     save_group_state(state, &payload.username, group_id, &group_state)?;
     let _ = add_group(state, &payload.username, group_id);

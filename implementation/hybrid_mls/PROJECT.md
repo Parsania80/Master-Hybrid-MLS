@@ -151,12 +151,12 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 3 | Implement sender direct-path secret chain exactly from leaf secret to root | ✅ Done | Tightened sender semantics by adding explicit node-secret transform policy (`node_secret = KDF(path_secret, parent_node, level_from_leaf)`) and model validation checks in `src/tree.rs`, plus derivation/domain-separation tests. |
 | 4 | Bind Commit `path` parent public keys to derived node secrets with strict validation | ✅ Done | `apply_commit_with_path_update` now performs strict lineage validation in `src/tree.rs` by recomputing expected parent keys from derived node secrets and rejecting mismatches; added regression test for tampered commit parent key rejection. |
 | 5 | Upgrade receiver path-update processing to reconstruct/verify node-secret lineage | ✅ Done | Receiver processing now decrypts/collects per-level secrets across the whole direct path, enforces ciphertext-width checks for every encoded level, cross-checks reconstructed-vs-observed secrets, validates commit parent keys against derived lineage when `path_secrets` are omitted, and is covered by DS-backed malformed encoded stream negatives (non-receiver-level underflow/overflow). |
-| 6 | Feed commit-secret from TreeKEM path lineage into key schedule entry points | 🔄 Current | Reduce remaining root-only/proxy inputs and tighten RFC-style linkage between tree update and schedule update. |
-| 7 | Add deterministic vectors for leaf/path/node secret chain and derived parent keys | ⬜ Todo | Include fixed fixtures for both hybrid key branches (classic + PQ). |
+| 6 | Feed commit-secret from TreeKEM path lineage into key schedule entry points | ✅ Done | Added `ensure_epoch_with_tree_commit_secret` in `src/key_schedule.rs` and wired TreeKEM lineage commit-secret inputs from sender/receiver/joiner flows (`src/client_state.rs`, `src/bin/ds_client.rs`, `src/bin/ds_ui_gateway.rs`) so commit-path derived secrets now enter key-schedule chain derivation. Added deterministic/behavior tests in `src/key_schedule.rs` and `src/client_state.rs`. |
+| 7 | Add deterministic vectors for leaf/path/node secret chain and derived parent keys | 🔄 Current | Include fixed fixtures for both hybrid key branches (classic + PQ). |
 | 8 | Add DS-backed end-to-end tests for Add/Update/Remove with strict secret-lineage checks | ⬜ Todo | Include negative cases for tampered parent path keys, tampered path secrets, and inconsistent commit/path payloads. |
 | 9 | Add migration/compat strategy for existing local state and previously stored commits | ⬜ Todo | Decide version gate or compatibility decode path to avoid breaking existing demo/test data unexpectedly. |
 | 10 | Add RFC mapping notes for final TreeKEM lineage model in protocol docs | ⬜ Todo | Update `protocl-actions/*` and README with section-by-section mapping and residual deviations. |
 
 ---
-Current: `Part 12 / Task 6 - Feed commit-secret from TreeKEM lineage into key schedule entry points`
-Next: `Part 12 / Task 7 - Add deterministic vectors for leaf/path/node secret chain and derived parent keys`
+Current: `Part 12 / Task 7 - Add deterministic vectors for leaf/path/node secret chain and derived parent keys`
+Next: `Part 12 / Task 8 - Add DS-backed end-to-end tests for Add/Update/Remove with strict secret-lineage checks`

@@ -1080,7 +1080,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("failed to apply generated commit to local state")?;
             state.apply_group_context_extensions_from_proposals(&commit.proposals);
             state.clear_pending_proposals();
-            state.advance_epoch_with_context(Some(&commit_context));
+            let tree_commit_secret = path_update.path_secrets.first().copied();
+            state.advance_epoch_with_context_and_tree_commit_secret(
+                Some(&commit_context),
+                tree_commit_secret,
+            );
             ensure_group_state_consistency(&state, "create-commit apply")?;
             save_group_state(&group_state, &state)?;
 
@@ -1165,7 +1169,13 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
             state.clear_pending_proposals();
             let commit_context = commit_envelope.commit.encode();
-            state.advance_epoch_with_context(Some(&commit_context));
+            let tree_commit_secret = derived
+                .as_ref()
+                .and_then(|secrets| secrets.first().copied().flatten());
+            state.advance_epoch_with_context_and_tree_commit_secret(
+                Some(&commit_context),
+                tree_commit_secret,
+            );
             ensure_group_state_consistency(&state, "apply-received-commit apply")?;
             save_group_state(&group_state, &state)?;
 
@@ -1674,7 +1684,11 @@ fn join_from_commit_material(
 
     state.clear_pending_proposals();
     let commit_context = commit_envelope.commit.encode();
-    state.advance_epoch_with_context(Some(&commit_context));
+    let tree_commit_secret = derived.first().copied().flatten();
+    state.advance_epoch_with_context_and_tree_commit_secret(
+        Some(&commit_context),
+        tree_commit_secret,
+    );
     ensure_group_state_consistency(&state, context_label)?;
 
     Ok((state, derived))
@@ -2149,13 +2163,15 @@ fn build_welcome_for_commit(
     let next_epoch = state.epoch.saturating_add(1);
     let commit_context = commit.encode();
     let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
+    let tree_commit_secret = path_update.path_secrets.first().copied();
 
     let mut key_schedule = state.key_schedule.clone();
-    let _ = key_schedule.ensure_epoch(
+    let _ = key_schedule.ensure_epoch_with_tree_commit_secret(
         next_epoch,
         &state.group_id,
         tree_hash,
         Some(&commit_context),
+        tree_commit_secret.as_ref(),
     );
     let chain = key_schedule
         .chain_secrets_for_epoch(next_epoch)
@@ -2654,7 +2670,13 @@ async fn fetch_and_apply_latest_once(
         state.apply_group_context_extensions_from_proposals(&commit_env.commit.proposals);
 
         state.clear_pending_proposals();
-        state.advance_epoch_with_context(Some(&commit_bytes));
+        let tree_commit_secret = derived_for_commit
+            .as_ref()
+            .and_then(|secrets| secrets.first().copied().flatten());
+        state.advance_epoch_with_context_and_tree_commit_secret(
+            Some(&commit_bytes),
+            tree_commit_secret,
+        );
         ensure_group_state_consistency(state, "fetch-and-apply-latest commit apply")?;
         state.mark_applied_commit_id(*commit_id);
         applied += 1;
@@ -3492,11 +3514,12 @@ mod tests {
             .apply_commit(&commit)
             .expect("apply commit for joiner secret check");
         let mut key_schedule = state.key_schedule.clone();
-        let _ = key_schedule.ensure_epoch(
+        let _ = key_schedule.ensure_epoch_with_tree_commit_secret(
             state.epoch + 1,
             &state.group_id,
             tree_snapshot_hash(&tree_after_commit.encode()),
             Some(&commit.encode()),
+            path_update.path_secrets.first(),
         );
         let chain = key_schedule
             .chain_secrets_for_epoch(state.epoch + 1)
@@ -3525,11 +3548,12 @@ mod tests {
         let commit_context = commit.encode();
         let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
         let mut key_schedule = state.key_schedule.clone();
-        let _ = key_schedule.ensure_epoch(
+        let _ = key_schedule.ensure_epoch_with_tree_commit_secret(
             next_epoch,
             &state.group_id,
             tree_hash,
             Some(&commit_context),
+            path_update.path_secrets.first(),
         );
         let chain = key_schedule
             .chain_secrets_for_epoch(next_epoch)
@@ -3585,11 +3609,12 @@ mod tests {
         let commit_context = commit.encode();
         let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
         let mut key_schedule = sender_state.key_schedule.clone();
-        let _ = key_schedule.ensure_epoch(
+        let _ = key_schedule.ensure_epoch_with_tree_commit_secret(
             next_epoch,
             &sender_state.group_id,
             tree_hash,
             Some(&commit_context),
+            path_update.path_secrets.first(),
         );
         let chain = key_schedule
             .chain_secrets_for_epoch(next_epoch)
@@ -3633,7 +3658,10 @@ mod tests {
             )
             .expect("process path update");
         join_state.clear_pending_proposals();
-        join_state.advance_epoch_with_context(Some(&commit_context));
+        join_state.advance_epoch_with_context_and_tree_commit_secret(
+            Some(&commit_context),
+            derived.first().copied().flatten(),
+        );
 
         let err = validate_welcome_for_joiner(
             &welcome,
@@ -3691,7 +3719,7 @@ mod tests {
         );
         assert_eq!(
             hex(&group_secrets.joiner_secret),
-            "ad99fa6255d47afd44284dfa1ce47ccf9449a95f254117fa7e99d86f506b0294"
+            "57a7cbd433e48b1c70436863faf166dea40e8d16f153fb0255b7304f9708d8ad"
         );
     }
 }
