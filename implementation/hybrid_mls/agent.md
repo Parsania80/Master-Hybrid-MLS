@@ -291,6 +291,19 @@ The Agent MUST:
     - Last Action: [What happened last]
     - Next Logical Step: [What we should do now]
 
+## Context Compaction Recovery Protocol
+If the Agent auto-compacts or loses active conversation context for any reason, before continuing it MUST:
+
+1. Re-read `agent.md`.
+2. Re-read `PROJECT.md`.
+3. Re-read the last 20 lines of `SESSION-LOG.md`.
+4. If `SESSION-LOG.md` has fewer than 20 lines, continue reading older lines from the newest archive file (for example `archive/SESSION-LOG-YYYY-MM.md`) until at least 20 recent log lines are covered.
+
+Then the Agent must restate:
+- Current Phase/Part
+- Last Action
+- Next Logical Step
+
 
 ---
 

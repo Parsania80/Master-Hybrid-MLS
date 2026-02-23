@@ -496,5 +496,9 @@ Sync notes:
 - `PROJECT.md` now includes a dedicated RFC 9420 alignment workstream to migrate sender/receiver commit-path logic to explicit `leaf_secret -> path_secret -> node_secret -> parent_key` lineage with deterministic vectors and DS-backed negatives.
 - Part 12 / Task 1 is now implemented in code: explicit secret model structs (`LeafSecret`, `DirectPathSecretLevel`, `DirectPathSecretModel`) and validation invariants were added in `src/tree.rs`, and `build_path_update` now consumes the model while preserving wire behavior.
 - Added `protocl-actions/treekem-secret-lineage-protocol.md` to document the current TreeKEM secret-lineage baseline, math flow, and remaining RFC-hardening gaps.
+- Part 12 / Task 2 is now implemented: commit path parent public keys are deterministically derived from node secrets (`src/tree.rs`) and both CLI/UI commit builders now use this deterministic path generation instead of random parent key generation.
+- Added Agent protocol rule in `agent.md`: after any auto context compaction, the agent must re-read `agent.md`, `PROJECT.md`, and recent `SESSION-LOG.md` lines (including archive fallback if needed) before continuing.
+- Part 12 / Task 3 is now implemented: sender direct-path semantics now enforce an explicit node-secret transform policy (`node_secret = KDF(path_secret, parent_node, level_from_leaf)`) with invariant/domain-separation tests in `src/tree.rs`.
+- Deterministic commit-path semantics changed one `ds_client` welcome vector; test fixture value was rebaselined in `src/bin/ds_client.rs`.
 
-Last updated: 2026-02-23 21:33
+Last updated: 2026-02-23 22:02

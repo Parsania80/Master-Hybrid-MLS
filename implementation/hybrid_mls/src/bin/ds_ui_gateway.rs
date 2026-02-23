@@ -46,7 +46,7 @@ use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope}
 use hybrid_mls::key_schedule::tree_snapshot_hash;
 use hybrid_mls::transcript::{derive_confirmation_tag, verify_confirmation_tag};
 use hybrid_mls::tree::{
-    Commit, KeyPackage, LeafNode, Node, ParentUpdate, PathUpdate, Proposal, RatchetTree,
+    Commit, KeyPackage, LeafNode, Node, PathUpdate, Proposal, RatchetTree,
 };
 use hybrid_mls::welcome::{EncryptedGroupSecrets, GroupInfo, GroupSecrets, Welcome};
 
@@ -5630,22 +5630,6 @@ impl TryRng for ClientRng {
 
 impl TryCryptoRng for ClientRng {}
 
-fn generate_hybrid_public_key(rng: &mut ClientRng) -> Result<HybridPublicKey, String> {
-    let mut classic_bytes = [0u8; 32];
-    rng.try_fill_bytes(&mut classic_bytes)
-        .map_err(|_| "failed to generate classic secret bytes".to_string())?;
-    let classic_priv = X25519Priv::from(classic_bytes);
-    let classic = X25519Pub::from(&classic_priv);
-
-    let mut kem_seed = [0u8; 64];
-    rng.try_fill_bytes(&mut kem_seed)
-        .map_err(|_| "failed to generate ML-KEM seed bytes".to_string())?;
-    let kyber_priv = KyberPriv::from_seed(Seed::from(kem_seed));
-    let pq = kyber_priv.encapsulation_key().clone();
-
-    Ok(HybridPublicKey { classic, pq })
-}
-
 fn build_commit_from_pending(
     state: &ClientGroupState,
     sender_leaf: usize,
@@ -5677,22 +5661,14 @@ fn build_commit_from_pending(
     apply_proposals_preview(&mut tree_after_proposals, &proposals)?;
     ensure_leaf_present(&tree_after_proposals, sender_leaf)?;
 
-    let direct_path = tree_after_proposals
-        .direct_path(sender_leaf)
-        .ok_or_else(|| "failed to compute direct path for sender leaf".to_string())?;
-
     let mut rng = ClientRng(rand::random::<u64>() ^ state.epoch);
-    let mut path = Vec::with_capacity(direct_path.len());
-    for _ in direct_path {
-        path.push(ParentUpdate {
-            public_key: generate_hybrid_public_key(&mut rng)?,
-            unmerged_leaves: Vec::new(),
-        });
-    }
-
     let mut leaf_secret = [0u8; 32];
     rng.try_fill_bytes(&mut leaf_secret)
         .map_err(|_| "failed to generate leaf secret".to_string())?;
+    let secret_model = tree_after_proposals
+        .derive_direct_path_secret_model(sender_leaf, leaf_secret)
+        .ok_or_else(|| "failed to derive direct path secret model".to_string())?;
+    let path = secret_model.parent_updates_leaf_to_root();
     let path_update = tree_after_proposals
         .build_path_update(&mut rng, sender_leaf, leaf_secret)
         .ok_or_else(|| "failed to build path update".to_string())?;

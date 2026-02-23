@@ -1,15 +1,15 @@
 use crate::crypto::{
     decrypt_path_secret, encrypt_path_secret, hybrid_kem_decapsulate, hybrid_kem_encapsulate,
     HybridCiphertext, HybridPrivateKey, HybridPublicKey, HybridSignPubKey, HybridSignature,
-    KyberPub,
+    KyberPriv, KyberPub,
 };
 use ed25519_dalek::{Signature as EdSig, VerifyingKey as EdPublic};
 use ml_dsa::{EncodedSignature, EncodedVerifyingKey, MlDsa65};
-use ml_kem::Key;
+use ml_kem::{Key, Seed};
 use rand_core::{CryptoRng, Rng};
 use sha3::{Digest, Sha3_256};
 use std::collections::HashSet;
-use x25519_dalek::PublicKey as X25519Pub;
+use x25519_dalek::{PublicKey as X25519Pub, StaticSecret as X25519Priv};
 
 /// Represents a User in the tree.
 #[derive(Clone, Debug, PartialEq)]
@@ -48,7 +48,7 @@ pub struct RatchetTree {
 }
 
 /// Data required to populate a parent node during an Add commit path update.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ParentUpdate {
     pub public_key: HybridPublicKey,
     pub unmerged_leaves: Vec<u32>,
@@ -118,8 +118,7 @@ pub struct DirectPathSecretLevel {
     pub path_secret: [u8; 32],
     /// Node secret for this parent level.
     ///
-    /// NOTE: Task 1 model keeps this equal to `path_secret` as an explicit invariant.
-    /// Task 2 will move this into a stricter node-key derivation pipeline.
+    /// Task 3 policy: `node_secret = KDF(path_secret, parent_node, level_from_leaf)`.
     pub node_secret: [u8; 32],
 }
 
@@ -159,6 +158,24 @@ impl DirectPathSecretModel {
         self.levels_root_to_leaf
             .iter()
             .map(|level| level.path_secret)
+            .collect()
+    }
+
+    /// Derive Commit `ParentUpdate` entries in leaf-to-root order.
+    ///
+    /// This order matches `RatchetTree::direct_path(...)` and commit path semantics.
+    pub fn parent_updates_leaf_to_root(&self) -> Vec<ParentUpdate> {
+        self.levels_root_to_leaf
+            .iter()
+            .rev()
+            .map(|level| ParentUpdate {
+                public_key: derive_parent_public_key_from_node_secret(
+                    &level.node_secret,
+                    level.parent_node,
+                    level.level_from_leaf,
+                ),
+                unmerged_leaves: Vec::new(),
+            })
             .collect()
     }
 
@@ -207,7 +224,12 @@ impl DirectPathSecretModel {
                     actual: level.level_from_leaf,
                 });
             }
-            if level.path_secret != level.node_secret {
+            let expected_node_secret = derive_node_secret(
+                &level.path_secret,
+                level.parent_node,
+                level.level_from_leaf,
+            );
+            if level.node_secret != expected_node_secret {
                 return Err(DirectPathSecretModelError::NodeSecretMismatch { level: idx });
             }
         }
@@ -867,12 +889,13 @@ impl RatchetTree {
         let mut current = leaf_secret;
         for (level_from_leaf, (parent_node, copath_node)) in path.iter().rev().enumerate() {
             let next = derive_path_secret(&current, *parent_node, level_from_leaf as u32);
+            let node_secret = derive_node_secret(&next, *parent_node, level_from_leaf as u32);
             levels_leaf_to_root.push(DirectPathSecretLevel {
                 parent_node: *parent_node,
                 copath_node: *copath_node,
                 level_from_leaf: level_from_leaf as u32,
                 path_secret: next,
-                node_secret: next,
+                node_secret,
             });
             current = next;
         }
@@ -1528,6 +1551,12 @@ fn derive_path_secret(parent_secret: &[u8; 32], parent_index: usize, level: u32)
     mls_tree_labeled_hash(b"derive path secret", &context, &[parent_secret])
 }
 
+fn derive_node_secret(path_secret: &[u8; 32], parent_index: usize, level: u32) -> [u8; 32] {
+    let context =
+        mls_tree_labeled_context(b"node secret derivation", &[parent_index as u32, level]);
+    mls_tree_labeled_hash(b"derive node secret", &context, &[path_secret])
+}
+
 fn path_secret_encryption_context(
     sender_leaf: usize,
     parent_index: usize,
@@ -1541,6 +1570,34 @@ fn path_secret_encryption_context(
             recipient_node as u32,
         ],
     )
+}
+
+fn derive_parent_public_key_from_node_secret(
+    node_secret: &[u8; 32],
+    parent_node: usize,
+    level_from_leaf: u32,
+) -> HybridPublicKey {
+    let context = mls_tree_labeled_context(
+        b"node key derivation",
+        &[parent_node as u32, level_from_leaf],
+    );
+    let classic_secret =
+        mls_tree_labeled_hash(b"derive node classic secret", &context, &[node_secret]);
+    let classic_private = X25519Priv::from(classic_secret);
+    let classic_public = X25519Pub::from(&classic_private);
+
+    let pq_seed_lo = mls_tree_labeled_hash(b"derive node pq seed 0", &context, &[node_secret]);
+    let pq_seed_hi = mls_tree_labeled_hash(b"derive node pq seed 1", &context, &[node_secret]);
+    let mut pq_seed = [0u8; 64];
+    pq_seed[..32].copy_from_slice(&pq_seed_lo);
+    pq_seed[32..].copy_from_slice(&pq_seed_hi);
+    let pq_private = KyberPriv::from_seed(Seed::from(pq_seed));
+    let pq_public = pq_private.encapsulation_key().clone();
+
+    HybridPublicKey {
+        classic: classic_public,
+        pq: pq_public,
+    }
 }
 
 fn mls_tree_labeled_context(label: &[u8], fields: &[u32]) -> Vec<u8> {
@@ -2433,6 +2490,17 @@ mod tests {
     }
 
     #[test]
+    fn node_secret_derivation_is_context_bound_and_separated_from_path_secret() {
+        let path_secret = [0x56u8; 32];
+        let a = derive_node_secret(&path_secret, 3, 1);
+        let b = derive_node_secret(&path_secret, 4, 1);
+        let c = derive_node_secret(&path_secret, 3, 2);
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, path_secret);
+    }
+
+    #[test]
     fn path_secret_encryption_context_is_field_bound() {
         let c1 = path_secret_encryption_context(0, 1, 2);
         let c2 = path_secret_encryption_context(0, 1, 3);
@@ -3001,7 +3069,12 @@ mod tests {
         assert_eq!(model.levels_root_to_leaf[0].level_from_leaf, 1);
         assert_eq!(model.levels_root_to_leaf[1].level_from_leaf, 0);
         for level in &model.levels_root_to_leaf {
-            assert_eq!(level.path_secret, level.node_secret);
+            let expected = derive_node_secret(
+                &level.path_secret,
+                level.parent_node,
+                level.level_from_leaf,
+            );
+            assert_eq!(level.node_secret, expected);
         }
     }
 
@@ -3049,6 +3122,56 @@ mod tests {
             .build_path_update(&mut rng, 2, leaf_secret)
             .expect("build path update");
         assert_eq!(update.path_secrets, model.path_secrets_root_to_leaf());
+    }
+
+    #[test]
+    fn parent_updates_leaf_to_root_match_direct_path_order() {
+        let tree = RatchetTree::from_leaves(vec![
+            make_leaf(150),
+            make_leaf(151),
+            make_leaf(152),
+            make_leaf(153),
+        ]);
+        let model = tree
+            .derive_direct_path_secret_model(0, [0x66u8; 32])
+            .expect("derive model");
+        let path = model.parent_updates_leaf_to_root();
+        let direct_path = tree.direct_path(0).expect("direct path");
+        assert_eq!(path.len(), direct_path.len());
+
+        for (idx, parent_update) in path.iter().enumerate() {
+            let level = &model.levels_root_to_leaf[model.levels_root_to_leaf.len() - 1 - idx];
+            assert_eq!(direct_path[idx], level.parent_node);
+            let expected = derive_parent_public_key_from_node_secret(
+                &level.node_secret,
+                level.parent_node,
+                level.level_from_leaf,
+            );
+            assert_eq!(parent_update.public_key, expected);
+        }
+    }
+
+    #[test]
+    fn parent_updates_are_deterministic_from_node_secrets() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(160), make_leaf(161), make_leaf(162)]);
+        let model_a = tree
+            .derive_direct_path_secret_model(1, [0x77u8; 32])
+            .expect("derive model a");
+        let model_b = tree
+            .derive_direct_path_secret_model(1, [0x77u8; 32])
+            .expect("derive model b");
+        let model_c = tree
+            .derive_direct_path_secret_model(1, [0x78u8; 32])
+            .expect("derive model c");
+
+        assert_eq!(
+            model_a.parent_updates_leaf_to_root(),
+            model_b.parent_updates_leaf_to_root()
+        );
+        assert_ne!(
+            model_a.parent_updates_leaf_to_root(),
+            model_c.parent_updates_leaf_to_root()
+        );
     }
 
     #[test]
