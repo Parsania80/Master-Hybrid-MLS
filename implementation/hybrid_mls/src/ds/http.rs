@@ -1564,7 +1564,7 @@ fn admin_key_material_cached() -> Result<&'static AdminKeyMaterial, StorageError
         return Ok(keys);
     }
     let generated = run_ds_worker_with_large_stack("ds-admin-keygen", derive_admin_key_material)
-    .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
     let _ = ADMIN_KEYS.set(generated);
     ADMIN_KEYS
         .get()
@@ -2418,15 +2418,8 @@ mod tests {
 
         let mut rng = OsRng;
         let (alice_priv, _alice_pub, classic_b64, pq_b64) = make_signing_keys(&mut rng);
-        let alice_session = register_and_login(
-            &app,
-            "alice",
-            "secret",
-            &classic_b64,
-            &pq_b64,
-            &alice_priv,
-        )
-        .await;
+        let alice_session =
+            register_and_login(&app, "alice", "secret", &classic_b64, &pq_b64, &alice_priv).await;
 
         let group_id = "admin-visible-group";
         let proposal_payload = ProposalEnvelope {
@@ -2524,15 +2517,8 @@ mod tests {
 
         let mut rng = OsRng;
         let (alice_priv, _alice_pub, classic_b64, pq_b64) = make_signing_keys(&mut rng);
-        let alice_session = register_and_login(
-            &app,
-            "alice",
-            "secret",
-            &classic_b64,
-            &pq_b64,
-            &alice_priv,
-        )
-        .await;
+        let alice_session =
+            register_and_login(&app, "alice", "secret", &classic_b64, &pq_b64, &alice_priv).await;
 
         let sign_input = admin_list_signing_input("users", "alice");
         let signature = STANDARD.encode(alice_priv.sign(&sign_input).to_bytes());

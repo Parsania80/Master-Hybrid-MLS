@@ -1,11 +1,18 @@
 use hybrid_mls::authenticated_content::derive_membership_key;
 use hybrid_mls::key_schedule::KeyScheduleState;
-use hybrid_mls::mls_wire::{ContentType, MlsMessage, PrivateMessage, PublicMessage, MLS_PROTOCOL_VERSION};
-use hybrid_mls::transcript::{derive_confirmation_key, derive_confirmation_tag, verify_confirmation_tag, TranscriptState};
+use hybrid_mls::mls_wire::{
+    ContentType, MlsMessage, PrivateMessage, PublicMessage, MLS_PROTOCOL_VERSION,
+};
+use hybrid_mls::transcript::{
+    derive_confirmation_key, derive_confirmation_tag, verify_confirmation_tag, TranscriptState,
+};
 use hybrid_mls::tree::Proposal;
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+    bytes
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>()
 }
 
 fn hex32(bytes: &[u8; 32]) -> String {
@@ -38,28 +45,28 @@ fn wire_decode_negative_matrix_rejects_malformed_frames() {
 
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("empty", Vec::new()),
+        ("bad_version", {
+            let mut b = valid_public_mls.clone();
+            b[0] = 0x00;
+            b[1] = 0x02;
+            b
+        }),
+        ("bad_wire_format", {
+            let mut b = valid_private_mls.clone();
+            b[2] = 0xFF;
+            b
+        }),
         (
-            "bad_version",
-            {
-                let mut b = valid_public_mls.clone();
-                b[0] = 0x00;
-                b[1] = 0x02;
-                b
-            },
+            "truncated",
+            valid_public_mls[..valid_public_mls.len() - 1].to_vec(),
         ),
-        (
-            "bad_wire_format",
-            {
-                let mut b = valid_private_mls.clone();
-                b[2] = 0xFF;
-                b
-            },
-        ),
-        ("truncated", valid_public_mls[..valid_public_mls.len() - 1].to_vec()),
     ];
 
     for (name, bytes) in cases {
-        assert!(MlsMessage::decode(&bytes).is_none(), "case should fail: {name}");
+        assert!(
+            MlsMessage::decode(&bytes).is_none(),
+            "case should fail: {name}"
+        );
     }
 
     let mut with_trailing = valid_public_mls.clone();
@@ -78,11 +85,7 @@ fn wire_decode_negative_matrix_rejects_malformed_frames() {
 #[test]
 fn proposal_encoding_vectors_match_expected() {
     let cases: Vec<(&str, Proposal, &str)> = vec![
-        (
-            "remove",
-            Proposal::Remove { leaf_index: 5 },
-            "0300000005",
-        ),
+        ("remove", Proposal::Remove { leaf_index: 5 }, "0300000005"),
         (
             "pre_shared_key",
             Proposal::PreSharedKey {
@@ -113,11 +116,7 @@ fn proposal_encoding_vectors_match_expected() {
         let encoded = proposal.encode();
         assert_eq!(hex(&encoded), expected_hex, "vector mismatch for {name}");
         let decoded = Proposal::decode(&encoded).expect("decode vector proposal");
-        assert_eq!(
-            decoded.encode(),
-            encoded,
-            "roundtrip mismatch for {name}"
-        );
+        assert_eq!(decoded.encode(), encoded, "roundtrip mismatch for {name}");
     }
 }
 

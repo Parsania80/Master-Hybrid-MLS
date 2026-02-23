@@ -291,6 +291,246 @@ fn register_and_export_keypackage(
     );
 }
 
+struct EncodedPathSyncFixture {
+    base: PathBuf,
+    base_url: String,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    server: JoinHandle<Result<(), std::io::Error>>,
+    client_bin: &'static str,
+    group_id: String,
+    alice_state: PathBuf,
+    alice_group_state: PathBuf,
+    carol_state: PathBuf,
+    carol_group_state: PathBuf,
+    carol_recv: PathBuf,
+    commit_file: PathBuf,
+    path_file: PathBuf,
+}
+
+async fn teardown_encoded_path_sync_fixture(mut fixture: EncodedPathSyncFixture) {
+    if let Some(shutdown_tx) = fixture.shutdown_tx.take() {
+        let _ = shutdown_tx.send(());
+    }
+    let result = fixture.server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+    let _ = fs::remove_dir_all(&fixture.base);
+}
+
+fn find_non_receiver_level(tree: &RatchetTree, sender_leaf: usize, receiver_leaf: usize) -> usize {
+    let copath_root_to_leaf: Vec<usize> = tree
+        .copath(sender_leaf)
+        .expect("copath")
+        .into_iter()
+        .rev()
+        .collect();
+    let receiver_node = RatchetTree::leaf_to_node_index(receiver_leaf);
+    copath_root_to_leaf
+        .iter()
+        .enumerate()
+        .find_map(|(idx, copath)| {
+            let resolution = tree.resolution(*copath)?;
+            if !resolution.contains(&receiver_node) {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .expect("expected at least one non-receiver direct-path level")
+}
+
+async fn setup_encoded_path_sync_fixture(label: &str, group_id: &str) -> EncodedPathSyncFixture {
+    let (state, base) = temp_state(label);
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let alice_state = work.join("alice.json");
+    let bob_state = work.join("bob.json");
+    let carol_state = work.join("carol.json");
+
+    let alice_kem = work.join("alice-kem.json");
+    let bob_kem = work.join("bob-kem.json");
+    let carol_kem = work.join("carol-kem.json");
+    let alice_v2_kem = work.join("alice-v2-kem.json");
+
+    let alice_kp = work.join("alice.kp");
+    let bob_kp = work.join("bob.kp");
+    let carol_kp = work.join("carol.kp");
+    let alice_v2_kp = work.join("alice-v2.kp");
+
+    let alice_recv = work.join("alice.recv.json");
+    let bob_recv = work.join("bob.recv.json");
+    let carol_recv = work.join("carol.recv.json");
+    let alice_v2_recv = work.join("alice-v2.recv.json");
+
+    let alice_group_state = work.join("alice-group.bin");
+    let carol_group_state = work.join("carol-group.bin");
+
+    let proposal_file = work.join("alice-update.proposal.bin");
+    let commit_file = work.join("alice-update.commit.bin");
+    let path_file = work.join("alice-update.path.bin");
+
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &alice_state,
+        "alice",
+        &alice_kem,
+        &alice_kp,
+        &alice_recv,
+    );
+    register_and_export_keypackage(
+        client_bin, &base_url, &bob_state, "bob", &bob_kem, &bob_kp, &bob_recv,
+    );
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &carol_state,
+        "carol",
+        &carol_kem,
+        &carol_kp,
+        &carol_recv,
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keygen".to_string(),
+            "--out".to_string(),
+            to_s(&alice_v2_kem),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keypackage-export".to_string(),
+            "--kem-file".to_string(),
+            to_s(&alice_v2_kem),
+            "--keypackage-out".to_string(),
+            to_s(&alice_v2_kp),
+            "--receiver-private-out".to_string(),
+            to_s(&alice_v2_recv),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--member-keypackage".to_string(),
+            to_s(&carol_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&alice_group_state),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &carol_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--member-keypackage".to_string(),
+            to_s(&carol_kp),
+            "--own-leaf".to_string(),
+            "2".to_string(),
+            "--out".to_string(),
+            to_s(&carol_group_state),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-update-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_state),
+            "--keypackage-file".to_string(),
+            to_s(&alice_v2_kp),
+            "--out".to_string(),
+            to_s(&proposal_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+            "--target-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&proposal_file),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-commit".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_state),
+            "--commit-out".to_string(),
+            to_s(&commit_file),
+            "--path-update-out".to_string(),
+            to_s(&path_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+
+    EncodedPathSyncFixture {
+        base,
+        base_url,
+        shutdown_tx: Some(shutdown_tx),
+        server,
+        client_bin,
+        group_id: group_id.to_string(),
+        alice_state,
+        alice_group_state,
+        carol_state,
+        carol_group_state,
+        carol_recv,
+        commit_file,
+        path_file,
+    }
+}
+
 struct WelcomeBootstrapFixture {
     base: PathBuf,
     work: PathBuf,
@@ -637,7 +877,9 @@ async fn fetch_group_message_bytes(
     let bytes_b64 = fetch_json["message_bytes"]
         .as_str()
         .expect("fetch response message_bytes");
-    let bytes = STANDARD.decode(bytes_b64).expect("decode fetched message bytes");
+    let bytes = STANDARD
+        .decode(bytes_b64)
+        .expect("decode fetched message bytes");
     (kind, bytes)
 }
 
@@ -1624,9 +1866,8 @@ async fn envelope_fixtures_are_stable_across_ds_submit_and_fetch_roundtrip() {
         ],
     );
     let proposal_list_json = parse_json_from_ds_client_output(&list_proposal);
-    let proposal_id = first_list_message_id(&proposal_list_json).unwrap_or_else(|| {
-        panic!("proposal message id; list output: {list_proposal}")
-    });
+    let proposal_id = first_list_message_id(&proposal_list_json)
+        .unwrap_or_else(|| panic!("proposal message id; list output: {list_proposal}"));
     let (proposal_kind, fetched_proposal) =
         fetch_group_message_bytes(&base_url, &alice_state, group_id, proposal_id).await;
     assert_eq!(proposal_kind, "proposal");
@@ -4387,6 +4628,135 @@ async fn tampered_path_update_payload_with_valid_metadata_triggers_strict_receiv
     }
 
     let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_encoded_path_update_stream_non_receiver_underflow_triggers_strict_rejection() {
+    let fixture = setup_encoded_path_sync_fixture(
+        "malformed-encoded-path-underflow",
+        "group-malformed-encoded-path-underflow",
+    )
+    .await;
+
+    let sender_state =
+        ClientGroupState::load_from_file(&fixture.alice_group_state).expect("load sender state");
+    let mismatch_level = find_non_receiver_level(&sender_state.ratchet_tree, 0, 2);
+
+    let path_bytes = fs::read(&fixture.path_file).expect("read path file");
+    let mut path_env = PathUpdateEnvelope::decode(&path_bytes).expect("decode path envelope");
+    assert!(
+        path_env.path_update.path_secrets.is_empty(),
+        "encoded path should not carry raw path_secrets"
+    );
+    assert!(
+        !path_env.path_update.ciphertexts[mismatch_level].is_empty(),
+        "non-receiver level should have at least one ciphertext entry"
+    );
+    let _ = path_env.path_update.ciphertexts[mismatch_level].pop();
+    fs::write(&fixture.path_file, path_env.encode()).expect("write malformed path envelope");
+
+    run_ds_client(
+        fixture.client_bin,
+        &fixture.base_url,
+        &fixture.alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            fixture.group_id.clone(),
+            "--commit-file".to_string(),
+            to_s(&fixture.commit_file),
+            "--path-update-file".to_string(),
+            to_s(&fixture.path_file),
+        ],
+    );
+
+    run_ds_client_expect_fail(
+        fixture.client_bin,
+        &fixture.base_url,
+        &fixture.carol_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&fixture.carol_group_state),
+            "--receiver-private-file".to_string(),
+            to_s(&fixture.carol_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "failed to apply commit+path update during sync",
+    );
+
+    let loaded =
+        ClientGroupState::load_from_file(&fixture.carol_group_state).expect("load receiver state");
+    assert_eq!(loaded.epoch, 0);
+    assert_eq!(loaded.last_applied_commit_id, None);
+
+    teardown_encoded_path_sync_fixture(fixture).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_encoded_path_update_stream_non_receiver_overflow_triggers_strict_rejection() {
+    let fixture = setup_encoded_path_sync_fixture(
+        "malformed-encoded-path-overflow",
+        "group-malformed-encoded-path-overflow",
+    )
+    .await;
+
+    let sender_state =
+        ClientGroupState::load_from_file(&fixture.alice_group_state).expect("load sender state");
+    let mismatch_level = find_non_receiver_level(&sender_state.ratchet_tree, 0, 2);
+
+    let path_bytes = fs::read(&fixture.path_file).expect("read path file");
+    let mut path_env = PathUpdateEnvelope::decode(&path_bytes).expect("decode path envelope");
+    assert!(
+        path_env.path_update.path_secrets.is_empty(),
+        "encoded path should not carry raw path_secrets"
+    );
+    assert!(
+        !path_env.path_update.ciphertexts[mismatch_level].is_empty(),
+        "non-receiver level should have at least one ciphertext entry"
+    );
+    let duplicate = path_env.path_update.ciphertexts[mismatch_level][0].clone();
+    path_env.path_update.ciphertexts[mismatch_level].push(duplicate);
+    fs::write(&fixture.path_file, path_env.encode()).expect("write malformed path envelope");
+
+    run_ds_client(
+        fixture.client_bin,
+        &fixture.base_url,
+        &fixture.alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            fixture.group_id.clone(),
+            "--commit-file".to_string(),
+            to_s(&fixture.commit_file),
+            "--path-update-file".to_string(),
+            to_s(&fixture.path_file),
+        ],
+    );
+
+    run_ds_client_expect_fail(
+        fixture.client_bin,
+        &fixture.base_url,
+        &fixture.carol_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&fixture.carol_group_state),
+            "--receiver-private-file".to_string(),
+            to_s(&fixture.carol_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "failed to apply commit+path update during sync",
+    );
+
+    let loaded =
+        ClientGroupState::load_from_file(&fixture.carol_group_state).expect("load receiver state");
+    assert_eq!(loaded.epoch, 0);
+    assert_eq!(loaded.last_applied_commit_id, None);
+
+    teardown_encoded_path_sync_fixture(fixture).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -8998,8 +9368,7 @@ async fn ds_backed_unsupported_reinit_params_commit_rejected_on_sync() {
     let valid_update_proposal_version = work.join("valid-update-version.proposal.bin");
     let sender_group_cipher_suite = work.join("alice-sender-ciphersuite.group.bin");
     let receiver_group_cipher_suite = work.join("alice-receiver-ciphersuite.group.bin");
-    let valid_update_proposal_cipher_suite =
-        work.join("valid-update-ciphersuite.proposal.bin");
+    let valid_update_proposal_cipher_suite = work.join("valid-update-ciphersuite.proposal.bin");
     let invalid_commit_v_file = work.join("invalid-reinit-version.commit.bin");
     let invalid_commit_cs_file = work.join("invalid-reinit-ciphersuite.commit.bin");
 
@@ -9108,9 +9477,8 @@ async fn ds_backed_unsupported_reinit_params_commit_rejected_on_sync() {
         "failed to apply commit during sync",
     );
 
-    let receiver_after_version =
-        ClientGroupState::load_from_file(&receiver_group_version)
-            .expect("load receiver after version");
+    let receiver_after_version = ClientGroupState::load_from_file(&receiver_group_version)
+        .expect("load receiver after version");
     assert_eq!(receiver_after_version.epoch, 0);
     assert_eq!(receiver_after_version.last_applied_commit_id, None);
 
@@ -9212,8 +9580,9 @@ async fn ds_backed_unsupported_reinit_params_commit_rejected_on_sync() {
         "failed to apply commit during sync",
     );
 
-    let receiver_after_cipher_suite = ClientGroupState::load_from_file(&receiver_group_cipher_suite)
-        .expect("load receiver after ciphersuite");
+    let receiver_after_cipher_suite =
+        ClientGroupState::load_from_file(&receiver_group_cipher_suite)
+            .expect("load receiver after ciphersuite");
     assert_eq!(receiver_after_cipher_suite.epoch, 0);
     assert_eq!(receiver_after_cipher_suite.last_applied_commit_id, None);
 

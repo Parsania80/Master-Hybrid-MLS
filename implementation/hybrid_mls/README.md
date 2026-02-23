@@ -487,5 +487,24 @@ Sync notes:
 - If `--receiver-private-file` is provided, path updates are consumed and derived secrets can be exported via `--derived-out`.
 - `--watch` enables continuous polling; use `--poll-interval-ms` and optional `--max-polls` to control loop behavior.
 - `show-derived-secrets` is debug-only and intentionally exposes secret material; use only in local test/demo environments.
+- Protocol flow documentation templates now live under `protocl-actions/`:
+  - `protocl-actions/protocl-style.md` (template)
+  - `protocl-actions/create-group-protocol.md` (code+RFC mapped example with explicit gap flags)
+- Protocol flow template now enforces a `Math Action` column in flow tables so each cryptographic/state step shows its equation/primitive inputs.
+- `create-group-protocol.md` now includes explicit math for state init, tree indexing, tree hash, init secret, full epoch-0 chain (`commit/joiner/welcome/epoch/root`), and derived stage/app secrets.
+- TreeKEM lineage gap is now explicitly tracked in roadmap `Part 12`: current code derives/encrypts path secrets, but parent path public keys are still generated randomly in commit build path instead of being fully node-secret-derived end-to-end.
+- `PROJECT.md` now includes a dedicated RFC 9420 alignment workstream to migrate sender/receiver commit-path logic to explicit `leaf_secret -> path_secret -> node_secret -> parent_key` lineage with deterministic vectors and DS-backed negatives.
+- Part 12 / Task 1 is now implemented in code: explicit secret model structs (`LeafSecret`, `DirectPathSecretLevel`, `DirectPathSecretModel`) and validation invariants were added in `src/tree.rs`, and `build_path_update` now consumes the model while preserving wire behavior.
+- Added `protocl-actions/treekem-secret-lineage-protocol.md` to document the current TreeKEM secret-lineage baseline, math flow, and remaining RFC-hardening gaps.
+- Part 12 / Task 2 is now implemented: commit path parent public keys are deterministically derived from node secrets (`src/tree.rs`) and both CLI/UI commit builders now use this deterministic path generation instead of random parent key generation.
+- Added Agent protocol rule in `agent.md`: after any auto context compaction, the agent must re-read `agent.md`, `PROJECT.md`, and recent `SESSION-LOG.md` lines (including archive fallback if needed) before continuing.
+- Part 12 / Task 3 is now implemented: sender direct-path semantics now enforce an explicit node-secret transform policy (`node_secret = KDF(path_secret, parent_node, level_from_leaf)`) with invariant/domain-separation tests in `src/tree.rs`.
+- Deterministic commit-path semantics changed one `ds_client` welcome vector; test fixture value was rebaselined in `src/bin/ds_client.rs`.
+- Part 12 / Task 4 is now implemented: receiver commit+path apply enforces strict parent-key lineage checks by recomputing expected parent public keys from derived node secrets and rejecting mismatches.
+- Added new regression test in `src/tree.rs` to assert malformed/tampered commit parent path keys are rejected under strict lineage validation.
+- Part 12 / Task 5 is complete: receiver-side encoded/partial path handling now enforces per-level ciphertext-width checks across the full direct path, multi-level decrypt/reconstruct cross-checks, and strict parent-key lineage validation when encoded payloads omit `path_secrets`.
+- Added DS-backed malformed encoded path-update stream negatives (`non-receiver level underflow/overflow`) in `tests/ds_fetch_apply_e2e.rs`, asserting strict receiver rejection with no epoch advance.
+- Part 12 / Task 6 is complete: key schedule transitions now accept TreeKEM lineage commit-secret input via `ensure_epoch_with_tree_commit_secret` (`src/key_schedule.rs`) and this is wired from sender/receiver/joiner commit-apply paths in `src/client_state.rs`, `src/bin/ds_client.rs`, and `src/bin/ds_ui_gateway.rs`.
+- Added lineage key-schedule tests in `src/key_schedule.rs` and `src/client_state.rs`, plus rebaselined deterministic welcome joiner-secret vector in `src/bin/ds_client.rs`.
 
-Last updated: 2026-02-21 20:58
+Last updated: 2026-02-23 23:10

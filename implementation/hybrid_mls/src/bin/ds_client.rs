@@ -33,9 +33,7 @@ use hybrid_mls::crypto::{
 use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
 use hybrid_mls::key_schedule::tree_snapshot_hash;
 use hybrid_mls::transcript::{derive_confirmation_tag, verify_confirmation_tag};
-use hybrid_mls::tree::{
-    Commit, KeyPackage, LeafNode, Node, ParentUpdate, PathUpdate, Proposal, RatchetTree,
-};
+use hybrid_mls::tree::{Commit, KeyPackage, LeafNode, Node, PathUpdate, Proposal, RatchetTree};
 use hybrid_mls::welcome::{EncryptedGroupSecrets, GroupInfo, GroupSecrets, Welcome};
 
 #[derive(Parser, Debug)]
@@ -1082,7 +1080,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("failed to apply generated commit to local state")?;
             state.apply_group_context_extensions_from_proposals(&commit.proposals);
             state.clear_pending_proposals();
-            state.advance_epoch_with_context(Some(&commit_context));
+            let tree_commit_secret = path_update.path_secrets.first().copied();
+            state.advance_epoch_with_context_and_tree_commit_secret(
+                Some(&commit_context),
+                tree_commit_secret,
+            );
             ensure_group_state_consistency(&state, "create-commit apply")?;
             save_group_state(&group_state, &state)?;
 
@@ -1167,7 +1169,13 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
             state.clear_pending_proposals();
             let commit_context = commit_envelope.commit.encode();
-            state.advance_epoch_with_context(Some(&commit_context));
+            let tree_commit_secret = derived
+                .as_ref()
+                .and_then(|secrets| secrets.first().copied().flatten());
+            state.advance_epoch_with_context_and_tree_commit_secret(
+                Some(&commit_context),
+                tree_commit_secret,
+            );
             ensure_group_state_consistency(&state, "apply-received-commit apply")?;
             save_group_state(&group_state, &state)?;
 
@@ -1676,7 +1684,11 @@ fn join_from_commit_material(
 
     state.clear_pending_proposals();
     let commit_context = commit_envelope.commit.encode();
-    state.advance_epoch_with_context(Some(&commit_context));
+    let tree_commit_secret = derived.first().copied().flatten();
+    state.advance_epoch_with_context_and_tree_commit_secret(
+        Some(&commit_context),
+        tree_commit_secret,
+    );
     ensure_group_state_consistency(&state, context_label)?;
 
     Ok((state, derived))
@@ -2095,22 +2107,14 @@ fn build_commit_from_pending(
     apply_proposals_preview(&mut tree_after_proposals, &proposals)?;
     ensure_leaf_present(&tree_after_proposals, sender_leaf)?;
 
-    let direct_path = tree_after_proposals
-        .direct_path(sender_leaf)
-        .ok_or("failed to compute direct path for sender leaf")?;
-
     let mut rng = ClientRng(rand::random::<u64>() ^ state.epoch);
-    let mut path = Vec::with_capacity(direct_path.len());
-    for _ in direct_path {
-        path.push(ParentUpdate {
-            public_key: generate_hybrid_public_key(&mut rng)?,
-            unmerged_leaves: Vec::new(),
-        });
-    }
-
     let mut leaf_secret = [0u8; 32];
     rng.try_fill_bytes(&mut leaf_secret)
         .map_err(|_| "failed to generate leaf secret")?;
+    let secret_model = tree_after_proposals
+        .derive_direct_path_secret_model(sender_leaf, leaf_secret)
+        .ok_or("failed to derive direct path secret model")?;
+    let path = secret_model.parent_updates_leaf_to_root();
     let path_update = tree_after_proposals
         .build_path_update(&mut rng, sender_leaf, leaf_secret)
         .ok_or("failed to build path update")?;
@@ -2159,13 +2163,15 @@ fn build_welcome_for_commit(
     let next_epoch = state.epoch.saturating_add(1);
     let commit_context = commit.encode();
     let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
+    let tree_commit_secret = path_update.path_secrets.first().copied();
 
     let mut key_schedule = state.key_schedule.clone();
-    let _ = key_schedule.ensure_epoch(
+    let _ = key_schedule.ensure_epoch_with_tree_commit_secret(
         next_epoch,
         &state.group_id,
         tree_hash,
         Some(&commit_context),
+        tree_commit_secret.as_ref(),
     );
     let chain = key_schedule
         .chain_secrets_for_epoch(next_epoch)
@@ -2318,24 +2324,6 @@ fn ensure_leaf_bounds(
         return Err(format!("leaf index {leaf_index} is out of bounds").into());
     }
     Ok(())
-}
-
-fn generate_hybrid_public_key(
-    rng: &mut ClientRng,
-) -> Result<HybridPublicKey, Box<dyn std::error::Error>> {
-    let mut classic_bytes = [0u8; 32];
-    rng.try_fill_bytes(&mut classic_bytes)
-        .map_err(|_| "failed to generate classic secret bytes")?;
-    let classic_priv = X25519Priv::from(classic_bytes);
-    let classic = X25519Pub::from(&classic_priv);
-
-    let mut kem_seed = [0u8; 64];
-    rng.try_fill_bytes(&mut kem_seed)
-        .map_err(|_| "failed to generate ML-KEM seed bytes")?;
-    let kyber_priv = KyberPriv::from_seed(Seed::from(kem_seed));
-    let pq = kyber_priv.encapsulation_key().clone();
-
-    Ok(HybridPublicKey { classic, pq })
 }
 
 #[derive(Debug)]
@@ -2682,7 +2670,13 @@ async fn fetch_and_apply_latest_once(
         state.apply_group_context_extensions_from_proposals(&commit_env.commit.proposals);
 
         state.clear_pending_proposals();
-        state.advance_epoch_with_context(Some(&commit_bytes));
+        let tree_commit_secret = derived_for_commit
+            .as_ref()
+            .and_then(|secrets| secrets.first().copied().flatten());
+        state.advance_epoch_with_context_and_tree_commit_secret(
+            Some(&commit_bytes),
+            tree_commit_secret,
+        );
         ensure_group_state_consistency(state, "fetch-and-apply-latest commit apply")?;
         state.mark_applied_commit_id(*commit_id);
         applied += 1;
@@ -3520,11 +3514,12 @@ mod tests {
             .apply_commit(&commit)
             .expect("apply commit for joiner secret check");
         let mut key_schedule = state.key_schedule.clone();
-        let _ = key_schedule.ensure_epoch(
+        let _ = key_schedule.ensure_epoch_with_tree_commit_secret(
             state.epoch + 1,
             &state.group_id,
             tree_snapshot_hash(&tree_after_commit.encode()),
             Some(&commit.encode()),
+            path_update.path_secrets.first(),
         );
         let chain = key_schedule
             .chain_secrets_for_epoch(state.epoch + 1)
@@ -3553,11 +3548,12 @@ mod tests {
         let commit_context = commit.encode();
         let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
         let mut key_schedule = state.key_schedule.clone();
-        let _ = key_schedule.ensure_epoch(
+        let _ = key_schedule.ensure_epoch_with_tree_commit_secret(
             next_epoch,
             &state.group_id,
             tree_hash,
             Some(&commit_context),
+            path_update.path_secrets.first(),
         );
         let chain = key_schedule
             .chain_secrets_for_epoch(next_epoch)
@@ -3613,11 +3609,12 @@ mod tests {
         let commit_context = commit.encode();
         let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
         let mut key_schedule = sender_state.key_schedule.clone();
-        let _ = key_schedule.ensure_epoch(
+        let _ = key_schedule.ensure_epoch_with_tree_commit_secret(
             next_epoch,
             &sender_state.group_id,
             tree_hash,
             Some(&commit_context),
+            path_update.path_secrets.first(),
         );
         let chain = key_schedule
             .chain_secrets_for_epoch(next_epoch)
@@ -3661,7 +3658,10 @@ mod tests {
             )
             .expect("process path update");
         join_state.clear_pending_proposals();
-        join_state.advance_epoch_with_context(Some(&commit_context));
+        join_state.advance_epoch_with_context_and_tree_commit_secret(
+            Some(&commit_context),
+            derived.first().copied().flatten(),
+        );
 
         let err = validate_welcome_for_joiner(
             &welcome,
@@ -3685,21 +3685,15 @@ mod tests {
         let mut tree_after_proposals = state.ratchet_tree.clone();
         apply_proposals_preview(&mut tree_after_proposals, &proposals).expect("apply proposals");
         ensure_leaf_present(&tree_after_proposals, 0).expect("sender leaf present");
-        let direct_path = tree_after_proposals
-            .direct_path(0)
-            .expect("direct path for sender");
 
         let mut rng = ClientRng(0xdecafbad_u64);
-        let mut path = Vec::with_capacity(direct_path.len());
-        for _ in direct_path {
-            path.push(ParentUpdate {
-                public_key: generate_hybrid_public_key(&mut rng).expect("deterministic public key"),
-                unmerged_leaves: Vec::new(),
-            });
-        }
         let mut leaf_secret = [0u8; 32];
         rng.try_fill_bytes(&mut leaf_secret)
             .expect("deterministic leaf secret");
+        let secret_model = tree_after_proposals
+            .derive_direct_path_secret_model(0, leaf_secret)
+            .expect("secret model");
+        let path = secret_model.parent_updates_leaf_to_root();
         let path_update = tree_after_proposals
             .build_path_update(&mut rng, 0, leaf_secret)
             .expect("path update");
@@ -3725,7 +3719,7 @@ mod tests {
         );
         assert_eq!(
             hex(&group_secrets.joiner_secret),
-            "c325a108a5ad68260f00d1c0a17dcaeaba1f5bcf3a6171ba09555c17c4e62565"
+            "57a7cbd433e48b1c70436863faf166dea40e8d16f153fb0255b7304f9708d8ad"
         );
     }
 }

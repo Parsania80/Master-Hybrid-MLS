@@ -20,6 +20,7 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 - `src/ds/*`: Delivery Service storage (SQLite + disk spool), auth, and HTTP API
 - `src/bin/ds_server.rs`: Axum server entrypoint for DS APIs
 - `src/bin/ds_client.rs`: CLI for DS auth, key packages, proposals, commits, sync/apply, and app message flows
+- `protocl-actions/*`: Protocol action documentation templates and code/RFC-mapped flow notes for professor/demo review
 - `scripts/local-1ds-4clients-*.sh`: local orchestration scripts for DS/client lifecycle
 - `scripts/local-1ds-4clients-demo.sh`: end-to-end local demo (A adds B, B adds C, A removes C) with logs
 
@@ -142,6 +143,20 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 7 | Add regression tests for demo tree semantics | ✅ Done | Completed coverage for add-reuse-blank, remove-without-reindex, index stability across epochs, and binary layout invariants via new unit + DS-backed integration tests in `src/bin/ds_ui_gateway.rs`. |
 | 8 | Add migration/compatibility for existing demo state files | ✅ Done | Added migration hardening for legacy `members` state: duplicate `leaf_index` and empty-username legacy records are now rejected; added DS-backed integration coverage that injects legacy state, verifies migrated detail API topology, and confirms persistence rewrites to new `leaf_slots` schema after action apply. |
 
+### Part 12: RFC 9420 TreeKEM Secret-Lineage Alignment (Core Crypto Fix)
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 1 | Define explicit `leaf_secret` / `path_secret` / `node_secret` data model and invariants | ✅ Done | Added explicit TreeKEM secret model in `src/tree.rs` (`LeafSecret`, `DirectPathSecretLevel`, `DirectPathSecretModel`) with structural validation (`DirectPathSecretModelError`) and invariant-focused tests. |
+| 2 | Replace random parent-key generation with deterministic derivation from node secrets | ✅ Done | Added deterministic node-secret-to-public-key derivation in `src/tree.rs` and switched commit builders in `src/bin/ds_client.rs` and `src/bin/ds_ui_gateway.rs` to use `DirectPathSecretModel::parent_updates_leaf_to_root()` instead of random parent keys. |
+| 3 | Implement sender direct-path secret chain exactly from leaf secret to root | ✅ Done | Tightened sender semantics by adding explicit node-secret transform policy (`node_secret = KDF(path_secret, parent_node, level_from_leaf)`) and model validation checks in `src/tree.rs`, plus derivation/domain-separation tests. |
+| 4 | Bind Commit `path` parent public keys to derived node secrets with strict validation | ✅ Done | `apply_commit_with_path_update` now performs strict lineage validation in `src/tree.rs` by recomputing expected parent keys from derived node secrets and rejecting mismatches; added regression test for tampered commit parent key rejection. |
+| 5 | Upgrade receiver path-update processing to reconstruct/verify node-secret lineage | ✅ Done | Receiver processing now decrypts/collects per-level secrets across the whole direct path, enforces ciphertext-width checks for every encoded level, cross-checks reconstructed-vs-observed secrets, validates commit parent keys against derived lineage when `path_secrets` are omitted, and is covered by DS-backed malformed encoded stream negatives (non-receiver-level underflow/overflow). |
+| 6 | Feed commit-secret from TreeKEM path lineage into key schedule entry points | ✅ Done | Added `ensure_epoch_with_tree_commit_secret` in `src/key_schedule.rs` and wired TreeKEM lineage commit-secret inputs from sender/receiver/joiner flows (`src/client_state.rs`, `src/bin/ds_client.rs`, `src/bin/ds_ui_gateway.rs`) so commit-path derived secrets now enter key-schedule chain derivation. Added deterministic/behavior tests in `src/key_schedule.rs` and `src/client_state.rs`. |
+| 7 | Add deterministic vectors for leaf/path/node secret chain and derived parent keys | 🔄 Current | Include fixed fixtures for both hybrid key branches (classic + PQ). |
+| 8 | Add DS-backed end-to-end tests for Add/Update/Remove with strict secret-lineage checks | ⬜ Todo | Include negative cases for tampered parent path keys, tampered path secrets, and inconsistent commit/path payloads. |
+| 9 | Add migration/compat strategy for existing local state and previously stored commits | ⬜ Todo | Decide version gate or compatibility decode path to avoid breaking existing demo/test data unexpectedly. |
+| 10 | Add RFC mapping notes for final TreeKEM lineage model in protocol docs | ⬜ Todo | Update `protocl-actions/*` and README with section-by-section mapping and residual deviations. |
+
 ---
-Current: `Part 7 / Task 6 - Add multi-VM deployment/test guide and automation`
-Next: `Part 8 / UX hardening follow-ups (admin/page access + onboarding polish)`
+Current: `Part 12 / Task 7 - Add deterministic vectors for leaf/path/node secret chain and derived parent keys`
+Next: `Part 12 / Task 8 - Add DS-backed end-to-end tests for Add/Update/Remove with strict secret-lineage checks`

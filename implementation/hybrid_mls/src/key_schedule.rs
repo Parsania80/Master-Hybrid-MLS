@@ -18,6 +18,7 @@ const LABEL_APPLICATION_SECRET: &[u8] = b"application_secret";
 const LABEL_EXPORTER_SECRET: &[u8] = b"exporter_secret";
 const LABEL_GROUP_CONTEXT_BINDING: &[u8] = b"group_context";
 const LABEL_LEGACY_GROUP_CONTEXT_BINDING: &[u8] = b"legacy_group_context";
+const LABEL_TREE_COMMIT_SECRET_INPUT: &[u8] = b"tree_commit_secret_input";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EpochSecretNode {
@@ -67,7 +68,7 @@ impl KeyScheduleState {
             group_id.as_bytes(),
             &[group_id.as_bytes(), &tree_hash],
         );
-        let epoch0 = derive_epoch_chain_secrets(&init_secret, group_id, 0, &tree_hash, None);
+        let epoch0 = derive_epoch_chain_secrets(&init_secret, group_id, 0, &tree_hash, None, None);
         Self {
             current_epoch: 0,
             init_secret,
@@ -178,15 +179,40 @@ impl KeyScheduleState {
         tree_hash: [u8; 32],
         commit_context: Option<&[u8]>,
     ) -> [u8; 32] {
+        self.ensure_epoch_with_tree_commit_secret(
+            target_epoch,
+            group_id,
+            tree_hash,
+            commit_context,
+            None,
+        )
+    }
+
+    pub fn ensure_epoch_with_tree_commit_secret(
+        &mut self,
+        target_epoch: u64,
+        group_id: &str,
+        tree_hash: [u8; 32],
+        commit_context: Option<&[u8]>,
+        tree_commit_secret: Option<&[u8; 32]>,
+    ) -> [u8; 32] {
         while self.current_epoch < target_epoch {
             let previous_root = self.current_root_secret().unwrap_or(self.init_secret);
             let next_epoch = self.current_epoch.saturating_add(1);
+            // TreeKEM lineage material is only defined for the concrete commit that advances
+            // to target_epoch, not for synthetic skipped epochs.
+            let lineage_commit_secret = if next_epoch == target_epoch {
+                tree_commit_secret
+            } else {
+                None
+            };
             let next_chain = derive_epoch_chain_secrets(
                 &previous_root,
                 group_id,
                 next_epoch,
                 &tree_hash,
                 commit_context,
+                lineage_commit_secret,
             );
 
             self.epoch_secret_nodes.push(EpochSecretNode {
@@ -381,22 +407,37 @@ fn derive_epoch_chain_secrets(
     epoch: u64,
     tree_hash: &[u8; 32],
     commit_context: Option<&[u8]>,
+    tree_commit_secret: Option<&[u8; 32]>,
 ) -> EpochChainSecrets {
     let mut epoch_bytes = [0u8; 8];
     epoch_bytes.copy_from_slice(&epoch.to_be_bytes());
     let context = group_id.as_bytes();
     let group_context_hash =
         derive_group_context_hash(group_id, epoch, tree_hash, commit_context.unwrap_or(&[]));
-    let commit_secret = labeled_hash(
-        LABEL_COMMIT_SECRET,
-        context,
-        &[
-            previous_root_secret,
-            &epoch_bytes,
-            tree_hash,
-            commit_context.unwrap_or(&[]),
-        ],
-    );
+    let commit_secret = match tree_commit_secret {
+        Some(tree_commit_secret) => labeled_hash(
+            LABEL_COMMIT_SECRET,
+            context,
+            &[
+                previous_root_secret,
+                tree_commit_secret,
+                LABEL_TREE_COMMIT_SECRET_INPUT,
+                &epoch_bytes,
+                tree_hash,
+                commit_context.unwrap_or(&[]),
+            ],
+        ),
+        None => labeled_hash(
+            LABEL_COMMIT_SECRET,
+            context,
+            &[
+                previous_root_secret,
+                &epoch_bytes,
+                tree_hash,
+                commit_context.unwrap_or(&[]),
+            ],
+        ),
+    };
     let joiner_secret = labeled_hash(
         LABEL_JOINER_SECRET,
         context,
@@ -701,6 +742,63 @@ mod tests {
         assert_ne!(chain.joiner_secret, chain.welcome_secret);
         assert_ne!(chain.welcome_secret, chain.epoch_secret);
         assert_ne!(chain.epoch_secret, chain.root_secret);
+    }
+
+    #[test]
+    fn ensure_epoch_with_tree_commit_secret_is_deterministic() {
+        let tree_hash = tree_snapshot_hash(b"tree-lineage-deterministic");
+        let mut a = KeyScheduleState::new("group-lineage-det", tree_hash);
+        let mut b = KeyScheduleState::new("group-lineage-det", tree_hash);
+        let tree_commit_secret = [0xA5u8; 32];
+
+        let _ = a.ensure_epoch_with_tree_commit_secret(
+            1,
+            "group-lineage-det",
+            tree_hash,
+            Some(b"commit-ctx"),
+            Some(&tree_commit_secret),
+        );
+        let _ = b.ensure_epoch_with_tree_commit_secret(
+            1,
+            "group-lineage-det",
+            tree_hash,
+            Some(b"commit-ctx"),
+            Some(&tree_commit_secret),
+        );
+
+        assert_eq!(
+            a.chain_secrets_for_epoch(1).expect("a epoch 1 chain"),
+            b.chain_secrets_for_epoch(1).expect("b epoch 1 chain")
+        );
+    }
+
+    #[test]
+    fn ensure_epoch_with_tree_commit_secret_changes_commit_chain() {
+        let tree_hash = tree_snapshot_hash(b"tree-lineage-delta");
+        let mut default_state = KeyScheduleState::new("group-lineage-delta", tree_hash);
+        let mut lineage_state = default_state.clone();
+        let tree_commit_secret = [0x5Au8; 32];
+
+        let _ = default_state.ensure_epoch(1, "group-lineage-delta", tree_hash, Some(b"commit-1"));
+        let _ = lineage_state.ensure_epoch_with_tree_commit_secret(
+            1,
+            "group-lineage-delta",
+            tree_hash,
+            Some(b"commit-1"),
+            Some(&tree_commit_secret),
+        );
+
+        let default_chain = default_state
+            .chain_secrets_for_epoch(1)
+            .expect("default epoch 1 chain");
+        let lineage_chain = lineage_state
+            .chain_secrets_for_epoch(1)
+            .expect("lineage epoch 1 chain");
+
+        assert_ne!(default_chain.commit_secret, lineage_chain.commit_secret);
+        assert_ne!(default_chain.joiner_secret, lineage_chain.joiner_secret);
+        assert_ne!(default_chain.epoch_secret, lineage_chain.epoch_secret);
+        assert_ne!(default_chain.root_secret, lineage_chain.root_secret);
     }
 
     #[test]

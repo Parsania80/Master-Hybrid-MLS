@@ -1,15 +1,15 @@
 use crate::crypto::{
     decrypt_path_secret, encrypt_path_secret, hybrid_kem_decapsulate, hybrid_kem_encapsulate,
     HybridCiphertext, HybridPrivateKey, HybridPublicKey, HybridSignPubKey, HybridSignature,
-    KyberPub,
+    KyberPriv, KyberPub,
 };
 use ed25519_dalek::{Signature as EdSig, VerifyingKey as EdPublic};
 use ml_dsa::{EncodedSignature, EncodedVerifyingKey, MlDsa65};
-use ml_kem::Key;
+use ml_kem::{Key, Seed};
 use rand_core::{CryptoRng, Rng};
 use sha3::{Digest, Sha3_256};
 use std::collections::HashSet;
-use x25519_dalek::PublicKey as X25519Pub;
+use x25519_dalek::{PublicKey as X25519Pub, StaticSecret as X25519Priv};
 
 /// Represents a User in the tree.
 #[derive(Clone, Debug, PartialEq)]
@@ -48,7 +48,7 @@ pub struct RatchetTree {
 }
 
 /// Data required to populate a parent node during an Add commit path update.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ParentUpdate {
     pub public_key: HybridPublicKey,
     pub unmerged_leaves: Vec<u32>,
@@ -99,6 +99,141 @@ pub struct PathUpdate {
 pub struct PathSecretCiphertext {
     pub kem: HybridCiphertext,
     pub payload: Vec<u8>,
+}
+
+/// Explicit TreeKEM leaf secret wrapper (32 bytes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeafSecret(pub [u8; 32]);
+
+/// One direct-path level in root-to-leaf order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirectPathSecretLevel {
+    /// Parent node index at this direct-path level.
+    pub parent_node: usize,
+    /// Copath node index for this level.
+    pub copath_node: usize,
+    /// Distance from leaf parent (0 = leaf parent, increasing towards root).
+    pub level_from_leaf: u32,
+    /// Path secret for this parent level.
+    pub path_secret: [u8; 32],
+    /// Node secret for this parent level.
+    ///
+    /// Task 3 policy: `node_secret = KDF(path_secret, parent_node, level_from_leaf)`.
+    pub node_secret: [u8; 32],
+}
+
+/// Explicit sender direct-path secret model for one path update.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectPathSecretModel {
+    pub sender_leaf: usize,
+    pub leaf_secret: LeafSecret,
+    /// Levels are stored in root-to-leaf order to match internal commit-path traversal.
+    pub levels_root_to_leaf: Vec<DirectPathSecretLevel>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectPathSecretModelError {
+    SenderOutOfBounds,
+    PathLengthMismatch {
+        expected: usize,
+        actual: usize,
+    },
+    ParentNodeMismatch {
+        level: usize,
+        expected: usize,
+        actual: usize,
+    },
+    CopathNodeMismatch {
+        level: usize,
+        expected: usize,
+        actual: usize,
+    },
+    LevelFromLeafMismatch {
+        level: usize,
+        expected: u32,
+        actual: u32,
+    },
+    NodeSecretMismatch {
+        level: usize,
+    },
+}
+
+impl DirectPathSecretModel {
+    pub fn path_secrets_root_to_leaf(&self) -> Vec<[u8; 32]> {
+        self.levels_root_to_leaf
+            .iter()
+            .map(|level| level.path_secret)
+            .collect()
+    }
+
+    /// Derive Commit `ParentUpdate` entries in leaf-to-root order.
+    ///
+    /// This order matches `RatchetTree::direct_path(...)` and commit path semantics.
+    pub fn parent_updates_leaf_to_root(&self) -> Vec<ParentUpdate> {
+        self.levels_root_to_leaf
+            .iter()
+            .rev()
+            .map(|level| ParentUpdate {
+                public_key: derive_parent_public_key_from_node_secret(
+                    &level.node_secret,
+                    level.parent_node,
+                    level.level_from_leaf,
+                ),
+                unmerged_leaves: Vec::new(),
+            })
+            .collect()
+    }
+
+    /// Validate structural and ordering invariants against a specific tree snapshot.
+    pub fn validate_for_tree(&self, tree: &RatchetTree) -> Result<(), DirectPathSecretModelError> {
+        if self.sender_leaf >= tree.leaf_count() {
+            return Err(DirectPathSecretModelError::SenderOutOfBounds);
+        }
+        let expected = tree
+            .direct_path_with_copath(self.sender_leaf)
+            .ok_or(DirectPathSecretModelError::SenderOutOfBounds)?;
+        if expected.len() != self.levels_root_to_leaf.len() {
+            return Err(DirectPathSecretModelError::PathLengthMismatch {
+                expected: expected.len(),
+                actual: self.levels_root_to_leaf.len(),
+            });
+        }
+        let path_len = expected.len();
+        for (idx, ((expected_parent, expected_copath), level)) in expected
+            .iter()
+            .zip(self.levels_root_to_leaf.iter())
+            .enumerate()
+        {
+            if *expected_parent != level.parent_node {
+                return Err(DirectPathSecretModelError::ParentNodeMismatch {
+                    level: idx,
+                    expected: *expected_parent,
+                    actual: level.parent_node,
+                });
+            }
+            if *expected_copath != level.copath_node {
+                return Err(DirectPathSecretModelError::CopathNodeMismatch {
+                    level: idx,
+                    expected: *expected_copath,
+                    actual: level.copath_node,
+                });
+            }
+            let expected_level_from_leaf = (path_len.saturating_sub(1).saturating_sub(idx)) as u32;
+            if expected_level_from_leaf != level.level_from_leaf {
+                return Err(DirectPathSecretModelError::LevelFromLeafMismatch {
+                    level: idx,
+                    expected: expected_level_from_leaf,
+                    actual: level.level_from_leaf,
+                });
+            }
+            let expected_node_secret =
+                derive_node_secret(&level.path_secret, level.parent_node, level.level_from_leaf);
+            if level.node_secret != expected_node_secret {
+                return Err(DirectPathSecretModelError::NodeSecretMismatch { level: idx });
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -728,12 +863,57 @@ impl RatchetTree {
         receiver_private: &HybridPrivateKey,
     ) -> Option<Vec<Option<[u8; 32]>>> {
         self.apply_commit(commit)?;
-        self.process_path_update_for_leaf(
+        let derived = self.process_path_update_for_leaf(
             commit.sender,
             receiver_leaf,
             receiver_private,
             path_update,
-        )
+        )?;
+        self.validate_commit_path_against_node_secret_lineage(
+            commit.sender,
+            &commit.path,
+            &derived,
+            path_update,
+        )?;
+        Some(derived)
+    }
+
+    /// Build the explicit sender direct-path secret model for one path update.
+    ///
+    /// The resulting levels are in root-to-leaf order and include both path/node
+    /// secret values with Task 1 invariants.
+    pub fn derive_direct_path_secret_model(
+        &self,
+        leaf_index: usize,
+        leaf_secret: [u8; 32],
+    ) -> Option<DirectPathSecretModel> {
+        if leaf_index >= self.leaf_count() {
+            return None;
+        }
+        let path = self.direct_path_with_copath(leaf_index)?;
+        let mut levels_leaf_to_root = Vec::with_capacity(path.len());
+        let mut current = leaf_secret;
+        for (level_from_leaf, (parent_node, copath_node)) in path.iter().rev().enumerate() {
+            let next = derive_path_secret(&current, *parent_node, level_from_leaf as u32);
+            let node_secret = derive_node_secret(&next, *parent_node, level_from_leaf as u32);
+            levels_leaf_to_root.push(DirectPathSecretLevel {
+                parent_node: *parent_node,
+                copath_node: *copath_node,
+                level_from_leaf: level_from_leaf as u32,
+                path_secret: next,
+                node_secret,
+            });
+            current = next;
+        }
+        levels_leaf_to_root.reverse();
+
+        let model = DirectPathSecretModel {
+            sender_leaf: leaf_index,
+            leaf_secret: LeafSecret(leaf_secret),
+            levels_root_to_leaf: levels_leaf_to_root,
+        };
+        debug_assert!(model.validate_for_tree(self).is_ok());
+        Some(model)
     }
 
     /// Derive path secrets and encrypt them to each copath resolution.
@@ -743,40 +923,31 @@ impl RatchetTree {
         leaf_index: usize,
         leaf_secret: [u8; 32],
     ) -> Option<PathUpdate> {
-        let path = self.direct_path_with_copath(leaf_index)?;
-        if path.is_empty() {
+        let model = self.derive_direct_path_secret_model(leaf_index, leaf_secret)?;
+        if model.levels_root_to_leaf.is_empty() {
             return Some(PathUpdate {
                 path_secrets: Vec::new(),
                 ciphertexts: Vec::new(),
             });
         }
 
-        let mut secrets_rev = Vec::new();
-        let mut current = leaf_secret;
-        for (level, (parent_index, _)) in path.iter().rev().enumerate() {
-            let next = derive_path_secret(&current, *parent_index, level as u32);
-            secrets_rev.push(next);
-            current = next;
-        }
-        secrets_rev.reverse();
-
         let mut ciphertexts = Vec::new();
-        for ((parent_index, copath_index), path_secret) in path.iter().zip(secrets_rev.iter()) {
-            let resolution = self.resolution(*copath_index)?;
+        for level in &model.levels_root_to_leaf {
+            let resolution = self.resolution(level.copath_node)?;
             let mut level_ct = Vec::new();
             for node_index in resolution {
                 let public_key = self.node_public_key(node_index)?;
-                let ctx = path_secret_encryption_context(leaf_index, *parent_index, node_index);
+                let ctx = path_secret_encryption_context(leaf_index, level.parent_node, node_index);
 
                 let (ct, shared) = hybrid_kem_encapsulate(rng, public_key, &ctx);
-                let payload = encrypt_path_secret(&shared, &ctx, path_secret);
+                let payload = encrypt_path_secret(&shared, &ctx, &level.path_secret);
                 level_ct.push(PathSecretCiphertext { kem: ct, payload });
             }
             ciphertexts.push(level_ct);
         }
 
         Some(PathUpdate {
-            path_secrets: secrets_rev,
+            path_secrets: model.path_secrets_root_to_leaf(),
             ciphertexts,
         })
     }
@@ -799,35 +970,33 @@ impl RatchetTree {
         }
 
         let receiver_node = leaf_to_node_index(receiver_leaf);
-        let mut found_index: Option<usize> = None;
-        let mut found_secret: Option<[u8; 32]> = None;
+        let mut decrypted_at_level = vec![None; path.len()];
 
-        for idx in (0..path.len()).rev() {
+        for idx in 0..path.len() {
             let (parent_index, copath_index) = path[idx];
             let resolution = self.resolution(copath_index)?;
+            let level_cts = update.ciphertexts.get(idx)?;
+            // For strict encoded-payload handling, every level must match resolution width.
+            if level_cts.len() != resolution.len() {
+                return None;
+            }
             if resolution.is_empty() {
                 continue;
             }
             let pos = resolution.iter().position(|node| *node == receiver_node);
             if let Some(pos) = pos {
-                let level_cts = update.ciphertexts.get(idx)?;
-                if level_cts.len() != resolution.len() {
-                    return None;
-                }
                 let ct = level_cts.get(pos)?;
                 let ctx = path_secret_encryption_context(sender, parent_index, receiver_node);
 
                 let shared = hybrid_kem_decapsulate(receiver_private, &ct.kem, &ctx);
                 let secret = decrypt_path_secret(&shared, &ctx, &ct.payload)?;
-                found_index = Some(idx);
-                found_secret = Some(secret);
-                break;
+                decrypted_at_level[idx] = Some(secret);
             }
         }
 
-        let start_index = found_index?;
+        let start_index = decrypted_at_level.iter().rposition(|s| s.is_some())?;
         let mut secrets = vec![None; path.len()];
-        let mut current = found_secret?;
+        let mut current = decrypted_at_level[start_index]?;
         secrets[start_index] = Some(current);
 
         if start_index > 0 {
@@ -837,6 +1006,19 @@ impl RatchetTree {
                 let next = derive_path_secret(&current, parent_index, level);
                 secrets[k] = Some(next);
                 current = next;
+            }
+        }
+
+        // If we could decrypt at multiple levels, reconstructed chain must agree.
+        for idx in 0..path.len() {
+            if let Some(observed) = decrypted_at_level[idx] {
+                if let Some(reconstructed) = secrets[idx] {
+                    if reconstructed != observed {
+                        return None;
+                    }
+                } else {
+                    secrets[idx] = Some(observed);
+                }
             }
         }
 
@@ -1026,6 +1208,57 @@ impl RatchetTree {
             });
         }
         self.compute_parent_hashes_for_leaf(sender)?;
+        Some(())
+    }
+
+    fn validate_commit_path_against_node_secret_lineage(
+        &self,
+        sender: usize,
+        commit_path_leaf_to_root: &[ParentUpdate],
+        derived_path_secrets_root_to_leaf: &[Option<[u8; 32]>],
+        path_update: &PathUpdate,
+    ) -> Option<()> {
+        let direct_path_root_to_leaf = self.direct_path_with_copath(sender)?;
+        if direct_path_root_to_leaf.len() != commit_path_leaf_to_root.len() {
+            return None;
+        }
+        if direct_path_root_to_leaf.len() != derived_path_secrets_root_to_leaf.len() {
+            return None;
+        }
+        if !path_update.path_secrets.is_empty()
+            && path_update.path_secrets.len() != direct_path_root_to_leaf.len()
+        {
+            return None;
+        }
+
+        for (root_idx, (parent_node, _)) in direct_path_root_to_leaf.iter().enumerate() {
+            let commit_idx = direct_path_root_to_leaf
+                .len()
+                .saturating_sub(1)
+                .saturating_sub(root_idx);
+            let level_from_leaf = commit_idx as u32;
+            let path_secret_opt = if path_update.path_secrets.is_empty() {
+                derived_path_secrets_root_to_leaf[root_idx]
+            } else {
+                Some(path_update.path_secrets[root_idx])
+            };
+
+            if let Some(path_secret) = path_secret_opt {
+                let node_secret = derive_node_secret(&path_secret, *parent_node, level_from_leaf);
+                let expected = derive_parent_public_key_from_node_secret(
+                    &node_secret,
+                    *parent_node,
+                    level_from_leaf,
+                );
+                if commit_path_leaf_to_root
+                    .get(commit_idx)
+                    .map(|update| &update.public_key)
+                    != Some(&expected)
+                {
+                    return None;
+                }
+            }
+        }
         Some(())
     }
 
@@ -1386,6 +1619,12 @@ fn derive_path_secret(parent_secret: &[u8; 32], parent_index: usize, level: u32)
     mls_tree_labeled_hash(b"derive path secret", &context, &[parent_secret])
 }
 
+fn derive_node_secret(path_secret: &[u8; 32], parent_index: usize, level: u32) -> [u8; 32] {
+    let context =
+        mls_tree_labeled_context(b"node secret derivation", &[parent_index as u32, level]);
+    mls_tree_labeled_hash(b"derive node secret", &context, &[path_secret])
+}
+
 fn path_secret_encryption_context(
     sender_leaf: usize,
     parent_index: usize,
@@ -1399,6 +1638,34 @@ fn path_secret_encryption_context(
             recipient_node as u32,
         ],
     )
+}
+
+fn derive_parent_public_key_from_node_secret(
+    node_secret: &[u8; 32],
+    parent_node: usize,
+    level_from_leaf: u32,
+) -> HybridPublicKey {
+    let context = mls_tree_labeled_context(
+        b"node key derivation",
+        &[parent_node as u32, level_from_leaf],
+    );
+    let classic_secret =
+        mls_tree_labeled_hash(b"derive node classic secret", &context, &[node_secret]);
+    let classic_private = X25519Priv::from(classic_secret);
+    let classic_public = X25519Pub::from(&classic_private);
+
+    let pq_seed_lo = mls_tree_labeled_hash(b"derive node pq seed 0", &context, &[node_secret]);
+    let pq_seed_hi = mls_tree_labeled_hash(b"derive node pq seed 1", &context, &[node_secret]);
+    let mut pq_seed = [0u8; 64];
+    pq_seed[..32].copy_from_slice(&pq_seed_lo);
+    pq_seed[32..].copy_from_slice(&pq_seed_hi);
+    let pq_private = KyberPriv::from_seed(Seed::from(pq_seed));
+    let pq_public = pq_private.encapsulation_key().clone();
+
+    HybridPublicKey {
+        classic: classic_public,
+        pq: pq_public,
+    }
 }
 
 fn mls_tree_labeled_context(label: &[u8], fields: &[u32]) -> Vec<u8> {
@@ -1725,6 +1992,16 @@ mod tests {
             .collect()
     }
 
+    fn parent_updates_from_leaf_secret(
+        tree: &RatchetTree,
+        sender: usize,
+        leaf_secret: [u8; 32],
+    ) -> Vec<ParentUpdate> {
+        tree.derive_direct_path_secret_model(sender, leaf_secret)
+            .expect("derive direct path secret model")
+            .parent_updates_leaf_to_root()
+    }
+
     #[test]
     fn add_key_package_inserts_into_empty_tree() {
         let mut tree = RatchetTree::new(0);
@@ -1950,11 +2227,10 @@ mod tests {
             .insert_key_package(&bob_kp)
             .expect("insert into temp tree");
 
-        let parent_path = parent_updates_for(&tree_after, 0, 42);
         let commit = Commit {
             sender: 0,
             proposals: vec![Proposal::Add(bob_kp.clone())],
-            path: parent_path,
+            path: parent_updates_from_leaf_secret(&tree_after, 0, [7u8; 32]),
         };
 
         let mut rng = TestRng(0x5a5a5a5a5a5a5a5a);
@@ -1968,6 +2244,158 @@ mod tests {
 
         assert_eq!(derived.len(), path_update.ciphertexts.len());
         assert!(derived.iter().any(|v| v.is_some()));
+    }
+
+    #[test]
+    fn apply_commit_with_path_update_rejects_mismatched_commit_parent_key() {
+        let sender_leaf = make_leaf(45);
+        let mut tree = RatchetTree::from_leaves(vec![sender_leaf]);
+
+        let (bob_kp, bob_priv) = {
+            let kp = make_key_package(46);
+            let kem_seed = Seed::from([46u8; 64]);
+            let kyber_priv = KyberPriv::from_seed(kem_seed);
+            let classic_priv = X25519Priv::from([46u8; 32]);
+            let priv_key = HybridPrivateKey {
+                classic: classic_priv,
+                pq: kyber_priv,
+            };
+            (kp, priv_key)
+        };
+
+        let mut tree_after = tree.clone();
+        tree_after
+            .insert_key_package(&bob_kp)
+            .expect("insert into temp tree");
+
+        let mut commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::Add(bob_kp.clone())],
+            path: parent_updates_from_leaf_secret(&tree_after, 0, [8u8; 32]),
+        };
+        commit.path[0].public_key = hybrid_public_key(200);
+
+        let mut rng = TestRng(0x6a6a6a6a6a6a6a6a);
+        let path_update = tree_after
+            .build_path_update(&mut rng, 0, [8u8; 32])
+            .expect("path update");
+
+        let result = tree.apply_commit_with_path_update(&commit, &path_update, 1, &bob_priv);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn apply_commit_with_path_update_rejects_encoded_path_with_non_receiver_level_width_mismatch() {
+        let leaf0 = make_leaf(47);
+        let leaf1 = make_leaf(48);
+        let leaf2 = make_leaf(49);
+        let mut tree = RatchetTree::from_leaves(vec![leaf0, leaf1, leaf2]);
+
+        let (receiver_kp, receiver_priv) = {
+            let kp = make_key_package(49);
+            let kem_seed = Seed::from([49u8; 64]);
+            let kyber_priv = KyberPriv::from_seed(kem_seed);
+            let classic_priv = X25519Priv::from([49u8; 32]);
+            let priv_key = HybridPrivateKey {
+                classic: classic_priv,
+                pq: kyber_priv,
+            };
+            (kp, priv_key)
+        };
+        tree.update_leaf(2, &receiver_kp)
+            .expect("receiver leaf update");
+
+        let mut tree_after = tree.clone();
+        let sender_update_kp = make_key_package(50);
+        tree_after
+            .update_leaf(0, &sender_update_kp)
+            .expect("sender update preview");
+        let leaf_secret = [0x0Au8; 32];
+        let commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::Update {
+                leaf_index: 0,
+                key_package: sender_update_kp,
+            }],
+            path: parent_updates_from_leaf_secret(&tree_after, 0, leaf_secret),
+        };
+        let mut rng = TestRng(0x7777_7777_7777_7777);
+        let path_update = tree_after
+            .build_path_update(&mut rng, 0, leaf_secret)
+            .expect("path update");
+
+        let path = tree_after
+            .direct_path_with_copath(0)
+            .expect("direct path with copath");
+        let receiver_node = RatchetTree::leaf_to_node_index(2);
+        let mismatch_level = path
+            .iter()
+            .enumerate()
+            .find_map(|(idx, (_, copath))| {
+                let resolution = tree_after.resolution(*copath)?;
+                if !resolution.contains(&receiver_node) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .expect("expected a non-receiver level");
+
+        let encoded = path_update.encode();
+        let mut decoded = PathUpdate::decode(&encoded).expect("decode");
+        assert!(
+            decoded.path_secrets.is_empty(),
+            "encoded path omits path_secrets"
+        );
+        let _ = decoded.ciphertexts[mismatch_level].pop();
+
+        let result = tree.apply_commit_with_path_update(&commit, &decoded, 2, &receiver_priv);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn apply_commit_with_path_update_rejects_mismatched_commit_parent_key_when_encoded() {
+        let sender_leaf = make_leaf(51);
+        let mut tree = RatchetTree::from_leaves(vec![sender_leaf]);
+
+        let (bob_kp, bob_priv) = {
+            let kp = make_key_package(52);
+            let kem_seed = Seed::from([52u8; 64]);
+            let kyber_priv = KyberPriv::from_seed(kem_seed);
+            let classic_priv = X25519Priv::from([52u8; 32]);
+            let priv_key = HybridPrivateKey {
+                classic: classic_priv,
+                pq: kyber_priv,
+            };
+            (kp, priv_key)
+        };
+
+        let mut tree_after = tree.clone();
+        tree_after
+            .insert_key_package(&bob_kp)
+            .expect("insert into temp tree");
+
+        let leaf_secret = [0x0Bu8; 32];
+        let mut commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::Add(bob_kp.clone())],
+            path: parent_updates_from_leaf_secret(&tree_after, 0, leaf_secret),
+        };
+        commit.path[0].public_key = hybrid_public_key(201);
+
+        let mut rng = TestRng(0x8a8a8a8a8a8a8a8a);
+        let path_update = tree_after
+            .build_path_update(&mut rng, 0, leaf_secret)
+            .expect("path update");
+        let encoded = path_update.encode();
+        let decoded = PathUpdate::decode(&encoded).expect("decode");
+        assert!(
+            decoded.path_secrets.is_empty(),
+            "encoded path omits path_secrets"
+        );
+
+        let result = tree.apply_commit_with_path_update(&commit, &decoded, 1, &bob_priv);
+        assert!(result.is_none());
     }
 
     #[test]
@@ -1992,11 +2420,10 @@ mod tests {
             .insert_key_package(&bob_kp)
             .expect("insert into temp tree");
 
-        let parent_path = parent_updates_for(&tree_after, 0, 52);
         let commit = Commit {
             sender: 0,
             proposals: vec![Proposal::Add(bob_kp.clone())],
-            path: parent_path,
+            path: parent_updates_from_leaf_secret(&tree_after, 0, [9u8; 32]),
         };
 
         let mut rng = TestRng(0x1111111111111111);
@@ -2031,11 +2458,10 @@ mod tests {
             .insert_key_package(&bob_kp)
             .expect("insert into temp tree");
 
-        let parent_path = parent_updates_for(&tree_after, 0, 55);
         let commit = Commit {
             sender: 0,
             proposals: vec![Proposal::Add(bob_kp.clone())],
-            path: parent_path,
+            path: parent_updates_from_leaf_secret(&tree_after, 0, [0xAAu8; 32]),
         };
 
         let mut rng = TestRng(0x3333333333333333);
@@ -2071,11 +2497,10 @@ mod tests {
             .insert_key_package(&bob_kp)
             .expect("insert into temp tree");
 
-        let parent_path = parent_updates_for(&tree_after, 0, 58);
         let commit = Commit {
             sender: 0,
             proposals: vec![Proposal::Add(bob_kp.clone())],
-            path: parent_path,
+            path: parent_updates_from_leaf_secret(&tree_after, 0, [0xBBu8; 32]),
         };
 
         let mut rng = TestRng(0x4444444444444444);
@@ -2111,11 +2536,10 @@ mod tests {
             .insert_key_package(&bob_kp)
             .expect("insert into temp tree");
 
-        let parent_path = parent_updates_for(&tree_after, 0, 61);
         let commit = Commit {
             sender: 0,
             proposals: vec![Proposal::Add(bob_kp.clone())],
-            path: parent_path,
+            path: parent_updates_from_leaf_secret(&tree_after, 0, [0xCCu8; 32]),
         };
 
         let mut rng = TestRng(0x5555555555555555);
@@ -2144,14 +2568,13 @@ mod tests {
         tree_after_props_epoch1
             .update_leaf(1, &bob_kp_epoch1)
             .expect("update leaf for epoch1");
-        let path_epoch1 = parent_updates_for(&tree_after_props_epoch1, 1, 94);
         let commit_epoch1 = Commit {
             sender: 1,
             proposals: vec![Proposal::Update {
                 leaf_index: 1,
                 key_package: bob_kp_epoch1.clone(),
             }],
-            path: path_epoch1,
+            path: parent_updates_from_leaf_secret(&tree_after_props_epoch1, 1, [0x11u8; 32]),
         };
         let mut rng_epoch1 = TestRng(0x1010_1010_1010_1010);
         let path_update_epoch1 = tree_after_props_epoch1
@@ -2171,14 +2594,13 @@ mod tests {
         tree_after_props_epoch2
             .update_leaf(0, &alice_kp_epoch2)
             .expect("update leaf for epoch2");
-        let path_epoch2 = parent_updates_for(&tree_after_props_epoch2, 0, 95);
         let commit_epoch2 = Commit {
             sender: 0,
             proposals: vec![Proposal::Update {
                 leaf_index: 0,
                 key_package: alice_kp_epoch2,
             }],
-            path: path_epoch2,
+            path: parent_updates_from_leaf_secret(&tree_after_props_epoch2, 0, [0x22u8; 32]),
         };
         let mut rng_epoch2 = TestRng(0x2020_2020_2020_2020);
         let path_update_epoch2 = tree_after_props_epoch2
@@ -2222,11 +2644,10 @@ mod tests {
         tree_after_remove
             .remove_leaf(2)
             .expect("remove leaf in temp tree");
-        let path_remove = parent_updates_for(&tree_after_remove, 0, 99);
         let remove_commit = Commit {
             sender: 0,
             proposals: vec![Proposal::Remove { leaf_index: 2 }],
-            path: path_remove,
+            path: parent_updates_from_leaf_secret(&tree_after_remove, 0, [0x33u8; 32]),
         };
         let mut rng_remove = TestRng(0x3030_3030_3030_3030);
         let path_update_remove = tree_after_remove
@@ -2249,14 +2670,13 @@ mod tests {
         tree_after_bob_update
             .update_leaf(1, &bob_kp_epoch2)
             .expect("update bob leaf in temp tree");
-        let path_epoch2 = parent_updates_for(&tree_after_bob_update, 1, 101);
         let bob_update_commit = Commit {
             sender: 1,
             proposals: vec![Proposal::Update {
                 leaf_index: 1,
                 key_package: bob_kp_epoch2,
             }],
-            path: path_epoch2,
+            path: parent_updates_from_leaf_secret(&tree_after_bob_update, 1, [0x44u8; 32]),
         };
         let mut rng_epoch2 = TestRng(0x4040_4040_4040_4040);
         let path_update_epoch2 = tree_after_bob_update
@@ -2288,6 +2708,17 @@ mod tests {
         let c = derive_path_secret(&parent_secret, 3, 2);
         assert_ne!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn node_secret_derivation_is_context_bound_and_separated_from_path_secret() {
+        let path_secret = [0x56u8; 32];
+        let a = derive_node_secret(&path_secret, 3, 1);
+        let b = derive_node_secret(&path_secret, 4, 1);
+        let c = derive_node_secret(&path_secret, 3, 2);
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, path_secret);
     }
 
     #[test]
@@ -2826,9 +3257,7 @@ mod tests {
         ]);
 
         let direct = tree.direct_path(0).expect("direct path");
-        let filtered = tree
-            .filtered_direct_path(0)
-            .expect("filtered direct path");
+        let filtered = tree.filtered_direct_path(0).expect("filtered direct path");
         assert_eq!(filtered, direct);
 
         tree.nodes[RatchetTree::leaf_to_node_index(1)] = Node::Blank;
@@ -2838,6 +3267,127 @@ mod tests {
             .filtered_direct_path(0)
             .expect("filtered direct path after blanking");
         assert_eq!(filtered_after_blank, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn direct_path_secret_model_validates_tree_invariants() {
+        let tree = RatchetTree::from_leaves(vec![
+            make_leaf(110),
+            make_leaf(111),
+            make_leaf(112),
+            make_leaf(113),
+        ]);
+        let leaf_secret = [0x2Au8; 32];
+        let model = tree
+            .derive_direct_path_secret_model(0, leaf_secret)
+            .expect("derive model");
+        assert_eq!(model.sender_leaf, 0);
+        assert_eq!(model.leaf_secret, LeafSecret(leaf_secret));
+        assert!(model.validate_for_tree(&tree).is_ok());
+        assert_eq!(model.levels_root_to_leaf.len(), 2);
+        assert_eq!(model.levels_root_to_leaf[0].level_from_leaf, 1);
+        assert_eq!(model.levels_root_to_leaf[1].level_from_leaf, 0);
+        for level in &model.levels_root_to_leaf {
+            let expected =
+                derive_node_secret(&level.path_secret, level.parent_node, level.level_from_leaf);
+            assert_eq!(level.node_secret, expected);
+        }
+    }
+
+    #[test]
+    fn direct_path_secret_model_detects_parent_mismatch() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(120), make_leaf(121), make_leaf(122)]);
+        let mut model = tree
+            .derive_direct_path_secret_model(0, [0x33u8; 32])
+            .expect("derive model");
+        model.levels_root_to_leaf[0].parent_node ^= 1;
+        let err = model
+            .validate_for_tree(&tree)
+            .expect_err("expected mismatch error");
+        assert!(matches!(
+            err,
+            DirectPathSecretModelError::ParentNodeMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn direct_path_secret_model_detects_node_secret_mismatch() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(130), make_leaf(131), make_leaf(132)]);
+        let mut model = tree
+            .derive_direct_path_secret_model(1, [0x44u8; 32])
+            .expect("derive model");
+        model.levels_root_to_leaf[0].node_secret[0] ^= 0xFF;
+        let err = model
+            .validate_for_tree(&tree)
+            .expect_err("expected mismatch error");
+        assert!(matches!(
+            err,
+            DirectPathSecretModelError::NodeSecretMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn build_path_update_path_secrets_follow_secret_model() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(140), make_leaf(141), make_leaf(142)]);
+        let leaf_secret = [0x55u8; 32];
+        let model = tree
+            .derive_direct_path_secret_model(2, leaf_secret)
+            .expect("derive model");
+        let mut rng = TestRng(0xABCDEF0123456789);
+        let update = tree
+            .build_path_update(&mut rng, 2, leaf_secret)
+            .expect("build path update");
+        assert_eq!(update.path_secrets, model.path_secrets_root_to_leaf());
+    }
+
+    #[test]
+    fn parent_updates_leaf_to_root_match_direct_path_order() {
+        let tree = RatchetTree::from_leaves(vec![
+            make_leaf(150),
+            make_leaf(151),
+            make_leaf(152),
+            make_leaf(153),
+        ]);
+        let model = tree
+            .derive_direct_path_secret_model(0, [0x66u8; 32])
+            .expect("derive model");
+        let path = model.parent_updates_leaf_to_root();
+        let direct_path = tree.direct_path(0).expect("direct path");
+        assert_eq!(path.len(), direct_path.len());
+
+        for (idx, parent_update) in path.iter().enumerate() {
+            let level = &model.levels_root_to_leaf[model.levels_root_to_leaf.len() - 1 - idx];
+            assert_eq!(direct_path[idx], level.parent_node);
+            let expected = derive_parent_public_key_from_node_secret(
+                &level.node_secret,
+                level.parent_node,
+                level.level_from_leaf,
+            );
+            assert_eq!(parent_update.public_key, expected);
+        }
+    }
+
+    #[test]
+    fn parent_updates_are_deterministic_from_node_secrets() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(160), make_leaf(161), make_leaf(162)]);
+        let model_a = tree
+            .derive_direct_path_secret_model(1, [0x77u8; 32])
+            .expect("derive model a");
+        let model_b = tree
+            .derive_direct_path_secret_model(1, [0x77u8; 32])
+            .expect("derive model b");
+        let model_c = tree
+            .derive_direct_path_secret_model(1, [0x78u8; 32])
+            .expect("derive model c");
+
+        assert_eq!(
+            model_a.parent_updates_leaf_to_root(),
+            model_b.parent_updates_leaf_to_root()
+        );
+        assert_ne!(
+            model_a.parent_updates_leaf_to_root(),
+            model_c.parent_updates_leaf_to_root()
+        );
     }
 
     #[test]

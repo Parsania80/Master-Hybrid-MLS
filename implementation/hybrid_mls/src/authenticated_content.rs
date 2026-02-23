@@ -549,8 +549,7 @@ mod tests {
         );
 
         let membership_key = derive_membership_key(&[0x55u8; 32]);
-        let tagged =
-            AuthenticatedContent::sign_with_membership_tag(tbs, &signing, &membership_key);
+        let tagged = AuthenticatedContent::sign_with_membership_tag(tbs, &signing, &membership_key);
         assert!(tagged.verify_with_membership_tag(&verify_key, &membership_key));
         let membership_tag = tagged
             .tbs
@@ -583,7 +582,10 @@ mod tests {
         assert_eq!(proposal.group_id, "vector-ac");
         assert_eq!(proposal.epoch, 9);
         assert_eq!(proposal.sender_leaf, 2);
-        assert_eq!(proposal.proposal.encode(), Proposal::Remove { leaf_index: 3 }.encode());
+        assert_eq!(
+            proposal.proposal.encode(),
+            Proposal::Remove { leaf_index: 3 }.encode()
+        );
         assert!(decoded.tbs.public_message.membership_tag.is_none());
         assert!(decoded.tbs.public_message.confirmation_tag.is_none());
         assert_eq!(decoded.encode(), fixture.to_vec());
@@ -608,7 +610,10 @@ mod tests {
         assert_eq!(proposal.group_id, "vector-ac");
         assert_eq!(proposal.epoch, 9);
         assert_eq!(proposal.sender_leaf, 2);
-        assert_eq!(proposal.proposal.encode(), Proposal::Remove { leaf_index: 3 }.encode());
+        assert_eq!(
+            proposal.proposal.encode(),
+            Proposal::Remove { leaf_index: 3 }.encode()
+        );
         assert_eq!(
             decoded
                 .tbs
