@@ -1,5 +1,5 @@
 {
-  "epoch": 18,
+  "epoch": 21,
   "leaf_slots": [
     {
       "username": "N",
@@ -11,7 +11,7 @@
     },
     {
       "username": "Q",
-      "key_generation": 1
+      "key_generation": 2
     },
     {
       "username": "W",
@@ -23,6 +23,14 @@
     },
     {
       "username": "G",
+      "key_generation": 1
+    },
+    {
+      "username": "K",
+      "key_generation": 1
+    },
+    {
+      "username": "L",
       "key_generation": 1
     }
   ],
@@ -486,7 +494,77 @@
       "timestamp": 1771524298,
       "line": "--------------------",
       "separator": true
+    },
+    {
+      "timestamp": 1771692465,
+      "line": "RFC9420 Proposal Add: sender=N target=K (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771692465,
+      "line": "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count 6 -> 7 and placed K at LeafIndex=6 (NodeIndex=12)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771692465,
+      "line": "RFC9420 RatchetTree Add result: K mapped to LeafIndex=6 (NodeIndex=12)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771692465,
+      "line": "RFC9420 Commit: GroupContext.epoch 18 -> 19",
+      "separator": false
+    },
+    {
+      "timestamp": 1771692465,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771692563,
+      "line": "RFC9420 Proposal Update: sender=Q target=Q",
+      "separator": false
+    },
+    {
+      "timestamp": 1771692563,
+      "line": "RFC9420 Path Update: Q at LeafIndex=2 (NodeIndex=4) key_generation 1 -> 2",
+      "separator": false
+    },
+    {
+      "timestamp": 1771692563,
+      "line": "RFC9420 Commit: GroupContext.epoch 19 -> 20",
+      "separator": false
+    },
+    {
+      "timestamp": 1771692563,
+      "line": "--------------------",
+      "separator": true
+    },
+    {
+      "timestamp": 1771692606,
+      "line": "RFC9420 Proposal Add: sender=N target=L (KeyPackage owner)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771692606,
+      "line": "RFC9420 RatchetTree Add: no blank leaves; extended right edge leaf_count 7 -> 8 and placed L at LeafIndex=7 (NodeIndex=14)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771692606,
+      "line": "RFC9420 RatchetTree Add result: L mapped to LeafIndex=7 (NodeIndex=14)",
+      "separator": false
+    },
+    {
+      "timestamp": 1771692606,
+      "line": "RFC9420 Commit: GroupContext.epoch 20 -> 21",
+      "separator": false
+    },
+    {
+      "timestamp": 1771692606,
+      "line": "--------------------",
+      "separator": true
     }
   ],
-  "last_action": "add: N added F"
+  "last_action": "add: N added L"
 }

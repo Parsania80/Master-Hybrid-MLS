@@ -411,3 +411,9 @@
 [2026-02-19 21:13] [AGENT] Verification: `cargo test --bin ds_ui_gateway` passed (16/16) and `cargo check` passed.
 [2026-02-19 21:17] [AGENT] Refined tree-size patch scope to apply only on admin demo page (`/ui/admin/demos/:id`) and re-verified UI gateway suite.
 [2026-02-19 21:17] [AGENT] Verification: `cargo test --bin ds_ui_gateway` passed (16/16) and `cargo check` passed.
+[2026-02-21 20:36] [AGENT] Answered Q1/Q2/Q3 with code-grounded detail and appended persistent entries to `QUESTIONS.md` covering client-side group state structs, DS storage schema/lifecycle, and admin-demo Add semantics.
+[2026-02-21 20:36] [AGENT] Updated `README.md` status bullets to reflect the new Q/A documentation coverage and refreshed timestamp.
+[2026-02-21 20:51] [AGENT] Provided concrete `ClientGroupState`-related value examples (ratchet tree shape, opaque group-context extensions bytes, deterministic key-schedule secrets, transcript hash values) with code pointers in `src/tree.rs`, `src/client_state.rs`, `src/key_schedule.rs`, and `src/transcript.rs`.
+[2026-02-21 20:51] [AGENT] Updated `README.md` status bullets and timestamp for this explanatory state-example pass.
+[2026-02-21 21:03] [AGENT] Answered follow-up conceptual deep-dive with code pointers: rationale for `ParentNode.parent_hash`, exact key-schedule/root-secret derivation path, and Add+PathUpdate key-change flow (commit path + receiver decapsulation).
+[2026-02-21 21:03] [AGENT] Updated `README.md` status bullets/timestamp after the explanation-only turn.
