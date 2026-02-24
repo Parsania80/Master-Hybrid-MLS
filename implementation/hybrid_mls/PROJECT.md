@@ -21,6 +21,7 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 - `src/bin/ds_server.rs`: Axum server entrypoint for DS APIs
 - `src/bin/ds_client.rs`: CLI for DS auth, key packages, proposals, commits, sync/apply, and app message flows
 - `protocl-actions/*`: Protocol action documentation templates and code/RFC-mapped flow notes for professor/demo review
+- `protocol-actions/*`: Human-readable protocol action walkthroughs using `protocol-style.md` (math flow, Mermaid, RFC/code mapping, suspicious notes)
 - `scripts/local-1ds-4clients-*.sh`: local orchestration scripts for DS/client lifecycle
 - `scripts/local-1ds-4clients-demo.sh`: end-to-end local demo (A adds B, B adds C, A removes C) with logs
 
@@ -157,6 +158,26 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 9 | Add migration/compat strategy for existing local state and previously stored commits | ✅ Done | Implemented persisted per-state marker/version-gate (`ClientGroupState` v6, v1-v5 auto-compat), strict-by-default for new states, explicit CLI controls (`set-path-compat-policy`, `show-path-compat-policy`), and CLI/UI flows that consult/persist marker plus DS-backed compat persistence assertions. |
 | 10 | Add RFC mapping notes for final TreeKEM lineage model in protocol docs | ✅ Done | Added final RFC mapping addendum in `protocl-actions/treekem-secret-lineage-protocol.md` (lineage flow, key-schedule linkage, label/context mapping, residual deviations) and refreshed `protocl-actions/create-group-protocol.md` gap notes to match current implementation status. |
 
+### Part 13: Protocol Action Documentation (Professor Presentation Readiness)
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 1 | Enforce `protocol-style.md` as mandatory standard for all new protocol-action docs | ✅ Done | Style now requires RFC 9420 + code grounding, explicit suspicious-item notes, LaTeX math, Mermaid sequence flow, and implementation traceability. |
+| 2 | Rework `add-group` action walkthrough (UI open + bootstrap) | ⬜ Todo | Recreate with clearer human-readable narrative and RFC-vs-implementation boundaries, including suspicious notes. |
+| 3 | Document `create-group` action end-to-end | 🔄 Current | Explain exact state construction, tree/key-schedule initialization, and where behavior is implementation convenience vs direct RFC flow. |
+| 4 | Document `add-member` action end-to-end | ⬜ Todo | Include proposal creation, commit generation, path update, welcome emission, sync/apply behavior, and suspicious deviations if found. |
+| 5 | Document `remove-member` action end-to-end | ⬜ Todo | Cover remove proposal/commit effects, tree transitions, receiver apply, and post-remove security semantics. |
+| 6 | Document `self-update / path update` action end-to-end | ⬜ Todo | Show direct-path math (leaf/path/node secret lineage), ciphertext fanout, and strict lineage validation in apply path. |
+| 7 | Document joiner onboarding (`join-from-welcome` and UI `join-from-latest`) | ⬜ Todo | Include welcome/commit/path tuple validation, GroupInfo checks, and key-schedule/transcript consistency gates. |
+| 8 | Document receiver sync state machine (`fetch-and-apply-latest` / UI sync) | ⬜ Todo | Cover ID ordering/replay markers, epoch-gap policy, strict path-update requirements, and compat fallback marker behavior. |
+| 9 | Document proposal families and commit validation matrix | ⬜ Todo | Add/Update/Remove/PSK/ReInit/GroupContextExtensions rules, conflict constraints, and DS-backed rejection behavior. |
+| 10 | Document key schedule and transcript transitions per action | ⬜ Todo | For each action, map commit/welcome/epoch/root/derived secrets and transcript-confirmation effects with RFC names. |
+| 11 | Build protocol-action index for presentation | ⬜ Todo | Add one concise index page linking all action docs in recommended reading order (create -> add -> update -> remove -> sync). |
+| 12 | Add presentation-ready “What to watch” callouts per action | ⬜ Todo | Each action doc must include clear human-readable checkpoints, expected state deltas, and suspicious notes summary for demo narration. |
+| 13 | Final review pass on all protocol docs for clarity and correctness | ⬜ Todo | Verify each equation maps to real code lines and each suspected non-RFC behavior is explicitly called out. |
+| 14 | Document Welcome-message lifecycle end-to-end | ⬜ Todo | Cover Welcome creation, DS transport, recipient decryption/validation, GroupInfo checks, and bootstrap behavior with explicit RFC 9420 section mapping. |
+| 15 | Document external join/commit semantics and implementation status | ⬜ Todo | Map RFC 9420 external commit/join paths to code; if unsupported/partial, document explicitly as suspicious or out-of-scope for current implementation. |
+| 16 | Document application-message protection flow | ⬜ Todo | Explain RFC 9420 private message framing, sender-data protection, decrypt path, and any implementation-specific deviations. |
+
 ---
-Current: `Part 12 complete (Tasks 1-10 done)`
-Next: `Awaiting operator decision for next roadmap part`
+Current: `Part 13 / Task 3 (Document create-group action end-to-end)`
+Next: `Part 13 / Task 4 (Document add-member action end-to-end)`

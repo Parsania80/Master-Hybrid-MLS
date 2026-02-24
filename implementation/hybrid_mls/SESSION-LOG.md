@@ -484,3 +484,7 @@
 [2026-02-24 22:51] [AGENT] Completed Part 12 / Task 10 by adding final RFC 9420 mapping notes for TreeKEM lineage in `protocl-actions/treekem-secret-lineage-protocol.md`: added implementation-to-RFC mapping table, label/context mapping table, and explicit residual deviation notes.
 [2026-02-24 22:51] [AGENT] Updated `protocl-actions/create-group-protocol.md` gap wording to remove stale pending-lineage statements and align create-group notes with current strict lineage validation behavior in commit/apply paths.
 [2026-02-24 22:51] [AGENT] Updated roadmap/docs state: marked `PROJECT.md` Part 12 Tasks 9 and 10 as done (Part 12 complete), refreshed `README.md` status bullets and timestamp.
+[2026-02-24 23:24] [OPERATOR] Requested removal of `protocol-actions/add-group.md`, addition of Welcome-focused protocol-doc roadmap task(s), SESSION-LOG updates, and RFC 9420 web cross-check for missing documentation coverage.
+[2026-02-24 23:24] [AGENT] Removed `protocol-actions/add-group.md` per operator request and updated `PROJECT.md` Part 13: changed Task 2 to rework `add-group` as Todo.
+[2026-02-24 23:24] [AGENT] Extended `PROJECT.md` Part 13 with RFC-driven documentation tasks for Welcome-message lifecycle, external join/commit semantics status mapping, and application-message protection flow.
+[2026-02-24 23:24] [AGENT] Performed RFC 9420 source cross-check (rfc-editor/datatracker) and aligned roadmap coverage to key protocol areas (Welcome path, external commit/join path, message protection path) to reduce presentation gaps.

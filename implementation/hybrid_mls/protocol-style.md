@@ -3,6 +3,12 @@
 This file defines the mandatory style for all future protocol-action documentation.
 The target style is academic, math-first, and directly traceable to implementation.
 
+## 0) Grounding Rule (RFC + Code)
+- Every statement must be grounded in MLS RFC 9420 semantics and the current codebase behavior.
+- For each documented flow step, include the RFC 9420 basis (or explicitly state `No direct RFC step; implementation convenience`).
+- If you find anything suspicious (RFC mismatch, ambiguous transition, missing validation, or risky behavior), you must write it explicitly in the explanation.
+- Suspicious findings must be traceable to concrete code lines in the `Implementation Traceability` table.
+
 ## 1) File Naming & Location Rule
 - Every new action document must be created under `/protocol-actions/`.
 - File names must use kebab-case from the process name.
@@ -21,6 +27,8 @@ Every protocol documentation file must contain exactly these 4 sections (no extr
 - Define primitives and notation (example: let $H$ be SHA-256).
 - Define initial state variables and domains.
 - State any fixed constants, labels, or contexts.
+- State the RFC 9420 basis for this action.
+- If applicable, list initial suspicious findings.
 
 ### Mathematical Flow
 - Provide a numbered step-by-step transformation flow.
@@ -28,6 +36,9 @@ Every protocol documentation file must contain exactly these 4 sections (no extr
   - Inputs
   - Outputs
   - Equation(s)
+- Every step must explicitly include:
+  - RFC 9420 Basis
+  - Suspicious Finding (write `None` if nothing is suspicious)
 - Use precise symbol mapping (no ambiguous variable names).
 
 ### Protocol Visual (Mermaid)
@@ -40,6 +51,7 @@ Every protocol documentation file must contain exactly these 4 sections (no extr
   - Symbol/Equation
   - File:Line
   - Function Name
+- For suspicious findings, add explicit rows prefixed with `SUSPICIOUS:`.
 
 ## Minimal Skeleton (Copy/Paste)
 
@@ -49,6 +61,8 @@ Every protocol documentation file must contain exactly these 4 sections (no extr
 ## Formal Setup
 Let $H$ be SHA-256 and let $KDF$ be HKDF-SHA-256.
 Let initial state be $S_0 = (\text{group\_id}, \text{epoch}, sk)$.
+RFC 9420 Basis: <section(s)>
+Suspicious Findings: <None or explicit item(s)>
 
 Example block equation:
 $$
@@ -63,6 +77,8 @@ $$
    $$
    \tau = H(\text{label} \parallel \text{context} \parallel m)
    $$
+   RFC 9420 Basis: <section(s)>
+   Suspicious Finding: None
 
 2. Step Name
    Inputs: $\tau, sk$
@@ -71,6 +87,8 @@ $$
    $$
    k_1 = KDF(sk, \tau)
    $$
+   RFC 9420 Basis: <section(s)>
+   Suspicious Finding: None
 
 ## Protocol Visual (Mermaid)
 ```mermaid
@@ -87,4 +105,5 @@ sequenceDiagram
 |---|---|---|
 | $\tau = H(\text{label} \parallel \text{context} \parallel m)$ | `src/example.rs:42` | `compute_tau` |
 | $k_1 = KDF(sk, \tau)$ | `src/example.rs:58` | `derive_stage_key` |
+| `SUSPICIOUS: <short description>` | `src/example.rs:99` | `example_fn` |
 ````
