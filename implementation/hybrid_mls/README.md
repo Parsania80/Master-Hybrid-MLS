@@ -506,5 +506,6 @@ Sync notes:
 - Added DS-backed malformed encoded path-update stream negatives (`non-receiver level underflow/overflow`) in `tests/ds_fetch_apply_e2e.rs`, asserting strict receiver rejection with no epoch advance.
 - Part 12 / Task 6 is complete: key schedule transitions now accept TreeKEM lineage commit-secret input via `ensure_epoch_with_tree_commit_secret` (`src/key_schedule.rs`) and this is wired from sender/receiver/joiner commit-apply paths in `src/client_state.rs`, `src/bin/ds_client.rs`, and `src/bin/ds_ui_gateway.rs`.
 - Added lineage key-schedule tests in `src/key_schedule.rs` and `src/client_state.rs`, plus rebaselined deterministic welcome joiner-secret vector in `src/bin/ds_client.rs`.
+- Part 12 / Task 7 is complete: deterministic TreeKEM lineage vectors are now added in `src/tree.rs` for `leaf_secret -> path_secret -> node_secret` chain values and derived parent key material across both hybrid branches (classic exact bytes + PQ key digest fixtures).
 
-Last updated: 2026-02-23 23:10
+Last updated: 2026-02-23 23:20
