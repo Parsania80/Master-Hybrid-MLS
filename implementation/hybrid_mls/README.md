@@ -506,5 +506,12 @@ Sync notes:
 - Added DS-backed malformed encoded path-update stream negatives (`non-receiver level underflow/overflow`) in `tests/ds_fetch_apply_e2e.rs`, asserting strict receiver rejection with no epoch advance.
 - Part 12 / Task 6 is complete: key schedule transitions now accept TreeKEM lineage commit-secret input via `ensure_epoch_with_tree_commit_secret` (`src/key_schedule.rs`) and this is wired from sender/receiver/joiner commit-apply paths in `src/client_state.rs`, `src/bin/ds_client.rs`, and `src/bin/ds_ui_gateway.rs`.
 - Added lineage key-schedule tests in `src/key_schedule.rs` and `src/client_state.rs`, plus rebaselined deterministic welcome joiner-secret vector in `src/bin/ds_client.rs`.
+- Part 12 / Task 7 is complete: deterministic TreeKEM lineage vectors are now added in `src/tree.rs` for `leaf_secret -> path_secret -> node_secret` chain values and derived parent key material across both hybrid branches (classic exact bytes + PQ key digest fixtures).
+- Part 12 / Task 8 is complete: DS-backed strict-lineage coverage now includes Add/Update/Remove tamper negatives and a positive 3-member Add→Update→Remove convergence test with explicit epoch alignment and key-schedule chain-secret lineage equality/rotation assertions in `tests/ds_fetch_apply_e2e.rs`.
+- Part 12 / Task 9 is now in progress with an explicit migration compatibility lane: strict lineage remains default, while legacy fallback is available via `ds_client --allow-legacy-path-compat` (apply/join/sync) and UI env toggle `DS_UI_ALLOW_LEGACY_PATH_COMPAT=1`; DS-backed test coverage now proves strict rejection + compat success for pre-lineage-style tampered Add commit artifacts.
+- Part 12 / Task 9 now includes persisted per-state compat marker/version-gate: `ClientGroupState` moved to v6 with `legacy_path_compat_enabled` persisted; decoding v1-v5 states auto-enables compat marker for migration, while new v6 states default strict. Runtime compat switches now seed/toggle this per-state marker instead of being runtime-only behavior.
+- Added explicit CLI policy control: `ds_client set-path-compat-policy --group-state <path> --mode strict|compat` to clear/set the persisted marker directly.
+- Added quick inspection command: `ds_client show-path-compat-policy --group-state <path>` to print current persisted policy/marker state.
+- Part 12 / Task 10 is complete: protocol docs now include final RFC 9420 TreeKEM lineage mapping notes in `protocl-actions/treekem-secret-lineage-protocol.md` (flow-to-RFC table, label/context mapping, and residual deviation notes), and `protocl-actions/create-group-protocol.md` gap wording was refreshed to reflect current lineage validation status.
 
-Last updated: 2026-02-23 23:10
+Last updated: 2026-02-24 22:51

@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use ed25519_dalek::{
     SecretKey as EdSecretKey, SigningKey as EdSigningKey, VerifyingKey as EdPublic,
 };
@@ -33,7 +33,10 @@ use hybrid_mls::crypto::{
 use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
 use hybrid_mls::key_schedule::tree_snapshot_hash;
 use hybrid_mls::transcript::{derive_confirmation_tag, verify_confirmation_tag};
-use hybrid_mls::tree::{Commit, KeyPackage, LeafNode, Node, PathUpdate, Proposal, RatchetTree};
+use hybrid_mls::tree::{
+    lineage_commit_secret_input, Commit, KeyPackage, LeafNode, Node, PathUpdate, Proposal,
+    RatchetTree,
+};
 use hybrid_mls::welcome::{EncryptedGroupSecrets, GroupInfo, GroupSecrets, Welcome};
 
 #[derive(Parser, Debug)]
@@ -234,6 +237,8 @@ pub enum Commands {
         receiver_private_file: Option<PathBuf>,
         #[arg(long)]
         derived_out: Option<PathBuf>,
+        #[arg(long, default_value_t = false)]
+        allow_legacy_path_compat: bool,
     },
     JoinFromCommit {
         #[arg(long = "base-member-keypackage", required = true)]
@@ -252,6 +257,8 @@ pub enum Commands {
         derived_out: Option<PathBuf>,
         #[arg(long, default_value_t = false)]
         force: bool,
+        #[arg(long, default_value_t = false)]
+        allow_legacy_path_compat: bool,
     },
     JoinFromWelcome {
         #[arg(long = "base-member-keypackage", required = true)]
@@ -272,6 +279,8 @@ pub enum Commands {
         derived_out: Option<PathBuf>,
         #[arg(long, default_value_t = false)]
         force: bool,
+        #[arg(long, default_value_t = false)]
+        allow_legacy_path_compat: bool,
     },
     FetchAndApplyLatest {
         #[arg(long)]
@@ -296,6 +305,8 @@ pub enum Commands {
         poll_interval_ms: u64,
         #[arg(long)]
         max_polls: Option<usize>,
+        #[arg(long, default_value_t = false)]
+        allow_legacy_path_compat: bool,
     },
     ShowDerivedSecrets {
         #[arg(long)]
@@ -307,7 +318,23 @@ pub enum Commands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    SetPathCompatPolicy {
+        #[arg(long)]
+        group_state: PathBuf,
+        #[arg(long, value_enum)]
+        mode: PathCompatPolicyMode,
+    },
+    ShowPathCompatPolicy {
+        #[arg(long)]
+        group_state: PathBuf,
+    },
     ShowState,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum PathCompatPolicyMode {
+    Strict,
+    Compat,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1080,7 +1107,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("failed to apply generated commit to local state")?;
             state.apply_group_context_extensions_from_proposals(&commit.proposals);
             state.clear_pending_proposals();
-            let tree_commit_secret = path_update.path_secrets.first().copied();
+            let tree_commit_secret = lineage_commit_secret_input(&commit);
             state.advance_epoch_with_context_and_tree_commit_secret(
                 Some(&commit_context),
                 tree_commit_secret,
@@ -1107,8 +1134,13 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             path_update_file,
             receiver_private_file,
             derived_out,
+            allow_legacy_path_compat,
         } => {
             let mut state = load_group_state(&group_state)?;
+            if allow_legacy_path_compat && !state.legacy_path_compat_enabled() {
+                state.enable_legacy_path_compat();
+                println!("enabled per-state legacy path compatibility marker");
+            }
             let commit_envelope = load_commit_envelope_from_file(&commit_file)?;
             validate_commit_envelope_metadata(&state, &commit_envelope)?;
             validate_commit_state_machine_transition(&state, &commit_envelope)?;
@@ -1142,15 +1174,36 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                         .as_ref()
                         .expect("receiver_private_file checked above"),
                 )?;
-                let derived = state
+                let strict = state
                     .ratchet_tree
                     .apply_commit_with_path_update(
                         &commit_envelope.commit,
                         &path_update_envelope.path_update,
                         state.own_leaf_index,
                         &receiver_private,
-                    )
+                    );
+                let compat_enabled = state.legacy_path_compat_enabled() || allow_legacy_path_compat;
+                let used_legacy_compat = strict.is_none() && compat_enabled;
+                let derived = strict
+                    .or_else(|| {
+                        if used_legacy_compat {
+                            state.ratchet_tree.apply_commit_with_path_update_legacy_compat(
+                                &commit_envelope.commit,
+                                &path_update_envelope.path_update,
+                                state.own_leaf_index,
+                                &receiver_private,
+                            )
+                        } else {
+                            None
+                        }
+                    })
                     .ok_or("failed to apply commit + path update as receiver")?;
+                if used_legacy_compat {
+                    state.enable_legacy_path_compat();
+                    println!(
+                        "warning: applied commit via --allow-legacy-path-compat fallback (strict lineage validation failed)"
+                    );
+                }
                 Some(derived)
             } else {
                 state
@@ -1169,9 +1222,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
             state.clear_pending_proposals();
             let commit_context = commit_envelope.commit.encode();
-            let tree_commit_secret = derived
-                .as_ref()
-                .and_then(|secrets| secrets.first().copied().flatten());
+            let tree_commit_secret = lineage_commit_secret_input(&commit_envelope.commit);
             state.advance_epoch_with_context_and_tree_commit_secret(
                 Some(&commit_context),
                 tree_commit_secret,
@@ -1199,6 +1250,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             own_leaf,
             derived_out,
             force,
+            allow_legacy_path_compat,
         } => {
             if out.exists() && !force {
                 return Err(format!(
@@ -1221,6 +1273,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 &receiver_private,
                 own_leaf,
                 "join-from-commit apply",
+                allow_legacy_path_compat,
             )?;
 
             if let Some(path) = derived_out {
@@ -1248,6 +1301,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             own_leaf,
             derived_out,
             force,
+            allow_legacy_path_compat,
         } => {
             if out.exists() && !force {
                 return Err(format!(
@@ -1272,6 +1326,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 &receiver_private,
                 own_leaf,
                 "join-from-welcome apply",
+                allow_legacy_path_compat,
             )?;
             let group_secrets = validate_welcome_for_joiner(
                 &welcome,
@@ -1322,6 +1377,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             watch,
             poll_interval_ms,
             max_polls,
+            allow_legacy_path_compat,
         } => {
             let auth_state = load_state(&cli.state)?;
             let username = resolve_username(username, &auth_state)?;
@@ -1336,6 +1392,15 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 None
             };
+            if allow_legacy_path_compat {
+                if let Some(state) = state_opt.as_mut() {
+                    if !state.legacy_path_compat_enabled() {
+                        state.enable_legacy_path_compat();
+                        save_group_state(&group_state, state)?;
+                        println!("enabled per-state legacy path compatibility marker");
+                    }
+                }
+            }
             if state_opt.is_none() {
                 if group_id.is_none() {
                     return Err(
@@ -1381,6 +1446,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                             .as_ref()
                             .expect("validated receiver private for unknown group"),
                         limit,
+                        allow_legacy_path_compat,
                     )
                     .await?;
 
@@ -1427,6 +1493,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                     state,
                     receiver_private.as_ref(),
                     limit,
+                    allow_legacy_path_compat,
                 )
                 .await?;
                 total_applied = total_applied.saturating_add(outcome.applied);
@@ -1464,6 +1531,37 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 "sync finished for group={} (polls={}, applied_total={}, skipped_total={}, local_epoch={})",
                 state.group_id, polls, total_applied, total_skipped, state.epoch
             );
+        }
+        Commands::SetPathCompatPolicy { group_state, mode } => {
+            let mut state = load_group_state(&group_state)?;
+            let before = state.legacy_path_compat_enabled();
+            match mode {
+                PathCompatPolicyMode::Strict => state.disable_legacy_path_compat(),
+                PathCompatPolicyMode::Compat => state.enable_legacy_path_compat(),
+            }
+            let after = state.legacy_path_compat_enabled();
+            if before != after {
+                save_group_state(&group_state, &state)?;
+            }
+            println!(
+                "set path compat policy for group={} at {} to {:?} (legacy_path_compat_enabled={})",
+                state.group_id,
+                group_state.display(),
+                mode,
+                after
+            );
+        }
+        Commands::ShowPathCompatPolicy { group_state } => {
+            let state = load_group_state(&group_state)?;
+            let compat_enabled = state.legacy_path_compat_enabled();
+            let policy = if compat_enabled { "compat" } else { "strict" };
+            let json = serde_json::json!({
+                "group_id": state.group_id,
+                "group_state_path": group_state.display().to_string(),
+                "legacy_path_compat_enabled": compat_enabled,
+                "path_compat_policy": policy,
+            });
+            println!("{}", serde_json::to_string_pretty(&json)?);
         }
         Commands::ShowState => {
             let state = load_state(&cli.state)?;
@@ -1634,6 +1732,7 @@ fn join_from_commit_material(
     receiver_private: &HybridPrivateKey,
     own_leaf: Option<usize>,
     context_label: &str,
+    allow_legacy_path_compat: bool,
 ) -> Result<(ClientGroupState, Vec<Option<[u8; 32]>>), Box<dyn std::error::Error>> {
     if commit_envelope.sender_leaf != commit_envelope.commit.sender {
         return Err(format!(
@@ -1653,38 +1752,59 @@ fn join_from_commit_material(
     let mut state = ClientGroupState::new(commit_envelope.group_id.clone(), tree, 0);
     state.set_epoch(commit_envelope.epoch);
 
-    state
-        .ratchet_tree
+    let mut preview_tree = state.ratchet_tree.clone();
+    preview_tree
         .apply_commit(&commit_envelope.commit)
-        .ok_or("failed to apply commit while joining")?;
-    state.apply_group_context_extensions_from_proposals(&commit_envelope.commit.proposals);
+        .ok_or("failed to apply commit while joining (preview)")?;
 
     let resolved_own_leaf = match own_leaf {
         Some(index) => {
-            ensure_leaf_present(&state.ratchet_tree, index)?;
+            ensure_leaf_present(&preview_tree, index)?;
             index
         }
         None => {
             let public = hybrid_public_from_private(receiver_private);
-            find_leaf_by_public_key(&state.ratchet_tree, &public)
+            find_leaf_by_public_key(&preview_tree, &public)
                 .ok_or("could not infer own leaf from receiver private key; use --own-leaf")?
         }
     };
     state.own_leaf_index = resolved_own_leaf;
 
-    let derived = state
+    let strict = state
         .ratchet_tree
-        .process_path_update_for_leaf(
-            commit_envelope.commit.sender,
+        .apply_commit_with_path_update(
+            &commit_envelope.commit,
+            &path_update_envelope.path_update,
             resolved_own_leaf,
             receiver_private,
-            &path_update_envelope.path_update,
-        )
-        .ok_or("failed to process path update for joiner")?;
+        );
+    let compat_enabled = state.legacy_path_compat_enabled() || allow_legacy_path_compat;
+    let used_legacy_compat = strict.is_none() && compat_enabled;
+    let derived = strict
+        .or_else(|| {
+            if used_legacy_compat {
+                state.ratchet_tree.apply_commit_with_path_update_legacy_compat(
+                    &commit_envelope.commit,
+                    &path_update_envelope.path_update,
+                    resolved_own_leaf,
+                    receiver_private,
+                )
+            } else {
+                None
+            }
+        })
+        .ok_or("failed to apply commit + path update for joiner")?;
+    if used_legacy_compat {
+        state.enable_legacy_path_compat();
+        println!(
+            "warning: joined via --allow-legacy-path-compat fallback (strict lineage validation failed)"
+        );
+    }
+    state.apply_group_context_extensions_from_proposals(&commit_envelope.commit.proposals);
 
     state.clear_pending_proposals();
     let commit_context = commit_envelope.commit.encode();
-    let tree_commit_secret = derived.first().copied().flatten();
+    let tree_commit_secret = lineage_commit_secret_input(&commit_envelope.commit);
     state.advance_epoch_with_context_and_tree_commit_secret(
         Some(&commit_context),
         tree_commit_secret,
@@ -2163,7 +2283,7 @@ fn build_welcome_for_commit(
     let next_epoch = state.epoch.saturating_add(1);
     let commit_context = commit.encode();
     let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
-    let tree_commit_secret = path_update.path_secrets.first().copied();
+    let tree_commit_secret = lineage_commit_secret_input(commit);
 
     let mut key_schedule = state.key_schedule.clone();
     let _ = key_schedule.ensure_epoch_with_tree_commit_secret(
@@ -2503,6 +2623,7 @@ async fn fetch_and_apply_latest_once(
     state: &mut ClientGroupState,
     receiver_private: Option<&HybridPrivateKey>,
     limit: usize,
+    allow_legacy_path_compat: bool,
 ) -> Result<SyncOutcome, Box<dyn std::error::Error>> {
     let commit_summaries = ds_list_messages(
         client,
@@ -2634,19 +2755,44 @@ async fn fetch_and_apply_latest_once(
 
             if path_required {
                 if let Some((path_id, path_env)) = matched_path_update {
-                    let derived = state
+                    let strict = state
                         .ratchet_tree
                         .apply_commit_with_path_update(
                             &commit_env.commit,
                             &path_env.path_update,
                             state.own_leaf_index,
                             receiver_private,
-                        )
+                        );
+                    let compat_enabled =
+                        state.legacy_path_compat_enabled() || allow_legacy_path_compat;
+                    let used_legacy_compat = strict.is_none() && compat_enabled;
+                    let derived = strict
+                        .or_else(|| {
+                            if used_legacy_compat {
+                                state.ratchet_tree.apply_commit_with_path_update_legacy_compat(
+                                    &commit_env.commit,
+                                    &path_env.path_update,
+                                    state.own_leaf_index,
+                                    receiver_private,
+                                )
+                            } else {
+                                None
+                            }
+                        })
                         .ok_or("failed to apply commit+path update during sync")?;
                     derived_for_commit = Some(derived);
+                    if used_legacy_compat {
+                        state.enable_legacy_path_compat();
+                    }
                     println!(
-                        "applied commit_id={} with matched path_update_id={}",
-                        commit_id, path_id
+                        "applied commit_id={} with matched path_update_id={}{}",
+                        commit_id,
+                        path_id,
+                        if used_legacy_compat {
+                            " (legacy-path-compat)"
+                        } else {
+                            ""
+                        }
                     );
                 } else {
                     return Err(format!(
@@ -2670,11 +2816,10 @@ async fn fetch_and_apply_latest_once(
         state.apply_group_context_extensions_from_proposals(&commit_env.commit.proposals);
 
         state.clear_pending_proposals();
-        let tree_commit_secret = derived_for_commit
-            .as_ref()
-            .and_then(|secrets| secrets.first().copied().flatten());
+        let tree_commit_secret = lineage_commit_secret_input(&commit_env.commit);
+        let commit_context = commit_env.commit.encode();
         state.advance_epoch_with_context_and_tree_commit_secret(
-            Some(&commit_bytes),
+            Some(&commit_context),
             tree_commit_secret,
         );
         ensure_group_state_consistency(state, "fetch-and-apply-latest commit apply")?;
@@ -2710,6 +2855,7 @@ async fn try_bootstrap_unknown_group_from_welcome_once(
     own_leaf: Option<usize>,
     receiver_private: &HybridPrivateKey,
     limit: usize,
+    allow_legacy_path_compat: bool,
 ) -> Result<Option<(ClientGroupState, serde_json::Value)>, Box<dyn std::error::Error>> {
     let commit_summaries = ds_list_messages(
         client,
@@ -2845,6 +2991,7 @@ async fn try_bootstrap_unknown_group_from_welcome_once(
                 receiver_private,
                 own_leaf,
                 "fetch-and-apply-latest welcome bootstrap",
+                allow_legacy_path_compat,
             ) {
                 Ok(value) => value,
                 Err(_) => continue,
@@ -3182,6 +3329,7 @@ fn hash32_with_label(label: &[u8], parts: &[&[u8]]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use hybrid_mls::crypto::{HybridSignPrivKey, HybridSignPubKey, KyberPriv};
     use hybrid_mls::tree::RatchetTree;
     use hybrid_mls::tree::{LeafNode, ParentUpdate, Proposal};
@@ -3256,6 +3404,71 @@ mod tests {
 
         let ids = extract_sorted_unique_message_ids(&messages);
         assert_eq!(ids, vec![3, 7, 10]);
+    }
+
+    #[test]
+    fn cli_parses_set_path_compat_policy_modes() {
+        let compat = Cli::try_parse_from([
+            "ds-client",
+            "set-path-compat-policy",
+            "--group-state",
+            "group.bin",
+            "--mode",
+            "compat",
+        ])
+        .expect("parse compat mode");
+        match compat.command {
+            Commands::SetPathCompatPolicy { mode, .. } => {
+                assert_eq!(mode, PathCompatPolicyMode::Compat)
+            }
+            _ => panic!("unexpected command parsed for compat mode"),
+        }
+
+        let strict = Cli::try_parse_from([
+            "ds-client",
+            "set-path-compat-policy",
+            "--group-state",
+            "group.bin",
+            "--mode",
+            "strict",
+        ])
+        .expect("parse strict mode");
+        match strict.command {
+            Commands::SetPathCompatPolicy { mode, .. } => {
+                assert_eq!(mode, PathCompatPolicyMode::Strict)
+            }
+            _ => panic!("unexpected command parsed for strict mode"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_invalid_set_path_compat_policy_mode() {
+        let parsed = Cli::try_parse_from([
+            "ds-client",
+            "set-path-compat-policy",
+            "--group-state",
+            "group.bin",
+            "--mode",
+            "invalid",
+        ]);
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn cli_parses_show_path_compat_policy() {
+        let cli = Cli::try_parse_from([
+            "ds-client",
+            "show-path-compat-policy",
+            "--group-state",
+            "group.bin",
+        ])
+        .expect("parse show path compat policy");
+        match cli.command {
+            Commands::ShowPathCompatPolicy { group_state } => {
+                assert_eq!(group_state, PathBuf::from("group.bin"));
+            }
+            _ => panic!("unexpected command parsed for show-path-compat-policy"),
+        }
     }
 
     #[test]
@@ -3519,7 +3732,7 @@ mod tests {
             &state.group_id,
             tree_snapshot_hash(&tree_after_commit.encode()),
             Some(&commit.encode()),
-            path_update.path_secrets.first(),
+            lineage_commit_secret_input(&commit).as_ref(),
         );
         let chain = key_schedule
             .chain_secrets_for_epoch(state.epoch + 1)
@@ -3553,7 +3766,7 @@ mod tests {
             &state.group_id,
             tree_hash,
             Some(&commit_context),
-            path_update.path_secrets.first(),
+            lineage_commit_secret_input(&commit).as_ref(),
         );
         let chain = key_schedule
             .chain_secrets_for_epoch(next_epoch)
@@ -3614,7 +3827,7 @@ mod tests {
             &sender_state.group_id,
             tree_hash,
             Some(&commit_context),
-            path_update.path_secrets.first(),
+            lineage_commit_secret_input(&commit).as_ref(),
         );
         let chain = key_schedule
             .chain_secrets_for_epoch(next_epoch)
@@ -3658,9 +3871,10 @@ mod tests {
             )
             .expect("process path update");
         join_state.clear_pending_proposals();
+        let tree_commit_secret = lineage_commit_secret_input(&commit_env.commit);
         join_state.advance_epoch_with_context_and_tree_commit_secret(
             Some(&commit_context),
-            derived.first().copied().flatten(),
+            tree_commit_secret,
         );
 
         let err = validate_welcome_for_joiner(
@@ -3719,7 +3933,7 @@ mod tests {
         );
         assert_eq!(
             hex(&group_secrets.joiner_secret),
-            "57a7cbd433e48b1c70436863faf166dea40e8d16f153fb0255b7304f9708d8ad"
+            "deb08c7a79d233ca174e508d247fc1116a6e2a9de19dc8303672782060663b24"
         );
     }
 }

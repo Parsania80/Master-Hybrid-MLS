@@ -94,6 +94,12 @@ pub struct PathUpdate {
     pub ciphertexts: Vec<Vec<PathSecretCiphertext>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitPathValidationMode {
+    StrictLineage,
+    LegacyCompat,
+}
+
 /// Ciphertext carrying a path secret to a specific node in the copath resolution.
 #[derive(Clone, Debug)]
 pub struct PathSecretCiphertext {
@@ -573,6 +579,21 @@ impl PathSecretCiphertext {
     }
 }
 
+/// Derive a deterministic key-schedule commit-secret input from the TreeKEM
+/// lineage carried in `Commit.path`.
+pub fn lineage_commit_secret_input(commit: &Commit) -> Option<[u8; 32]> {
+    let root_parent = commit.path.last()?;
+    let mut context = Vec::new();
+    encode_u32(&mut context, commit.sender as u32);
+    encode_u32(&mut context, commit.path.len() as u32);
+    let root_parent_key = root_parent.public_key.to_bytes();
+    Some(mls_tree_labeled_hash(
+        b"derive commit secret input",
+        &context,
+        &[&root_parent_key],
+    ))
+}
+
 impl PathUpdate {
     /// Serialize the PathUpdate in a TLS-style encoding.
     pub fn encode(&self) -> Vec<u8> {
@@ -862,20 +883,62 @@ impl RatchetTree {
         receiver_leaf: usize,
         receiver_private: &HybridPrivateKey,
     ) -> Option<Vec<Option<[u8; 32]>>> {
-        self.apply_commit(commit)?;
-        let derived = self.process_path_update_for_leaf(
+        self.apply_commit_with_path_update_mode(
+            commit,
+            path_update,
+            receiver_leaf,
+            receiver_private,
+            CommitPathValidationMode::StrictLineage,
+        )
+    }
+
+    /// Apply commit/path-update with explicit validation policy.
+    ///
+    /// `LegacyCompat` keeps strict path-update decoding/decryption checks but skips
+    /// parent-key lineage binding for migration of pre-lineage persisted artifacts.
+    pub fn apply_commit_with_path_update_mode(
+        &mut self,
+        commit: &Commit,
+        path_update: &PathUpdate,
+        receiver_leaf: usize,
+        receiver_private: &HybridPrivateKey,
+        mode: CommitPathValidationMode,
+    ) -> Option<Vec<Option<[u8; 32]>>> {
+        // Apply on a snapshot so callers can safely retry with a different mode.
+        let mut candidate = self.clone();
+        candidate.apply_commit(commit)?;
+        let derived = candidate.process_path_update_for_leaf(
             commit.sender,
             receiver_leaf,
             receiver_private,
             path_update,
         )?;
-        self.validate_commit_path_against_node_secret_lineage(
-            commit.sender,
-            &commit.path,
-            &derived,
-            path_update,
-        )?;
+        if mode == CommitPathValidationMode::StrictLineage {
+            candidate.validate_commit_path_against_node_secret_lineage(
+                commit.sender,
+                &commit.path,
+                &derived,
+                path_update,
+            )?;
+        }
+        *self = candidate;
         Some(derived)
+    }
+
+    pub fn apply_commit_with_path_update_legacy_compat(
+        &mut self,
+        commit: &Commit,
+        path_update: &PathUpdate,
+        receiver_leaf: usize,
+        receiver_private: &HybridPrivateKey,
+    ) -> Option<Vec<Option<[u8; 32]>>> {
+        self.apply_commit_with_path_update_mode(
+            commit,
+            path_update,
+            receiver_leaf,
+            receiver_private,
+            CommitPathValidationMode::LegacyCompat,
+        )
     }
 
     /// Build the explicit sender direct-path secret model for one path update.
@@ -1855,7 +1918,7 @@ mod tests {
     use crate::crypto::{HybridSignPrivKey, KyberPriv};
     use ed25519_dalek::{SigningKey as EdSecret, VerifyingKey as EdPublic};
     use ml_dsa::{KeyGen, MlDsa65};
-    use ml_kem::Seed;
+    use ml_kem::{KeyExport, Seed};
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use rand_core::{Infallible, TryCryptoRng, TryRng};
@@ -2396,6 +2459,51 @@ mod tests {
 
         let result = tree.apply_commit_with_path_update(&commit, &decoded, 1, &bob_priv);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn apply_commit_with_path_update_legacy_compat_accepts_mismatched_parent_key_when_encoded() {
+        let sender_leaf = make_leaf(61);
+        let mut tree = RatchetTree::from_leaves(vec![sender_leaf]);
+
+        let (bob_kp, bob_priv) = {
+            let kp = make_key_package(62);
+            let kem_seed = Seed::from([62u8; 64]);
+            let kyber_priv = KyberPriv::from_seed(kem_seed);
+            let classic_priv = X25519Priv::from([62u8; 32]);
+            let priv_key = HybridPrivateKey {
+                classic: classic_priv,
+                pq: kyber_priv,
+            };
+            (kp, priv_key)
+        };
+
+        let mut tree_after = tree.clone();
+        tree_after
+            .insert_key_package(&bob_kp)
+            .expect("insert into temp tree");
+
+        let leaf_secret = [0x1Cu8; 32];
+        let mut commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::Add(bob_kp.clone())],
+            path: parent_updates_from_leaf_secret(&tree_after, 0, leaf_secret),
+        };
+        commit.path[0].public_key = hybrid_public_key(211);
+
+        let mut rng = TestRng(0x9b9b9b9b9b9b9b9b);
+        let path_update = tree_after
+            .build_path_update(&mut rng, 0, leaf_secret)
+            .expect("path update");
+        let decoded = PathUpdate::decode(&path_update.encode()).expect("decode");
+        assert!(
+            decoded.path_secrets.is_empty(),
+            "encoded path omits path_secrets"
+        );
+
+        let result =
+            tree.apply_commit_with_path_update_legacy_compat(&commit, &decoded, 1, &bob_priv);
+        assert!(result.is_some());
     }
 
     #[test]
@@ -3387,6 +3495,100 @@ mod tests {
         assert_ne!(
             model_a.parent_updates_leaf_to_root(),
             model_c.parent_updates_leaf_to_root()
+        );
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
+    }
+
+    fn sha3_hex(bytes: &[u8]) -> String {
+        let digest = Sha3_256::digest(bytes);
+        hex(&digest)
+    }
+
+    #[test]
+    fn deterministic_vector_leaf_path_node_secret_chain_matches_expected() {
+        let tree = RatchetTree::from_leaves(vec![
+            make_leaf(170),
+            make_leaf(171),
+            make_leaf(172),
+            make_leaf(173),
+        ]);
+        let leaf_secret = [0x99u8; 32];
+        let model = tree
+            .derive_direct_path_secret_model(0, leaf_secret)
+            .expect("derive model");
+
+        assert_eq!(model.levels_root_to_leaf.len(), 2);
+        assert_eq!(model.levels_root_to_leaf[0].parent_node, 3);
+        assert_eq!(model.levels_root_to_leaf[0].level_from_leaf, 1);
+        assert_eq!(model.levels_root_to_leaf[1].parent_node, 1);
+        assert_eq!(model.levels_root_to_leaf[1].level_from_leaf, 0);
+
+        let root_path_secret = hex(&model.levels_root_to_leaf[0].path_secret);
+        let leaf_parent_path_secret = hex(&model.levels_root_to_leaf[1].path_secret);
+        let root_node_secret = hex(&model.levels_root_to_leaf[0].node_secret);
+        let leaf_parent_node_secret = hex(&model.levels_root_to_leaf[1].node_secret);
+
+        assert_eq!(
+            root_path_secret,
+            "5d349348cc7cfe4a50a050db6f6a421dc924d1e75c40debacfb04d752773565e"
+        );
+        assert_eq!(
+            leaf_parent_path_secret,
+            "21e49c20b0736b9fff3d709712c21cae3ecc3774593eabafaceb2f55e8721782"
+        );
+        assert_eq!(
+            root_node_secret,
+            "7dd7eb1d44e471c1664b6c8cdb964e3dabfddd27b24eaaa24fe976c86fa58604"
+        );
+        assert_eq!(
+            leaf_parent_node_secret,
+            "fa6222b5bc24de3661a4cdb181c72b011bd6509110ffd6c4d0f692da4fd128e9"
+        );
+    }
+
+    #[test]
+    fn deterministic_vector_parent_updates_hybrid_key_material_matches_expected() {
+        let tree = RatchetTree::from_leaves(vec![
+            make_leaf(170),
+            make_leaf(171),
+            make_leaf(172),
+            make_leaf(173),
+        ]);
+        let model = tree
+            .derive_direct_path_secret_model(0, [0x99u8; 32])
+            .expect("derive model");
+        let path = model.parent_updates_leaf_to_root();
+        let direct_path = tree.direct_path(0).expect("direct path");
+
+        assert_eq!(direct_path, vec![1, 3]);
+        assert_eq!(path.len(), 2);
+
+        let leaf_parent_classic = hex(path[0].public_key.classic.as_bytes());
+        let leaf_parent_pq_hash = sha3_hex(path[0].public_key.pq.to_bytes().as_ref());
+        let root_classic = hex(path[1].public_key.classic.as_bytes());
+        let root_pq_hash = sha3_hex(path[1].public_key.pq.to_bytes().as_ref());
+
+        assert_eq!(
+            leaf_parent_classic,
+            "fe01db3e4fcd65ddf2afb296f669db5e5676aaa38ae618f88d9fddc7a48d214b"
+        );
+        assert_eq!(
+            leaf_parent_pq_hash,
+            "391f3f016236f4712eafacca88085e5e7d515a7d5b27898f6b6d14be47cc7ea2"
+        );
+        assert_eq!(
+            root_classic,
+            "32484cae73364a07a26c564cba62df859af79f23d62944c20a318b62f799297c"
+        );
+        assert_eq!(
+            root_pq_hash,
+            "6b0d255ed567ecc2768be6928288f95c03869e8486e6fa9cdb39ff72f5dcb369"
         );
     }
 
