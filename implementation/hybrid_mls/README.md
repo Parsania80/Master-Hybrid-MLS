@@ -510,5 +510,6 @@ Sync notes:
 - Part 12 / Task 8 is complete: DS-backed strict-lineage coverage now includes Add/Update/Remove tamper negatives and a positive 3-member Add→Update→Remove convergence test with explicit epoch alignment and key-schedule chain-secret lineage equality/rotation assertions in `tests/ds_fetch_apply_e2e.rs`.
 - Part 12 / Task 9 is now in progress with an explicit migration compatibility lane: strict lineage remains default, while legacy fallback is available via `ds_client --allow-legacy-path-compat` (apply/join/sync) and UI env toggle `DS_UI_ALLOW_LEGACY_PATH_COMPAT=1`; DS-backed test coverage now proves strict rejection + compat success for pre-lineage-style tampered Add commit artifacts.
 - Part 12 / Task 9 now includes persisted per-state compat marker/version-gate: `ClientGroupState` moved to v6 with `legacy_path_compat_enabled` persisted; decoding v1-v5 states auto-enables compat marker for migration, while new v6 states default strict. Runtime compat switches now seed/toggle this per-state marker instead of being runtime-only behavior.
+- Added explicit CLI policy control: `ds_client set-path-compat-policy --group-state <path> --mode strict|compat` to clear/set the persisted marker directly.
 
-Last updated: 2026-02-24 22:36
+Last updated: 2026-02-24 22:41

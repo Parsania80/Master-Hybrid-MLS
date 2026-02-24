@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use ed25519_dalek::{
     SecretKey as EdSecretKey, SigningKey as EdSigningKey, VerifyingKey as EdPublic,
 };
@@ -318,7 +318,19 @@ pub enum Commands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    SetPathCompatPolicy {
+        #[arg(long)]
+        group_state: PathBuf,
+        #[arg(long, value_enum)]
+        mode: PathCompatPolicyMode,
+    },
     ShowState,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum PathCompatPolicyMode {
+    Strict,
+    Compat,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1514,6 +1526,25 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "sync finished for group={} (polls={}, applied_total={}, skipped_total={}, local_epoch={})",
                 state.group_id, polls, total_applied, total_skipped, state.epoch
+            );
+        }
+        Commands::SetPathCompatPolicy { group_state, mode } => {
+            let mut state = load_group_state(&group_state)?;
+            let before = state.legacy_path_compat_enabled();
+            match mode {
+                PathCompatPolicyMode::Strict => state.disable_legacy_path_compat(),
+                PathCompatPolicyMode::Compat => state.enable_legacy_path_compat(),
+            }
+            let after = state.legacy_path_compat_enabled();
+            if before != after {
+                save_group_state(&group_state, &state)?;
+            }
+            println!(
+                "set path compat policy for group={} at {} to {:?} (legacy_path_compat_enabled={})",
+                state.group_id,
+                group_state.display(),
+                mode,
+                after
             );
         }
         Commands::ShowState => {
@@ -3282,6 +3313,7 @@ fn hash32_with_label(label: &[u8], parts: &[&[u8]]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use hybrid_mls::crypto::{HybridSignPrivKey, HybridSignPubKey, KyberPriv};
     use hybrid_mls::tree::RatchetTree;
     use hybrid_mls::tree::{LeafNode, ParentUpdate, Proposal};
@@ -3356,6 +3388,54 @@ mod tests {
 
         let ids = extract_sorted_unique_message_ids(&messages);
         assert_eq!(ids, vec![3, 7, 10]);
+    }
+
+    #[test]
+    fn cli_parses_set_path_compat_policy_modes() {
+        let compat = Cli::try_parse_from([
+            "ds-client",
+            "set-path-compat-policy",
+            "--group-state",
+            "group.bin",
+            "--mode",
+            "compat",
+        ])
+        .expect("parse compat mode");
+        match compat.command {
+            Commands::SetPathCompatPolicy { mode, .. } => {
+                assert_eq!(mode, PathCompatPolicyMode::Compat)
+            }
+            _ => panic!("unexpected command parsed for compat mode"),
+        }
+
+        let strict = Cli::try_parse_from([
+            "ds-client",
+            "set-path-compat-policy",
+            "--group-state",
+            "group.bin",
+            "--mode",
+            "strict",
+        ])
+        .expect("parse strict mode");
+        match strict.command {
+            Commands::SetPathCompatPolicy { mode, .. } => {
+                assert_eq!(mode, PathCompatPolicyMode::Strict)
+            }
+            _ => panic!("unexpected command parsed for strict mode"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_invalid_set_path_compat_policy_mode() {
+        let parsed = Cli::try_parse_from([
+            "ds-client",
+            "set-path-compat-policy",
+            "--group-state",
+            "group.bin",
+            "--mode",
+            "invalid",
+        ]);
+        assert!(parsed.is_err());
     }
 
     #[test]

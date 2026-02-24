@@ -474,3 +474,7 @@
 [2026-02-24 22:36] [AGENT] Wired per-state marker usage in CLI/UI flows: runtime `--allow-legacy-path-compat` / `DS_UI_ALLOW_LEGACY_PATH_COMPAT=1` now seed marker persistently; apply/sync/join paths consult marker and persist it when legacy fallback is used.
 [2026-02-24 22:36] [AGENT] Added marker coverage: `src/client_state.rs` roundtrip/toggle tests and DS-backed assertion in `legacy_path_compat_allows_sync_of_pre_lineage_add_commit_artifact` confirming marker persistence after compat sync.
 [2026-02-24 22:36] [AGENT] Verification passed: `cargo test --lib`, `cargo test --bin ds_client`, `cargo test --bin ds_ui_gateway`, and DS-backed targeted tests for legacy compat success + strict lineage rejection.
+[2026-02-24 22:42] [AGENT] Continued Part 12 / Task 9 by adding explicit CLI marker policy control: new `ds_client set-path-compat-policy --group-state <file> --mode strict|compat` command to clear/set persisted legacy path compatibility marker directly.
+[2026-02-24 22:42] [AGENT] Added CLI parser tests for new command (`compat`, `strict`, invalid mode rejection) and kept existing migration fallback behavior unchanged.
+[2026-02-24 22:42] [AGENT] Verification passed: `cargo test --bin ds_client -- --nocapture` and `cargo test --bin ds_ui_gateway -- --nocapture`.
+[2026-02-24 22:42] [AGENT] Updated `PROJECT.md` Task 9 notes and `README.md` status/usage note with new explicit policy command.
