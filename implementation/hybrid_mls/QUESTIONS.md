@@ -52,3 +52,14 @@ Answer: DS persistence is created in SQLite + disk payload files when `Storage::
 
 ## [2026-02-21] in admin demo part when A add B how does that happen does really user B created ?
 Answer: In Admin Demo, `A add B` is a local simulation only; it does not create a real DS user account. The action handler validates names, updates in-memory/persisted demo topology (`leaf_slots`) and epoch, then appends demo logs (`src/bin/ds_ui_gateway.rs:3800`). No call to DS register/user creation occurs in this flow. Real user creation happens only through DS auth register endpoint (`/v1/auth/register`) which writes `users` table (`src/ds/http.rs:540`, `src/ds/storage.rs:332`).
+
+## [2026-02-25] what is σ inside KP? is it the sign of init_key?
+Answer: Yes, in this implementation `σ` is the HybridSignature over `init_key.to_bytes()`, produced by the member's identity signing key. Creation happens where `signature = signer.sign(&init_key.to_bytes())` and verification checks `signature.verify(identity, init_key.to_bytes())`. So `σ` cryptographically binds `identity` to `init_key`.
+
+Code pointers:
+- `src/tree.rs:270` (`KeyPackage` fields)
+- `src/tree.rs:281` (`KeyPackage::verify`)
+- `src/bin/ds_client.rs:494` (signature creation in CLI export path)
+- `src/bin/ds_ui_gateway.rs:5101` (signature creation in UI path)
+
+Note: In full RFC 9420 framing, KeyPackage signing/validation is defined over structured KeyPackage content; our current code path explicitly signs `init_key` bytes and verifies that binding.

@@ -498,3 +498,7 @@
 [2026-02-24 23:53] [OPERATOR] Requested a new first task in Part 13 for beginner fundamentals and a professor-facing `Introduction.md` based on `protocol-style.md`.
 [2026-02-24 23:53] [AGENT] Updated `PROJECT.md` Part 13: inserted new Task 2 for fundamentals introduction, renumbered subsequent tasks, and updated Current/Next pointers.
 [2026-02-24 23:53] [AGENT] Added `Introduction.md` with protocol-style 4-section structure covering KeyPackage, RatchetTree, LeafIndex/NodeIndex mapping, and initial local group-state semantics with RFC basis and suspicious notes.
+[2026-02-25 00:05] [OPERATOR] Requested refinement of `protocol-actions/Introduction.md` with simpler wording, more visuals/examples, and explicit explanations for identity, init_key, and RatchetTreeFromLeaves.
+[2026-02-25 00:05] [AGENT] Refined `protocol-actions/Introduction.md` in protocol-style 4-section format with beginner-friendly definitions, concrete index-mapping examples, richer Mermaid notes, and explicit code-grounded traceability for identity/init_key/tree construction semantics.
+[2026-02-25 00:08] [OPERATOR] Asked `Q-` about meaning of `σ` in `KP` and whether it is the signature of `init_key` in `protocol-actions/Introduction.md`.
+[2026-02-25 00:08] [AGENT] Answered and logged in `QUESTIONS.md`: in current implementation `σ` is the hybrid signature over `init_key.to_bytes()` verified with `identity`, binding identity to init key; included code references and RFC-note context.
