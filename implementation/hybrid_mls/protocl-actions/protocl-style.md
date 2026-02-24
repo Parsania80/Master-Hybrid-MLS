@@ -1,97 +1,90 @@
-# Protocol Action Style (Template)
+# Protocol Style Guide (Master Template)
 
-## Purpose
-Use this template to document one protocol action in a code-grounded, RFC-grounded way.
+This file defines the mandatory style for all future protocol-action documentation.
+The target style is academic, math-first, and directly traceable to implementation.
 
-## File Naming Rule
-- Put each action in its own file under `protocl-actions/`.
-- Use kebab-case names, for example: `create-group-protocol.md`, `add-member-protocol.md`.
-- Do **not** create new protocol-action style/template files unless the Operator explicitly asks for it.
+## 1) File Naming & Location Rule
+- Every new action document must be created under `/protocol-actions/`.
+- File names must use kebab-case from the process name.
+- Example: `/protocol-actions/key-derivation.md`.
 
-## Required Sections
+## 2) Math Standard
+- Use LaTeX formatting for all formal notation.
+- Use `$$...$$` for block equations.
+- Use `$...$` for inline symbols.
+- Cryptographic primitives, state transitions, and derivations must be written in mathematical form where applicable.
 
-### 1) Action Summary
-- `Action Name`:
-- `Actors`:
-- `Trigger`:
-- `Preconditions`:
-- `Outputs`:
+## 3) Template Structure (Exact)
+Every protocol documentation file must contain exactly these 4 sections (no extra top-level sections):
 
-### 2) Flow Table (Mandatory)
-Use this table format:
+### Formal Setup
+- Define primitives and notation (example: let $H$ be SHA-256).
+- Define initial state variables and domains.
+- State any fixed constants, labels, or contexts.
 
-| Step | Details | Math Action (Equation / Primitive) | Place in Code | RFC 9420 Mapping | Status | Notes |
-|---|---|---|---|---|---|---|
-| 1 | What happens | `x = H(label, context, inputs...)` | `src/file.rs:line` | `Section` | `Implemented / Partial / Missing` | Any caveat |
+### Mathematical Flow
+- Provide a numbered step-by-step transformation flow.
+- Every step must explicitly list:
+  - Inputs
+  - Outputs
+  - Equation(s)
+- Use precise symbol mapping (no ambiguous variable names).
 
-Rules:
-- `Details` must describe behavior, not intent only.
-- `Math Action` is mandatory:
-  - For cryptographic steps: show primitive and exact inputs.
-  - For non-crypto steps: write `N/A (state transition only)`.
-- `Place in Code` must be real file+line references.
-- `RFC 9420 Mapping` must name relevant section(s).
-- `Status` must explicitly say whether behavior is complete.
+### Protocol Visual (Mermaid)
+- Provide one Mermaid.js `sequenceDiagram` that matches the mathematical flow.
+- Keep participants and message labels aligned with the symbols used in the equations.
+- Use this instead of raw HTML/CSS diagrams.
 
-### 3) Security-Critical Material Tracking
-Document each secret/key transition in a compact table:
-
-| Material | Produced At | Consumed At | Place in Code | RFC 9420 Mapping | Notes |
-|---|---|---|---|---|---|
-| `path_secret` | where generated | where used | `src/file.rs:line` | `Section` | scope/lifetime |
-
-### 4) Gaps / Suspicious Items (Mandatory)
-If implementation differs from RFC, write it explicitly:
-
-| Item | Why Suspicious | Evidence (Code) | RFC Impact | Suggested Fix |
-|---|---|---|---|---|
-| Example gap | Explanation | `src/file.rs:line` | What can go wrong | Next task |
-
-### 5) Verification
-- List exact commands/tests used to validate this action.
-- Example:
-```bash
-cargo test --lib
-cargo test --test ds_fetch_apply_e2e
-```
-
-### 6) Operator Notes
-- Add short operational notes (what to show in demo, expected logs, failure signs).
-
----
+### Implementation Traceability
+- Provide a compact table that maps math to code, and only this:
+  - Symbol/Equation
+  - File:Line
+  - Function Name
 
 ## Minimal Skeleton (Copy/Paste)
 
-```md
+````md
 # <Action Name>
 
-## Action Summary
-- Action Name:
-- Actors:
-- Trigger:
-- Preconditions:
-- Outputs:
+## Formal Setup
+Let $H$ be SHA-256 and let $KDF$ be HKDF-SHA-256.
+Let initial state be $S_0 = (\text{group\_id}, \text{epoch}, sk)$.
 
-## Flow Table
-| Step | Details | Math Action (Equation / Primitive) | Place in Code | RFC 9420 Mapping | Status | Notes |
-|---|---|---|---|---|---|---|
-| 1 |  |  |  |  |  |  |
+Example block equation:
+$$
+\tau = H(\text{label} \parallel \text{context} \parallel m)
+$$
 
-## Security-Critical Material Tracking
-| Material | Produced At | Consumed At | Place in Code | RFC 9420 Mapping | Notes |
-|---|---|---|---|---|---|
-|  |  |  |  |  |  |
+## Mathematical Flow
+1. Step Name
+   Inputs: $m, \text{context}, sk$
+   Outputs: $\tau$
+   Equation:
+   $$
+   \tau = H(\text{label} \parallel \text{context} \parallel m)
+   $$
 
-## Gaps / Suspicious Items
-| Item | Why Suspicious | Evidence (Code) | RFC Impact | Suggested Fix |
-|---|---|---|---|---|
-|  |  |  |  |  |
+2. Step Name
+   Inputs: $\tau, sk$
+   Outputs: $k_1$
+   Equation:
+   $$
+   k_1 = KDF(sk, \tau)
+   $$
 
-## Verification
-```bash
-# add exact commands
+## Protocol Visual (Mermaid)
+```mermaid
+sequenceDiagram
+    participant A as Sender
+    participant B as Receiver
+    A->>B: m, context
+    B->>B: tau = H(label || context || m)
+    B->>B: k1 = KDF(sk, tau)
 ```
 
-## Operator Notes
-- 
-```
+## Implementation Traceability
+| Symbol/Equation | File:Line | Function Name |
+|---|---|---|
+| $\tau = H(\text{label} \parallel \text{context} \parallel m)$ | `src/example.rs:42` | `compute_tau` |
+| $k_1 = KDF(sk, \tau)$ | `src/example.rs:58` | `derive_stage_key` |
+````

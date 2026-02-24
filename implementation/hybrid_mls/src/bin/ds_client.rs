@@ -324,6 +324,10 @@ pub enum Commands {
         #[arg(long, value_enum)]
         mode: PathCompatPolicyMode,
     },
+    ShowPathCompatPolicy {
+        #[arg(long)]
+        group_state: PathBuf,
+    },
     ShowState,
 }
 
@@ -1546,6 +1550,18 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 mode,
                 after
             );
+        }
+        Commands::ShowPathCompatPolicy { group_state } => {
+            let state = load_group_state(&group_state)?;
+            let compat_enabled = state.legacy_path_compat_enabled();
+            let policy = if compat_enabled { "compat" } else { "strict" };
+            let json = serde_json::json!({
+                "group_id": state.group_id,
+                "group_state_path": group_state.display().to_string(),
+                "legacy_path_compat_enabled": compat_enabled,
+                "path_compat_policy": policy,
+            });
+            println!("{}", serde_json::to_string_pretty(&json)?);
         }
         Commands::ShowState => {
             let state = load_state(&cli.state)?;
@@ -3436,6 +3452,23 @@ mod tests {
             "invalid",
         ]);
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn cli_parses_show_path_compat_policy() {
+        let cli = Cli::try_parse_from([
+            "ds-client",
+            "show-path-compat-policy",
+            "--group-state",
+            "group.bin",
+        ])
+        .expect("parse show path compat policy");
+        match cli.command {
+            Commands::ShowPathCompatPolicy { group_state } => {
+                assert_eq!(group_state, PathBuf::from("group.bin"));
+            }
+            _ => panic!("unexpected command parsed for show-path-compat-policy"),
+        }
     }
 
     #[test]

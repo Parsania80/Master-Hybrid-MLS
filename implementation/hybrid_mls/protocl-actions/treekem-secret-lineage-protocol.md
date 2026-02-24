@@ -1,4 +1,4 @@
-# TreeKEM Secret Lineage Protocol (Task 1-3 Baseline)
+# TreeKEM Secret Lineage Protocol (Task 1-10)
 
 ## Action Summary
 - Action Name: Define explicit sender-side TreeKEM secret model and invariants.
@@ -41,6 +41,32 @@
 cargo test --lib
 ```
 
+## RFC 9420 Final Mapping Addendum (Part 12 / Task 10)
+| Implementation Item | Math / Rule in This Project | Place in Code | RFC 9420 Term / Section | Alignment Note |
+|---|---|---|---|---|
+| Sender direct-path secret model | `leaf_secret -> path_secret(level) -> node_secret(level)` using per-level `(parent_node, level_from_leaf)` context. | `src/tree.rs:948`, `src/tree.rs:960`, `src/tree.rs:1685` | TreeKEM path secret chain (§7.5) | Aligned in structure; hybrid KDF labels are implementation-specific. |
+| Parent public key derivation from node secret | `ParentUpdate.public_key = DerivePub(node_secret)` (classic + PQ branches). | `src/tree.rs:1706`, `src/tree.rs:183` | Update path node key derivation (§7.5/§7.6) | RFC concept aligned; crypto suite is hybridized (X25519 + ML-KEM). |
+| Commit-path lineage enforcement (receiver) | Recompute expected parent public keys from derived node secrets and reject mismatch. | `src/tree.rs:899`, `src/tree.rs:1277` | Commit path validation in TreeKEM apply (§7.6) | Strict mode matches intended security property. |
+| Encoded/partial path-update robustness | Require ciphertext width == resolution width per level; reconstruct and cross-check observed decryptions. | `src/tree.rs:1017`, `src/tree.rs:1277` | Path update processing and direct-path/copath resolution (§7.3/§7.6) | Stronger defensive checks than minimal happy-path processing. |
+| Key schedule commit-secret provenance | Feed deterministic TreeKEM lineage input (`lineage_commit_secret_input`) into epoch derivation path. | `src/tree.rs:584`, `src/key_schedule.rs:191`, `src/client_state.rs:517` | `commit_secret` stage input in key schedule chain (§8) | Aligned as commit-path-coupled derivation; exact label/context format remains project-specific. |
+| Commit application in client and UI flows | Sender/receiver/joiner paths use commit-context + lineage commit input for epoch advancement. | `src/bin/ds_client.rs:1110`, `src/bin/ds_client.rs:2819`, `src/bin/ds_ui_gateway.rs:6499` | Commit processing to next epoch (§12.4, §8) | Operational alignment implemented across CLI/UI paths. |
+| Legacy artifact compatibility gate | Strict lineage is default; legacy fallback only when per-state marker or explicit operator policy enables it. | `src/client_state.rs:32`, `src/client_state.rs:305`, `src/bin/ds_client.rs:1531`, `src/bin/ds_ui_gateway.rs:590` | Migration policy (out of RFC scope) | Non-RFC operational control to safely migrate pre-lineage persisted artifacts. |
+
+### Label/Context Mapping Notes
+| Project Label / Context | Current Input Shape | RFC Analogue | Place in Code |
+|---|---|---|---|
+| `derive path secret` | `(parent_secret, parent_index, level)` | Path secret advancement input | `src/tree.rs:1679` |
+| `derive node secret` | `(path_secret, parent_index, level)` | Node secret derivation for update path node | `src/tree.rs:1685` |
+| `derive node classic secret` / `derive node pq seed 0/1` | `(node_secret, parent_index, level, branch_tag)` | Ciphersuite-specific keypair derivation from node secret | `src/tree.rs:1714` to `src/tree.rs:1745` |
+| `derive commit secret input` | `(sender_leaf, direct_path_len, root_parent_pubkey)` | Commit-path binding input to schedule | `src/tree.rs:584` |
+| `commit_secret` with `tree_commit_secret_input` | `(previous_root, lineage_input, epoch, tree_hash, commit_context)` | `commit_secret` stage | `src/key_schedule.rs:415` |
+
+### Residual Deviations (Explicit)
+| Item | RFC Impact | Current Mitigation |
+|---|---|---|
+| Hybrid key derivation (classic+PQ in one node key) instead of a single RFC MLS ciphersuite primitive | Different primitive instantiation than RFC baseline ciphersuite tables | Domain-separated labels and deterministic derivation per branch; strict lineage validation on receiver. |
+| Legacy compatibility fallback exists for migrated old artifacts | Not part of RFC state machine | Persisted policy marker (`legacy_path_compat_enabled`) plus explicit CLI controls (`set/show-path-compat-policy`) to bound fallback usage. |
+
 ## Operator Notes
-- This file documents the current baseline after Part 12 / Task 3.
-- Use it with `create-group-protocol.md` when explaining what is already RFC-aligned vs what is still pending hardening.
+- This file now carries the final Part 12 mapping view (Task 10 addendum) on top of earlier baseline notes.
+- Use it with `create-group-protocol.md` when presenting final TreeKEM lineage alignment and remaining non-RFC operational controls.

@@ -47,9 +47,9 @@
 ## Gaps / Suspicious Items (Must Review)
 | Item | Why Suspicious | Evidence (Code) | RFC Impact | Suggested Fix |
 |---|---|---|---|---|
-| Sender/receiver strict parent-key lineage validation is not complete | Sender now derives parent keys from node secrets, but strict receiver-side recomputation/rejection for mismatched parent keys is still pending. | `src/tree.rs` commit apply path currently does not enforce strict recomputed-key checks. | Remaining lineage-enforcement gap. | Implement Part 12 / Task 4 and Task 5 strict validation. |
+| Sender/receiver strict parent-key lineage validation at create-group epoch 0 | For epoch 0 bootstrap there is no commit/path-update yet; lineage checks only activate when first commit is applied. | `src/client_state.rs:40` to `src/client_state.rs:66`, `src/tree.rs:899`, `src/tree.rs:1277` | No immediate gap for bootstrap; checks are deferred until commit flow. | Keep this documented to avoid confusion in demos: create-group initializes state, lineage verification starts on commit apply. |
 | Creator-nonce not exposed in create-group flow | Your requested “A chooses nonce” is not part of bootstrap API. | `src/bin/ds_client.rs:497` to `src/bin/ds_client.rs:535` | Harder to demonstrate nonce-driven flow in professor demo. | Add optional `--epoch0-secret`/`--nonce` input for deterministic demos (not production default). |
-| Commit secret provenance differs from strict RFC path-secret flow | Current chain derives from previous root + context inputs; not directly from update-path root path secret object. | `src/key_schedule.rs:390` to `src/key_schedule.rs:404` | RFC alignment narrative becomes “compatible style” not strict wire-equivalent internals. | Tie `commit_secret` input directly to update-path root path secret where feasible. |
+| Commit secret provenance still uses project label/context layout | Commit-secret now receives TreeKEM lineage input, but exact label/context bytes remain project-specific and not a wire-level RFC byte-equivalent transcript format. | `src/tree.rs:584`, `src/key_schedule.rs:415` to `src/key_schedule.rs:438` | Alignment is semantic, not strict byte-for-byte RFC fixture equivalence. | Keep mapping note explicit and treat as hybrid profile unless full RFC fixture parity is required. |
 
 ## Verification
 ```bash

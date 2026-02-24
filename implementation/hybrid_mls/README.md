@@ -511,5 +511,7 @@ Sync notes:
 - Part 12 / Task 9 is now in progress with an explicit migration compatibility lane: strict lineage remains default, while legacy fallback is available via `ds_client --allow-legacy-path-compat` (apply/join/sync) and UI env toggle `DS_UI_ALLOW_LEGACY_PATH_COMPAT=1`; DS-backed test coverage now proves strict rejection + compat success for pre-lineage-style tampered Add commit artifacts.
 - Part 12 / Task 9 now includes persisted per-state compat marker/version-gate: `ClientGroupState` moved to v6 with `legacy_path_compat_enabled` persisted; decoding v1-v5 states auto-enables compat marker for migration, while new v6 states default strict. Runtime compat switches now seed/toggle this per-state marker instead of being runtime-only behavior.
 - Added explicit CLI policy control: `ds_client set-path-compat-policy --group-state <path> --mode strict|compat` to clear/set the persisted marker directly.
+- Added quick inspection command: `ds_client show-path-compat-policy --group-state <path>` to print current persisted policy/marker state.
+- Part 12 / Task 10 is complete: protocol docs now include final RFC 9420 TreeKEM lineage mapping notes in `protocl-actions/treekem-secret-lineage-protocol.md` (flow-to-RFC table, label/context mapping, and residual deviation notes), and `protocl-actions/create-group-protocol.md` gap wording was refreshed to reflect current lineage validation status.
 
-Last updated: 2026-02-24 22:41
+Last updated: 2026-02-24 22:51

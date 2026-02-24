@@ -478,3 +478,9 @@
 [2026-02-24 22:42] [AGENT] Added CLI parser tests for new command (`compat`, `strict`, invalid mode rejection) and kept existing migration fallback behavior unchanged.
 [2026-02-24 22:42] [AGENT] Verification passed: `cargo test --bin ds_client -- --nocapture` and `cargo test --bin ds_ui_gateway -- --nocapture`.
 [2026-02-24 22:42] [AGENT] Updated `PROJECT.md` Task 9 notes and `README.md` status/usage note with new explicit policy command.
+[2026-02-24 22:45] [AGENT] Continued Part 12 / Task 9 with explicit inspection command: added `ds_client show-path-compat-policy --group-state <file>` to report persisted `legacy_path_compat_enabled` and effective policy (`strict|compat`) as JSON.
+[2026-02-24 22:45] [AGENT] Added CLI parser regression coverage for `show-path-compat-policy` and re-ran `cargo test --bin ds_client -- --nocapture` (20 passed).
+[2026-02-24 22:45] [AGENT] Updated docs: `PROJECT.md` Task 9 notes now include show/set command pair; `README.md` includes usage note and timestamp update.
+[2026-02-24 22:51] [AGENT] Completed Part 12 / Task 10 by adding final RFC 9420 mapping notes for TreeKEM lineage in `protocl-actions/treekem-secret-lineage-protocol.md`: added implementation-to-RFC mapping table, label/context mapping table, and explicit residual deviation notes.
+[2026-02-24 22:51] [AGENT] Updated `protocl-actions/create-group-protocol.md` gap wording to remove stale pending-lineage statements and align create-group notes with current strict lineage validation behavior in commit/apply paths.
+[2026-02-24 22:51] [AGENT] Updated roadmap/docs state: marked `PROJECT.md` Part 12 Tasks 9 and 10 as done (Part 12 complete), refreshed `README.md` status bullets and timestamp.
