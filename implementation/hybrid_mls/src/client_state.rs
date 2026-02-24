@@ -11,7 +11,8 @@ const CLIENT_STATE_VERSION_V2: u8 = 2;
 const CLIENT_STATE_VERSION_V3: u8 = 3;
 const CLIENT_STATE_VERSION_V4: u8 = 4;
 const CLIENT_STATE_VERSION_V5: u8 = 5;
-const CLIENT_STATE_VERSION: u8 = CLIENT_STATE_VERSION_V5;
+const CLIENT_STATE_VERSION_V6: u8 = 6;
+const CLIENT_STATE_VERSION: u8 = CLIENT_STATE_VERSION_V6;
 const MAX_RECENT_APPLIED_COMMITS: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -26,6 +27,9 @@ pub struct ClientGroupState {
     pub group_context_extensions: Vec<u8>,
     pub key_schedule: KeyScheduleState,
     pub transcript_state: TranscriptState,
+    /// Migration marker: when true, receiver paths may use legacy compat fallback
+    /// for pre-lineage commit artifacts.
+    pub legacy_path_compat_enabled: bool,
 }
 
 #[derive(Debug, Error)]
@@ -57,7 +61,20 @@ impl ClientGroupState {
             group_context_extensions: Vec::new(),
             key_schedule,
             transcript_state,
+            legacy_path_compat_enabled: false,
         }
+    }
+
+    pub fn legacy_path_compat_enabled(&self) -> bool {
+        self.legacy_path_compat_enabled
+    }
+
+    pub fn enable_legacy_path_compat(&mut self) {
+        self.legacy_path_compat_enabled = true;
+    }
+
+    pub fn disable_legacy_path_compat(&mut self) {
+        self.legacy_path_compat_enabled = false;
     }
 
     pub fn queue_proposal(&mut self, proposal: &Proposal) {
@@ -250,6 +267,7 @@ impl ClientGroupState {
         encode_bytes(&mut out, &self.key_schedule.encode());
         encode_bytes(&mut out, &self.transcript_state.encode());
         encode_bytes(&mut out, &self.group_context_extensions);
+        encode_u8(&mut out, if self.legacy_path_compat_enabled { 1 } else { 0 });
         out
     }
 
@@ -261,6 +279,7 @@ impl ClientGroupState {
             && version != CLIENT_STATE_VERSION_V3
             && version != CLIENT_STATE_VERSION_V4
             && version != CLIENT_STATE_VERSION_V5
+            && version != CLIENT_STATE_VERSION_V6
         {
             return None;
         }
@@ -283,7 +302,38 @@ impl ClientGroupState {
             key_schedule,
             transcript_state,
             group_context_extensions,
-        ) = if version == CLIENT_STATE_VERSION_V5 {
+            legacy_path_compat_enabled,
+        ) = if version == CLIENT_STATE_VERSION_V6 {
+            let has_last = decoder.read_u8()?;
+            let last_applied_commit_id = match has_last {
+                0 => None,
+                1 => Some(decoder.read_i64()?),
+                _ => return None,
+            };
+            let replay_count = decoder.read_u32()? as usize;
+            let mut recent = Vec::with_capacity(replay_count);
+            for _ in 0..replay_count {
+                recent.push(decoder.read_i64()?);
+            }
+            let key_schedule_bytes = decoder.read_bytes()?;
+            let key_schedule = KeyScheduleState::decode(&key_schedule_bytes)?;
+            let transcript_bytes = decoder.read_bytes()?;
+            let transcript_state = TranscriptState::decode(&transcript_bytes)?;
+            let group_context_extensions = decoder.read_bytes()?;
+            let legacy_path_compat_enabled = match decoder.read_u8()? {
+                0 => false,
+                1 => true,
+                _ => return None,
+            };
+            (
+                last_applied_commit_id,
+                recent,
+                key_schedule,
+                transcript_state,
+                group_context_extensions,
+                legacy_path_compat_enabled,
+            )
+        } else if version == CLIENT_STATE_VERSION_V5 {
             let has_last = decoder.read_u8()?;
             let last_applied_commit_id = match has_last {
                 0 => None,
@@ -306,6 +356,7 @@ impl ClientGroupState {
                 key_schedule,
                 transcript_state,
                 group_context_extensions,
+                true,
             )
         } else if version == CLIENT_STATE_VERSION_V4 {
             let has_last = decoder.read_u8()?;
@@ -329,6 +380,7 @@ impl ClientGroupState {
                 key_schedule,
                 transcript_state,
                 Vec::new(),
+                true,
             )
         } else if version == CLIENT_STATE_VERSION_V3 {
             let has_last = decoder.read_u8()?;
@@ -356,6 +408,7 @@ impl ClientGroupState {
                 key_schedule,
                 transcript_state,
                 Vec::new(),
+                true,
             )
         } else if version == CLIENT_STATE_VERSION_V2 {
             let has_last = decoder.read_u8()?;
@@ -386,6 +439,7 @@ impl ClientGroupState {
                 key_schedule,
                 transcript_state,
                 Vec::new(),
+                true,
             )
         } else {
             let key_schedule = KeyScheduleState::bootstrap_to_epoch(
@@ -399,7 +453,7 @@ impl ClientGroupState {
                 epoch,
                 &[],
             );
-            (None, Vec::new(), key_schedule, transcript_state, Vec::new())
+            (None, Vec::new(), key_schedule, transcript_state, Vec::new(), true)
         };
 
         if decoder.remaining() != 0 {
@@ -417,10 +471,12 @@ impl ClientGroupState {
             group_context_extensions,
             key_schedule,
             transcript_state,
+            legacy_path_compat_enabled,
         };
         if version == CLIENT_STATE_VERSION_V3
             || version == CLIENT_STATE_VERSION_V4
             || version == CLIENT_STATE_VERSION_V5
+            || version == CLIENT_STATE_VERSION_V6
         {
             if decoded.ensure_key_schedule_consistency().is_err() {
                 return None;
@@ -788,6 +844,7 @@ mod tests {
         assert_eq!(decoded.last_applied_commit_id, None);
         assert!(decoded.recent_applied_commit_ids.is_empty());
         assert_eq!(decoded.key_schedule.current_epoch, state.epoch);
+        assert!(decoded.legacy_path_compat_enabled());
     }
 
     #[test]
@@ -803,6 +860,7 @@ mod tests {
         assert_eq!(decoded.epoch, 4);
         assert_eq!(decoded.key_schedule.current_epoch, 4);
         assert_eq!(decoded.last_applied_commit_id, Some(11));
+        assert!(decoded.legacy_path_compat_enabled());
     }
 
     #[test]
@@ -941,6 +999,23 @@ mod tests {
         let decoded = ClientGroupState::decode(&bytes).expect("decode v4 state");
         assert_eq!(decoded.epoch, 2);
         assert!(decoded.group_context_extensions.is_empty());
+        assert!(decoded.legacy_path_compat_enabled());
+    }
+
+    #[test]
+    fn legacy_path_compat_marker_roundtrip_and_toggle() {
+        let tree = RatchetTree::from_leaves(vec![make_leaf(31)]);
+        let mut state = ClientGroupState::new("group-compat-marker", tree, 0);
+        assert!(!state.legacy_path_compat_enabled());
+        state.enable_legacy_path_compat();
+        assert!(state.legacy_path_compat_enabled());
+
+        let decoded = ClientGroupState::decode(&state.encode()).expect("decode v6 state");
+        assert!(decoded.legacy_path_compat_enabled());
+
+        let mut strict = decoded.clone();
+        strict.disable_legacy_path_compat();
+        assert!(!strict.legacy_path_compat_enabled());
     }
 
     #[test]

@@ -1121,6 +1121,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             allow_legacy_path_compat,
         } => {
             let mut state = load_group_state(&group_state)?;
+            if allow_legacy_path_compat && !state.legacy_path_compat_enabled() {
+                state.enable_legacy_path_compat();
+                println!("enabled per-state legacy path compatibility marker");
+            }
             let commit_envelope = load_commit_envelope_from_file(&commit_file)?;
             validate_commit_envelope_metadata(&state, &commit_envelope)?;
             validate_commit_state_machine_transition(&state, &commit_envelope)?;
@@ -1162,7 +1166,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                         state.own_leaf_index,
                         &receiver_private,
                     );
-                let used_legacy_compat = strict.is_none() && allow_legacy_path_compat;
+                let compat_enabled = state.legacy_path_compat_enabled() || allow_legacy_path_compat;
+                let used_legacy_compat = strict.is_none() && compat_enabled;
                 let derived = strict
                     .or_else(|| {
                         if used_legacy_compat {
@@ -1178,6 +1183,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                     })
                     .ok_or("failed to apply commit + path update as receiver")?;
                 if used_legacy_compat {
+                    state.enable_legacy_path_compat();
                     println!(
                         "warning: applied commit via --allow-legacy-path-compat fallback (strict lineage validation failed)"
                     );
@@ -1370,6 +1376,15 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 None
             };
+            if allow_legacy_path_compat {
+                if let Some(state) = state_opt.as_mut() {
+                    if !state.legacy_path_compat_enabled() {
+                        state.enable_legacy_path_compat();
+                        save_group_state(&group_state, state)?;
+                        println!("enabled per-state legacy path compatibility marker");
+                    }
+                }
+            }
             if state_opt.is_none() {
                 if group_id.is_none() {
                     return Err(
@@ -1716,7 +1731,8 @@ fn join_from_commit_material(
             resolved_own_leaf,
             receiver_private,
         );
-    let used_legacy_compat = strict.is_none() && allow_legacy_path_compat;
+    let compat_enabled = state.legacy_path_compat_enabled() || allow_legacy_path_compat;
+    let used_legacy_compat = strict.is_none() && compat_enabled;
     let derived = strict
         .or_else(|| {
             if used_legacy_compat {
@@ -1732,6 +1748,7 @@ fn join_from_commit_material(
         })
         .ok_or("failed to apply commit + path update for joiner")?;
     if used_legacy_compat {
+        state.enable_legacy_path_compat();
         println!(
             "warning: joined via --allow-legacy-path-compat fallback (strict lineage validation failed)"
         );
@@ -2699,7 +2716,9 @@ async fn fetch_and_apply_latest_once(
                             state.own_leaf_index,
                             receiver_private,
                         );
-                    let used_legacy_compat = strict.is_none() && allow_legacy_path_compat;
+                    let compat_enabled =
+                        state.legacy_path_compat_enabled() || allow_legacy_path_compat;
+                    let used_legacy_compat = strict.is_none() && compat_enabled;
                     let derived = strict
                         .or_else(|| {
                             if used_legacy_compat {
@@ -2715,6 +2734,9 @@ async fn fetch_and_apply_latest_once(
                         })
                         .ok_or("failed to apply commit+path update during sync")?;
                     derived_for_commit = Some(derived);
+                    if used_legacy_compat {
+                        state.enable_legacy_path_compat();
+                    }
                     println!(
                         "applied commit_id={} with matched path_update_id={}{}",
                         commit_id,

@@ -5902,7 +5902,8 @@ fn build_join_state_from_commit_material(
             own_leaf_index,
             receiver_private,
         );
-    let used_legacy_compat = strict.is_none() && allow_legacy_path_compat;
+    let compat_enabled = group_state.legacy_path_compat_enabled() || allow_legacy_path_compat;
+    let used_legacy_compat = strict.is_none() && compat_enabled;
     let derived = strict
         .or_else(|| {
             if used_legacy_compat {
@@ -5920,6 +5921,7 @@ fn build_join_state_from_commit_material(
         })
         .ok_or_else(|| "failed to process path update during joiner onboarding".to_string())?;
     if used_legacy_compat {
+        group_state.enable_legacy_path_compat();
         println!(
             "warning: UI join used legacy path compatibility fallback for pre-lineage artifact"
         );
@@ -6459,7 +6461,9 @@ async fn fetch_and_apply_latest_once(
                     group_state.own_leaf_index,
                     receiver_private,
                 );
-            let used_legacy_compat = strict.is_none() && allow_legacy_path_compat;
+            let compat_enabled =
+                group_state.legacy_path_compat_enabled() || allow_legacy_path_compat;
+            let used_legacy_compat = strict.is_none() && compat_enabled;
             strict
                 .or_else(|| {
                     if used_legacy_compat {
@@ -6477,6 +6481,7 @@ async fn fetch_and_apply_latest_once(
                 })
                 .ok_or_else(|| "failed to apply commit+path update during sync".to_string())?;
             if used_legacy_compat {
+                group_state.enable_legacy_path_compat();
                 println!(
                     "warning: UI sync applied commit_id={} via legacy path compatibility fallback",
                     commit_id
@@ -6599,6 +6604,11 @@ async fn action_sync_apply_latest(
         None => None,
     };
     let allow_legacy_path_compat = ui_allow_legacy_path_compat();
+    let mut marker_changed = false;
+    if allow_legacy_path_compat && !group_state.legacy_path_compat_enabled() {
+        group_state.enable_legacy_path_compat();
+        marker_changed = true;
+    }
 
     let outcome = fetch_and_apply_latest_once(
         state,
@@ -6609,7 +6619,7 @@ async fn action_sync_apply_latest(
         allow_legacy_path_compat,
     )
     .await?;
-    if outcome.applied > 0 {
+    if outcome.applied > 0 || marker_changed {
         save_group_state(state, &payload.username, group_id, &group_state)?;
     }
     let _ = add_group(state, &payload.username, group_id);
@@ -6663,6 +6673,9 @@ async fn action_join_from_latest(
         &receiver_private,
         allow_legacy_path_compat,
     )?;
+    if allow_legacy_path_compat && !group_state.legacy_path_compat_enabled() {
+        group_state.enable_legacy_path_compat();
+    }
     let _group_secrets = validate_welcome_for_joiner(
         &join.welcome,
         &join.commit,

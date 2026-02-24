@@ -5093,6 +5093,7 @@ async fn legacy_path_compat_allows_sync_of_pre_lineage_add_commit_artifact() {
     assert_eq!(loaded.epoch, 1);
     assert!(loaded.key_schedule.is_epoch_aligned(1));
     assert!(loaded.last_applied_commit_id.is_some());
+    assert!(loaded.legacy_path_compat_enabled());
 
     let _ = shutdown_tx.send(());
     let result = server.await.expect("join server");
