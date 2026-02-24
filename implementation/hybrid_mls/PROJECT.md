@@ -162,8 +162,8 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | 1 | Enforce `protocol-style.md` as mandatory standard for all new protocol-action docs | ✅ Done | Style now requires RFC 9420 + code grounding, explicit suspicious-item notes, LaTeX math, Mermaid sequence flow, and implementation traceability. |
-| 2 | Rework `add-group` action walkthrough (UI open + bootstrap) | ⬜ Todo | Recreate with clearer human-readable narrative and RFC-vs-implementation boundaries, including suspicious notes. |
-| 3 | Document `create-group` action end-to-end | 🔄 Current | Explain exact state construction, tree/key-schedule initialization, and where behavior is implementation convenience vs direct RFC flow. |
+| 2 | Create fundamentals introduction doc (`Introduction.md`) for non-MLS audience | 🔄 Current | Explain first concepts clearly: KeyPackage, RatchetTree, LeafIndex/NodeIndex, and how these appear in this codebase before action-level docs. |
+| 3 | Document `create-group` action end-to-end | ⬜ Todo | Explain exact state construction, tree/key-schedule initialization, and where behavior is implementation convenience vs direct RFC flow. |
 | 4 | Document `add-member` action end-to-end | ⬜ Todo | Include proposal creation, commit generation, path update, welcome emission, sync/apply behavior, and suspicious deviations if found. |
 | 5 | Document `remove-member` action end-to-end | ⬜ Todo | Cover remove proposal/commit effects, tree transitions, receiver apply, and post-remove security semantics. |
 | 6 | Document `self-update / path update` action end-to-end | ⬜ Todo | Show direct-path math (leaf/path/node secret lineage), ciphertext fanout, and strict lineage validation in apply path. |
@@ -179,5 +179,5 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | 16 | Document application-message protection flow | ⬜ Todo | Explain RFC 9420 private message framing, sender-data protection, decrypt path, and any implementation-specific deviations. |
 
 ---
-Current: `Part 13 / Task 3 (Document create-group action end-to-end)`
-Next: `Part 13 / Task 4 (Document add-member action end-to-end)`
+Current: `Part 13 / Task 2 (Create fundamentals Introduction.md for non-MLS audience)`
+Next: `Part 13 / Task 3 (Document create-group action end-to-end)`

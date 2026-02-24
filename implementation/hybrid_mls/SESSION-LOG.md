@@ -488,3 +488,13 @@
 [2026-02-24 23:24] [AGENT] Removed `protocol-actions/add-group.md` per operator request and updated `PROJECT.md` Part 13: changed Task 2 to rework `add-group` as Todo.
 [2026-02-24 23:24] [AGENT] Extended `PROJECT.md` Part 13 with RFC-driven documentation tasks for Welcome-message lifecycle, external join/commit semantics status mapping, and application-message protection flow.
 [2026-02-24 23:24] [AGENT] Performed RFC 9420 source cross-check (rfc-editor/datatracker) and aligned roadmap coverage to key protocol areas (Welcome path, external commit/join path, message protection path) to reduce presentation gaps.
+[2026-02-24 23:35] [OPERATOR] Requested start of Part 13 / Task 2 rework for `add-group` walkthrough based on `protocol-style.md`.
+[2026-02-24 23:35] [AGENT] Recreated `protocol-actions/add-group.md` from scratch using strict 4-section template with clearer human-readable mathematical flow, explicit RFC basis per step, Mermaid sequence diagram, and code-line implementation traceability.
+[2026-02-24 23:35] [AGENT] Added explicit suspicious-item notes in `add-group` walkthrough (non-atomic two-call flow, local bootstrap without Commit/Welcome, ignored `add_group` write result, sanitizer alias risk).
+[2026-02-24 23:41] [OPERATOR] Requested removal of Part 13 `add-group` rework task from roadmap and start of Part 13 `create-group` documentation.
+[2026-02-24 23:41] [AGENT] Updated `PROJECT.md` Part 13 by removing the `add-group` rework row, renumbering downstream tasks, and keeping `create-group` as the current task with `add-member` as next.
+[2026-02-24 23:41] [AGENT] Added `protocol-actions/create-group.md` using `protocol-style.md` with formal setup, stepwise math flow, Mermaid sequence diagram, and implementation traceability mapped to `ds_client bootstrap-group-state`.
+[2026-02-24 23:41] [AGENT] Documented explicit suspicious findings for create-group bootstrap path: CLI-order-dependent leaf indexing, missing duplicate-member checks, missing explicit non-empty group_id guard, and local-only initialization without Commit/Welcome wire exchange.
+[2026-02-24 23:53] [OPERATOR] Requested a new first task in Part 13 for beginner fundamentals and a professor-facing `Introduction.md` based on `protocol-style.md`.
+[2026-02-24 23:53] [AGENT] Updated `PROJECT.md` Part 13: inserted new Task 2 for fundamentals introduction, renumbered subsequent tasks, and updated Current/Next pointers.
+[2026-02-24 23:53] [AGENT] Added `Introduction.md` with protocol-style 4-section structure covering KeyPackage, RatchetTree, LeafIndex/NodeIndex mapping, and initial local group-state semantics with RFC basis and suspicious notes.
