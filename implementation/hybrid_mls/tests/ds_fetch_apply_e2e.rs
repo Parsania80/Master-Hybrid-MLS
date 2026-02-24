@@ -4893,6 +4893,217 @@ async fn strict_lineage_add_commit_with_tampered_parent_path_key_is_rejected_on_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_path_compat_allows_sync_of_pre_lineage_add_commit_artifact() {
+    let (state, base) = temp_state("legacy-path-compat-add-parent-key");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let alice_state = work.join("alice.json");
+    let bob_state = work.join("bob.json");
+    let carol_state = work.join("carol.json");
+    let alice_kem = work.join("alice-kem.json");
+    let bob_kem = work.join("bob-kem.json");
+    let carol_kem = work.join("carol-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let bob_kp = work.join("bob.kp");
+    let carol_kp = work.join("carol.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let bob_recv = work.join("bob.recv.json");
+    let carol_recv = work.join("carol.recv.json");
+    let alice_group_state = work.join("alice-group.bin");
+    let bob_group_state = work.join("bob-group.bin");
+    let add_proposal_file = work.join("add-carol.proposal.bin");
+    let commit_file = work.join("add-carol.commit.bin");
+    let path_file = work.join("add-carol.path.bin");
+    let group_id = "group-legacy-path-compat-add-parent-key";
+
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &alice_state,
+        "alice",
+        &alice_kem,
+        &alice_kp,
+        &alice_recv,
+    );
+    register_and_export_keypackage(
+        client_bin, &base_url, &bob_state, "bob", &bob_kem, &bob_kp, &bob_recv,
+    );
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &carol_state,
+        "carol",
+        &carol_kem,
+        &carol_kp,
+        &carol_recv,
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&alice_group_state),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--own-leaf".to_string(),
+            "1".to_string(),
+            "--out".to_string(),
+            to_s(&bob_group_state),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-add-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_state),
+            "--keypackage-file".to_string(),
+            to_s(&carol_kp),
+            "--out".to_string(),
+            to_s(&add_proposal_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&add_proposal_file),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-commit".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_state),
+            "--commit-out".to_string(),
+            to_s(&commit_file),
+            "--path-update-out".to_string(),
+            to_s(&path_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+
+    let mut commit_env = CommitEnvelope::decode(&fs::read(&commit_file).expect("read commit file"))
+        .expect("decode commit envelope");
+    assert!(
+        !commit_env.commit.path.is_empty(),
+        "expected non-empty parent path for add commit"
+    );
+    let mut classic_bytes = commit_env.commit.path[0].public_key.classic.to_bytes();
+    classic_bytes[0] ^= 0x40;
+    commit_env.commit.path[0].public_key.classic = x25519_dalek::PublicKey::from(classic_bytes);
+    fs::write(&commit_file, commit_env.encode()).expect("rewrite tampered commit envelope");
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&commit_file),
+            "--path-update-file".to_string(),
+            to_s(&path_file),
+        ],
+    );
+
+    run_ds_client_expect_fail(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&bob_group_state),
+            "--receiver-private-file".to_string(),
+            to_s(&bob_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "failed to apply commit+path update during sync",
+    );
+
+    let compat_sync = run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&bob_group_state),
+            "--receiver-private-file".to_string(),
+            to_s(&bob_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+            "--allow-legacy-path-compat".to_string(),
+        ],
+    );
+    assert!(
+        compat_sync.contains("applied_total=1"),
+        "compat sync output:\n{compat_sync}"
+    );
+
+    let loaded = ClientGroupState::load_from_file(&bob_group_state).expect("load state");
+    assert_eq!(loaded.epoch, 1);
+    assert!(loaded.key_schedule.is_epoch_aligned(1));
+    assert!(loaded.last_applied_commit_id.is_some());
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn strict_lineage_remove_commit_with_inconsistent_path_update_is_rejected_on_sync() {
     let (state, base) = temp_state("strict-lineage-remove-inconsistent-path");
     let (addr, shutdown_tx, server) = start_test_server(state).await;

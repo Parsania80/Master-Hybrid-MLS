@@ -586,6 +586,16 @@ fn has_admin_ui_session(state: &UiState, headers: &HeaderMap) -> bool {
     has_active_local_session(state, ADMIN_USERNAME)
 }
 
+fn ui_allow_legacy_path_compat() -> bool {
+    match std::env::var("DS_UI_ALLOW_LEGACY_PATH_COMPAT") {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
 fn ui_login_cookie_value(username: &str) -> String {
     let safe_username: String = username
         .chars()
@@ -5866,34 +5876,55 @@ fn build_join_state_from_commit_material(
     commit: &CommitEnvelope,
     path_update: &PathUpdateEnvelope,
     receiver_private: &HybridPrivateKey,
+    allow_legacy_path_compat: bool,
 ) -> Result<(ClientGroupState, Vec<Option<[u8; 32]>>), String> {
     validate_path_update_envelope_metadata(commit, path_update)?;
     let tree = RatchetTree::from_leaves(leaves);
     let mut group_state = ClientGroupState::new(group_id.to_string(), tree, 0);
     group_state.set_epoch(commit.epoch);
 
-    group_state
-        .ratchet_tree
+    let mut preview_tree = group_state.ratchet_tree.clone();
+    preview_tree
         .apply_commit(&commit.commit)
         .ok_or_else(|| "failed to apply selected Add commit to base member tree".to_string())?;
-    group_state.apply_group_context_extensions_from_proposals(&commit.commit.proposals);
 
     let receiver_public = hybrid_public_from_private(receiver_private);
-    let own_leaf_index =
-        find_leaf_by_public_key(&group_state.ratchet_tree, &receiver_public).ok_or_else(|| {
+    let own_leaf_index = find_leaf_by_public_key(&preview_tree, &receiver_public).ok_or_else(|| {
             "could not infer joiner leaf after applying Add commit; verify base member order and receiver key".to_string()
         })?;
     group_state.own_leaf_index = own_leaf_index;
 
-    let derived = group_state
+    let strict = group_state
         .ratchet_tree
-        .process_path_update_for_leaf(
-            commit.commit.sender,
+        .apply_commit_with_path_update(
+            &commit.commit,
+            &path_update.path_update,
             own_leaf_index,
             receiver_private,
-            &path_update.path_update,
-        )
+        );
+    let used_legacy_compat = strict.is_none() && allow_legacy_path_compat;
+    let derived = strict
+        .or_else(|| {
+            if used_legacy_compat {
+                group_state
+                    .ratchet_tree
+                    .apply_commit_with_path_update_legacy_compat(
+                        &commit.commit,
+                        &path_update.path_update,
+                        own_leaf_index,
+                        receiver_private,
+                    )
+            } else {
+                None
+            }
+        })
         .ok_or_else(|| "failed to process path update during joiner onboarding".to_string())?;
+    if used_legacy_compat {
+        println!(
+            "warning: UI join used legacy path compatibility fallback for pre-lineage artifact"
+        );
+    }
+    group_state.apply_group_context_extensions_from_proposals(&commit.commit.proposals);
 
     group_state.clear_pending_proposals();
     let commit_context = commit.commit.encode();
@@ -6316,6 +6347,7 @@ async fn fetch_and_apply_latest_once(
     group_state: &mut ClientGroupState,
     receiver_private: Option<&HybridPrivateKey>,
     limit: usize,
+    allow_legacy_path_compat: bool,
 ) -> Result<SyncOutcome, String> {
     let commit_summaries = ds_list_messages_typed(
         state,
@@ -6419,15 +6451,37 @@ async fn fetch_and_apply_latest_once(
                     commit_id, commit_env.group_id, commit_env.epoch, commit_env.sender_leaf
                 )
             })?;
-            let _derived = group_state
+            let strict = group_state
                 .ratchet_tree
                 .apply_commit_with_path_update(
                     &commit_env.commit,
                     &path_env.path_update,
                     group_state.own_leaf_index,
                     receiver_private,
-                )
+                );
+            let used_legacy_compat = strict.is_none() && allow_legacy_path_compat;
+            strict
+                .or_else(|| {
+                    if used_legacy_compat {
+                        group_state
+                            .ratchet_tree
+                            .apply_commit_with_path_update_legacy_compat(
+                                &commit_env.commit,
+                                &path_env.path_update,
+                                group_state.own_leaf_index,
+                                receiver_private,
+                            )
+                    } else {
+                        None
+                    }
+                })
                 .ok_or_else(|| "failed to apply commit+path update during sync".to_string())?;
+            if used_legacy_compat {
+                println!(
+                    "warning: UI sync applied commit_id={} via legacy path compatibility fallback",
+                    commit_id
+                );
+            }
         } else {
             group_state
                 .ratchet_tree
@@ -6544,6 +6598,7 @@ async fn action_sync_apply_latest(
         Some(path) => Some(load_receiver_private_from_file(Path::new(path))?),
         None => None,
     };
+    let allow_legacy_path_compat = ui_allow_legacy_path_compat();
 
     let outcome = fetch_and_apply_latest_once(
         state,
@@ -6551,6 +6606,7 @@ async fn action_sync_apply_latest(
         &mut group_state,
         receiver_private.as_ref(),
         payload.limit.unwrap_or(50),
+        allow_legacy_path_compat,
     )
     .await?;
     if outcome.applied > 0 {
@@ -6598,12 +6654,14 @@ async fn action_join_from_latest(
     let base_members = payload.base_member_usernames.clone().unwrap_or_default();
     let (leaves, base_labels) =
         load_base_member_leaves_from_ds(state, &payload.username, &base_members).await?;
+    let allow_legacy_path_compat = ui_allow_legacy_path_compat();
     let (mut group_state, derived) = build_join_state_from_commit_material(
         group_id,
         leaves,
         &join.commit,
         &join.path_update,
         &receiver_private,
+        allow_legacy_path_compat,
     )?;
     let _group_secrets = validate_welcome_for_joiner(
         &join.welcome,
@@ -6621,6 +6679,7 @@ async fn action_join_from_latest(
         &mut group_state,
         Some(&receiver_private),
         limit,
+        allow_legacy_path_compat,
     )
     .await?;
 

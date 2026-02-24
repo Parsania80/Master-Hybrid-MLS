@@ -508,5 +508,6 @@ Sync notes:
 - Added lineage key-schedule tests in `src/key_schedule.rs` and `src/client_state.rs`, plus rebaselined deterministic welcome joiner-secret vector in `src/bin/ds_client.rs`.
 - Part 12 / Task 7 is complete: deterministic TreeKEM lineage vectors are now added in `src/tree.rs` for `leaf_secret -> path_secret -> node_secret` chain values and derived parent key material across both hybrid branches (classic exact bytes + PQ key digest fixtures).
 - Part 12 / Task 8 is complete: DS-backed strict-lineage coverage now includes Add/Update/Remove tamper negatives and a positive 3-member Add→Update→Remove convergence test with explicit epoch alignment and key-schedule chain-secret lineage equality/rotation assertions in `tests/ds_fetch_apply_e2e.rs`.
+- Part 12 / Task 9 is now in progress with an explicit migration compatibility lane: strict lineage remains default, while legacy fallback is available via `ds_client --allow-legacy-path-compat` (apply/join/sync) and UI env toggle `DS_UI_ALLOW_LEGACY_PATH_COMPAT=1`; DS-backed test coverage now proves strict rejection + compat success for pre-lineage-style tampered Add commit artifacts.
 
-Last updated: 2026-02-24 22:10
+Last updated: 2026-02-24 22:28

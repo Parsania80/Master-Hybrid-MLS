@@ -94,6 +94,12 @@ pub struct PathUpdate {
     pub ciphertexts: Vec<Vec<PathSecretCiphertext>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitPathValidationMode {
+    StrictLineage,
+    LegacyCompat,
+}
+
 /// Ciphertext carrying a path secret to a specific node in the copath resolution.
 #[derive(Clone, Debug)]
 pub struct PathSecretCiphertext {
@@ -877,20 +883,62 @@ impl RatchetTree {
         receiver_leaf: usize,
         receiver_private: &HybridPrivateKey,
     ) -> Option<Vec<Option<[u8; 32]>>> {
-        self.apply_commit(commit)?;
-        let derived = self.process_path_update_for_leaf(
+        self.apply_commit_with_path_update_mode(
+            commit,
+            path_update,
+            receiver_leaf,
+            receiver_private,
+            CommitPathValidationMode::StrictLineage,
+        )
+    }
+
+    /// Apply commit/path-update with explicit validation policy.
+    ///
+    /// `LegacyCompat` keeps strict path-update decoding/decryption checks but skips
+    /// parent-key lineage binding for migration of pre-lineage persisted artifacts.
+    pub fn apply_commit_with_path_update_mode(
+        &mut self,
+        commit: &Commit,
+        path_update: &PathUpdate,
+        receiver_leaf: usize,
+        receiver_private: &HybridPrivateKey,
+        mode: CommitPathValidationMode,
+    ) -> Option<Vec<Option<[u8; 32]>>> {
+        // Apply on a snapshot so callers can safely retry with a different mode.
+        let mut candidate = self.clone();
+        candidate.apply_commit(commit)?;
+        let derived = candidate.process_path_update_for_leaf(
             commit.sender,
             receiver_leaf,
             receiver_private,
             path_update,
         )?;
-        self.validate_commit_path_against_node_secret_lineage(
-            commit.sender,
-            &commit.path,
-            &derived,
-            path_update,
-        )?;
+        if mode == CommitPathValidationMode::StrictLineage {
+            candidate.validate_commit_path_against_node_secret_lineage(
+                commit.sender,
+                &commit.path,
+                &derived,
+                path_update,
+            )?;
+        }
+        *self = candidate;
         Some(derived)
+    }
+
+    pub fn apply_commit_with_path_update_legacy_compat(
+        &mut self,
+        commit: &Commit,
+        path_update: &PathUpdate,
+        receiver_leaf: usize,
+        receiver_private: &HybridPrivateKey,
+    ) -> Option<Vec<Option<[u8; 32]>>> {
+        self.apply_commit_with_path_update_mode(
+            commit,
+            path_update,
+            receiver_leaf,
+            receiver_private,
+            CommitPathValidationMode::LegacyCompat,
+        )
     }
 
     /// Build the explicit sender direct-path secret model for one path update.
@@ -2411,6 +2459,51 @@ mod tests {
 
         let result = tree.apply_commit_with_path_update(&commit, &decoded, 1, &bob_priv);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn apply_commit_with_path_update_legacy_compat_accepts_mismatched_parent_key_when_encoded() {
+        let sender_leaf = make_leaf(61);
+        let mut tree = RatchetTree::from_leaves(vec![sender_leaf]);
+
+        let (bob_kp, bob_priv) = {
+            let kp = make_key_package(62);
+            let kem_seed = Seed::from([62u8; 64]);
+            let kyber_priv = KyberPriv::from_seed(kem_seed);
+            let classic_priv = X25519Priv::from([62u8; 32]);
+            let priv_key = HybridPrivateKey {
+                classic: classic_priv,
+                pq: kyber_priv,
+            };
+            (kp, priv_key)
+        };
+
+        let mut tree_after = tree.clone();
+        tree_after
+            .insert_key_package(&bob_kp)
+            .expect("insert into temp tree");
+
+        let leaf_secret = [0x1Cu8; 32];
+        let mut commit = Commit {
+            sender: 0,
+            proposals: vec![Proposal::Add(bob_kp.clone())],
+            path: parent_updates_from_leaf_secret(&tree_after, 0, leaf_secret),
+        };
+        commit.path[0].public_key = hybrid_public_key(211);
+
+        let mut rng = TestRng(0x9b9b9b9b9b9b9b9b);
+        let path_update = tree_after
+            .build_path_update(&mut rng, 0, leaf_secret)
+            .expect("path update");
+        let decoded = PathUpdate::decode(&path_update.encode()).expect("decode");
+        assert!(
+            decoded.path_secrets.is_empty(),
+            "encoded path omits path_secrets"
+        );
+
+        let result =
+            tree.apply_commit_with_path_update_legacy_compat(&commit, &decoded, 1, &bob_priv);
+        assert!(result.is_some());
     }
 
     #[test]

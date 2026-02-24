@@ -237,6 +237,8 @@ pub enum Commands {
         receiver_private_file: Option<PathBuf>,
         #[arg(long)]
         derived_out: Option<PathBuf>,
+        #[arg(long, default_value_t = false)]
+        allow_legacy_path_compat: bool,
     },
     JoinFromCommit {
         #[arg(long = "base-member-keypackage", required = true)]
@@ -255,6 +257,8 @@ pub enum Commands {
         derived_out: Option<PathBuf>,
         #[arg(long, default_value_t = false)]
         force: bool,
+        #[arg(long, default_value_t = false)]
+        allow_legacy_path_compat: bool,
     },
     JoinFromWelcome {
         #[arg(long = "base-member-keypackage", required = true)]
@@ -275,6 +279,8 @@ pub enum Commands {
         derived_out: Option<PathBuf>,
         #[arg(long, default_value_t = false)]
         force: bool,
+        #[arg(long, default_value_t = false)]
+        allow_legacy_path_compat: bool,
     },
     FetchAndApplyLatest {
         #[arg(long)]
@@ -299,6 +305,8 @@ pub enum Commands {
         poll_interval_ms: u64,
         #[arg(long)]
         max_polls: Option<usize>,
+        #[arg(long, default_value_t = false)]
+        allow_legacy_path_compat: bool,
     },
     ShowDerivedSecrets {
         #[arg(long)]
@@ -1110,6 +1118,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             path_update_file,
             receiver_private_file,
             derived_out,
+            allow_legacy_path_compat,
         } => {
             let mut state = load_group_state(&group_state)?;
             let commit_envelope = load_commit_envelope_from_file(&commit_file)?;
@@ -1145,15 +1154,34 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                         .as_ref()
                         .expect("receiver_private_file checked above"),
                 )?;
-                let derived = state
+                let strict = state
                     .ratchet_tree
                     .apply_commit_with_path_update(
                         &commit_envelope.commit,
                         &path_update_envelope.path_update,
                         state.own_leaf_index,
                         &receiver_private,
-                    )
+                    );
+                let used_legacy_compat = strict.is_none() && allow_legacy_path_compat;
+                let derived = strict
+                    .or_else(|| {
+                        if used_legacy_compat {
+                            state.ratchet_tree.apply_commit_with_path_update_legacy_compat(
+                                &commit_envelope.commit,
+                                &path_update_envelope.path_update,
+                                state.own_leaf_index,
+                                &receiver_private,
+                            )
+                        } else {
+                            None
+                        }
+                    })
                     .ok_or("failed to apply commit + path update as receiver")?;
+                if used_legacy_compat {
+                    println!(
+                        "warning: applied commit via --allow-legacy-path-compat fallback (strict lineage validation failed)"
+                    );
+                }
                 Some(derived)
             } else {
                 state
@@ -1200,6 +1228,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             own_leaf,
             derived_out,
             force,
+            allow_legacy_path_compat,
         } => {
             if out.exists() && !force {
                 return Err(format!(
@@ -1222,6 +1251,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 &receiver_private,
                 own_leaf,
                 "join-from-commit apply",
+                allow_legacy_path_compat,
             )?;
 
             if let Some(path) = derived_out {
@@ -1249,6 +1279,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             own_leaf,
             derived_out,
             force,
+            allow_legacy_path_compat,
         } => {
             if out.exists() && !force {
                 return Err(format!(
@@ -1273,6 +1304,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 &receiver_private,
                 own_leaf,
                 "join-from-welcome apply",
+                allow_legacy_path_compat,
             )?;
             let group_secrets = validate_welcome_for_joiner(
                 &welcome,
@@ -1323,6 +1355,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             watch,
             poll_interval_ms,
             max_polls,
+            allow_legacy_path_compat,
         } => {
             let auth_state = load_state(&cli.state)?;
             let username = resolve_username(username, &auth_state)?;
@@ -1382,6 +1415,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                             .as_ref()
                             .expect("validated receiver private for unknown group"),
                         limit,
+                        allow_legacy_path_compat,
                     )
                     .await?;
 
@@ -1428,6 +1462,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                     state,
                     receiver_private.as_ref(),
                     limit,
+                    allow_legacy_path_compat,
                 )
                 .await?;
                 total_applied = total_applied.saturating_add(outcome.applied);
@@ -1635,6 +1670,7 @@ fn join_from_commit_material(
     receiver_private: &HybridPrivateKey,
     own_leaf: Option<usize>,
     context_label: &str,
+    allow_legacy_path_compat: bool,
 ) -> Result<(ClientGroupState, Vec<Option<[u8; 32]>>), Box<dyn std::error::Error>> {
     if commit_envelope.sender_leaf != commit_envelope.commit.sender {
         return Err(format!(
@@ -1654,34 +1690,53 @@ fn join_from_commit_material(
     let mut state = ClientGroupState::new(commit_envelope.group_id.clone(), tree, 0);
     state.set_epoch(commit_envelope.epoch);
 
-    state
-        .ratchet_tree
+    let mut preview_tree = state.ratchet_tree.clone();
+    preview_tree
         .apply_commit(&commit_envelope.commit)
-        .ok_or("failed to apply commit while joining")?;
-    state.apply_group_context_extensions_from_proposals(&commit_envelope.commit.proposals);
+        .ok_or("failed to apply commit while joining (preview)")?;
 
     let resolved_own_leaf = match own_leaf {
         Some(index) => {
-            ensure_leaf_present(&state.ratchet_tree, index)?;
+            ensure_leaf_present(&preview_tree, index)?;
             index
         }
         None => {
             let public = hybrid_public_from_private(receiver_private);
-            find_leaf_by_public_key(&state.ratchet_tree, &public)
+            find_leaf_by_public_key(&preview_tree, &public)
                 .ok_or("could not infer own leaf from receiver private key; use --own-leaf")?
         }
     };
     state.own_leaf_index = resolved_own_leaf;
 
-    let derived = state
+    let strict = state
         .ratchet_tree
-        .process_path_update_for_leaf(
-            commit_envelope.commit.sender,
+        .apply_commit_with_path_update(
+            &commit_envelope.commit,
+            &path_update_envelope.path_update,
             resolved_own_leaf,
             receiver_private,
-            &path_update_envelope.path_update,
-        )
-        .ok_or("failed to process path update for joiner")?;
+        );
+    let used_legacy_compat = strict.is_none() && allow_legacy_path_compat;
+    let derived = strict
+        .or_else(|| {
+            if used_legacy_compat {
+                state.ratchet_tree.apply_commit_with_path_update_legacy_compat(
+                    &commit_envelope.commit,
+                    &path_update_envelope.path_update,
+                    resolved_own_leaf,
+                    receiver_private,
+                )
+            } else {
+                None
+            }
+        })
+        .ok_or("failed to apply commit + path update for joiner")?;
+    if used_legacy_compat {
+        println!(
+            "warning: joined via --allow-legacy-path-compat fallback (strict lineage validation failed)"
+        );
+    }
+    state.apply_group_context_extensions_from_proposals(&commit_envelope.commit.proposals);
 
     state.clear_pending_proposals();
     let commit_context = commit_envelope.commit.encode();
@@ -2504,6 +2559,7 @@ async fn fetch_and_apply_latest_once(
     state: &mut ClientGroupState,
     receiver_private: Option<&HybridPrivateKey>,
     limit: usize,
+    allow_legacy_path_compat: bool,
 ) -> Result<SyncOutcome, Box<dyn std::error::Error>> {
     let commit_summaries = ds_list_messages(
         client,
@@ -2635,19 +2691,39 @@ async fn fetch_and_apply_latest_once(
 
             if path_required {
                 if let Some((path_id, path_env)) = matched_path_update {
-                    let derived = state
+                    let strict = state
                         .ratchet_tree
                         .apply_commit_with_path_update(
                             &commit_env.commit,
                             &path_env.path_update,
                             state.own_leaf_index,
                             receiver_private,
-                        )
+                        );
+                    let used_legacy_compat = strict.is_none() && allow_legacy_path_compat;
+                    let derived = strict
+                        .or_else(|| {
+                            if used_legacy_compat {
+                                state.ratchet_tree.apply_commit_with_path_update_legacy_compat(
+                                    &commit_env.commit,
+                                    &path_env.path_update,
+                                    state.own_leaf_index,
+                                    receiver_private,
+                                )
+                            } else {
+                                None
+                            }
+                        })
                         .ok_or("failed to apply commit+path update during sync")?;
                     derived_for_commit = Some(derived);
                     println!(
-                        "applied commit_id={} with matched path_update_id={}",
-                        commit_id, path_id
+                        "applied commit_id={} with matched path_update_id={}{}",
+                        commit_id,
+                        path_id,
+                        if used_legacy_compat {
+                            " (legacy-path-compat)"
+                        } else {
+                            ""
+                        }
                     );
                 } else {
                     return Err(format!(
@@ -2710,6 +2786,7 @@ async fn try_bootstrap_unknown_group_from_welcome_once(
     own_leaf: Option<usize>,
     receiver_private: &HybridPrivateKey,
     limit: usize,
+    allow_legacy_path_compat: bool,
 ) -> Result<Option<(ClientGroupState, serde_json::Value)>, Box<dyn std::error::Error>> {
     let commit_summaries = ds_list_messages(
         client,
@@ -2845,6 +2922,7 @@ async fn try_bootstrap_unknown_group_from_welcome_once(
                 receiver_private,
                 own_leaf,
                 "fetch-and-apply-latest welcome bootstrap",
+                allow_legacy_path_compat,
             ) {
                 Ok(value) => value,
                 Err(_) => continue,
