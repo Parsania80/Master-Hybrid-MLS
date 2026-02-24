@@ -4631,6 +4631,461 @@ async fn tampered_path_update_payload_with_valid_metadata_triggers_strict_receiv
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn strict_lineage_add_commit_with_tampered_parent_path_key_is_rejected_on_sync() {
+    let (state, base) = temp_state("strict-lineage-add-tampered-parent-key");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let alice_state = work.join("alice.json");
+    let bob_state = work.join("bob.json");
+    let carol_state = work.join("carol.json");
+    let alice_kem = work.join("alice-kem.json");
+    let bob_kem = work.join("bob-kem.json");
+    let carol_kem = work.join("carol-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let bob_kp = work.join("bob.kp");
+    let carol_kp = work.join("carol.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let bob_recv = work.join("bob.recv.json");
+    let carol_recv = work.join("carol.recv.json");
+    let alice_group_state = work.join("alice-group.bin");
+    let bob_group_state = work.join("bob-group.bin");
+    let add_proposal_file = work.join("add-carol.proposal.bin");
+    let commit_file = work.join("add-carol.commit.bin");
+    let path_file = work.join("add-carol.path.bin");
+    let group_id = "group-strict-lineage-add-parent-key";
+
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &alice_state,
+        "alice",
+        &alice_kem,
+        &alice_kp,
+        &alice_recv,
+    );
+    register_and_export_keypackage(
+        client_bin, &base_url, &bob_state, "bob", &bob_kem, &bob_kp, &bob_recv,
+    );
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &carol_state,
+        "carol",
+        &carol_kem,
+        &carol_kp,
+        &carol_recv,
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&alice_group_state),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--own-leaf".to_string(),
+            "1".to_string(),
+            "--out".to_string(),
+            to_s(&bob_group_state),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-add-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_state),
+            "--keypackage-file".to_string(),
+            to_s(&carol_kp),
+            "--out".to_string(),
+            to_s(&add_proposal_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&add_proposal_file),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-commit".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_state),
+            "--commit-out".to_string(),
+            to_s(&commit_file),
+            "--path-update-out".to_string(),
+            to_s(&path_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+
+    let mut commit_env = CommitEnvelope::decode(&fs::read(&commit_file).expect("read commit file"))
+        .expect("decode commit envelope");
+    assert!(
+        !commit_env.commit.path.is_empty(),
+        "expected non-empty parent path for add commit"
+    );
+    let mut classic_bytes = commit_env.commit.path[0].public_key.classic.to_bytes();
+    classic_bytes[0] ^= 0x80;
+    commit_env.commit.path[0].public_key.classic = x25519_dalek::PublicKey::from(classic_bytes);
+    fs::write(&commit_file, commit_env.encode()).expect("rewrite tampered commit envelope");
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&commit_file),
+            "--path-update-file".to_string(),
+            to_s(&path_file),
+        ],
+    );
+
+    run_ds_client_expect_fail(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&bob_group_state),
+            "--receiver-private-file".to_string(),
+            to_s(&bob_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "failed to apply commit+path update during sync",
+    );
+
+    let loaded = ClientGroupState::load_from_file(&bob_group_state).expect("load state");
+    assert_eq!(loaded.epoch, 0);
+    assert_eq!(loaded.last_applied_commit_id, None);
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn strict_lineage_remove_commit_with_inconsistent_path_update_is_rejected_on_sync() {
+    let (state, base) = temp_state("strict-lineage-remove-inconsistent-path");
+    let (addr, shutdown_tx, server) = start_test_server(state).await;
+    let base_url = format!("http://{addr}");
+    let client_bin = env!("CARGO_BIN_EXE_ds_client");
+
+    let work = base.join("work");
+    let _ = fs::create_dir_all(&work);
+
+    let alice_state = work.join("alice.json");
+    let bob_state = work.join("bob.json");
+    let carol_state = work.join("carol.json");
+    let alice_kem = work.join("alice-kem.json");
+    let bob_kem = work.join("bob-kem.json");
+    let carol_kem = work.join("carol-kem.json");
+    let alice_v2_kem = work.join("alice-v2-kem.json");
+    let alice_kp = work.join("alice.kp");
+    let bob_kp = work.join("bob.kp");
+    let carol_kp = work.join("carol.kp");
+    let alice_v2_kp = work.join("alice-v2.kp");
+    let alice_recv = work.join("alice.recv.json");
+    let bob_recv = work.join("bob.recv.json");
+    let carol_recv = work.join("carol.recv.json");
+    let alice_v2_recv = work.join("alice-v2.recv.json");
+    let alice_group_base = work.join("alice-group-base.bin");
+    let alice_group_remove = work.join("alice-group-remove.bin");
+    let alice_group_update = work.join("alice-group-update.bin");
+    let bob_group_state = work.join("bob-group.bin");
+    let remove_proposal_file = work.join("remove-carol.proposal.bin");
+    let remove_commit_file = work.join("remove-carol.commit.bin");
+    let remove_path_file = work.join("remove-carol.path.bin");
+    let update_proposal_file = work.join("update-alice.proposal.bin");
+    let update_commit_file = work.join("update-alice.commit.bin");
+    let update_path_file = work.join("update-alice.path.bin");
+    let group_id = "group-strict-lineage-remove-inconsistent-path";
+
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &alice_state,
+        "alice",
+        &alice_kem,
+        &alice_kp,
+        &alice_recv,
+    );
+    register_and_export_keypackage(
+        client_bin, &base_url, &bob_state, "bob", &bob_kem, &bob_kp, &bob_recv,
+    );
+    register_and_export_keypackage(
+        client_bin,
+        &base_url,
+        &carol_state,
+        "carol",
+        &carol_kem,
+        &carol_kp,
+        &carol_recv,
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keygen".to_string(),
+            "--out".to_string(),
+            to_s(&alice_v2_kem),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "keypackage-export".to_string(),
+            "--kem-file".to_string(),
+            to_s(&alice_v2_kem),
+            "--keypackage-out".to_string(),
+            to_s(&alice_v2_kp),
+            "--receiver-private-out".to_string(),
+            to_s(&alice_v2_recv),
+            "--force".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--member-keypackage".to_string(),
+            to_s(&carol_kp),
+            "--own-leaf".to_string(),
+            "0".to_string(),
+            "--out".to_string(),
+            to_s(&alice_group_base),
+            "--force".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "bootstrap-group-state".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--member-keypackage".to_string(),
+            to_s(&alice_kp),
+            "--member-keypackage".to_string(),
+            to_s(&bob_kp),
+            "--member-keypackage".to_string(),
+            to_s(&carol_kp),
+            "--own-leaf".to_string(),
+            "1".to_string(),
+            "--out".to_string(),
+            to_s(&bob_group_state),
+            "--force".to_string(),
+        ],
+    );
+    fs::copy(&alice_group_base, &alice_group_remove).expect("copy remove sender state");
+    fs::copy(&alice_group_base, &alice_group_update).expect("copy update sender state");
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-remove-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_remove),
+            "--remove-leaf".to_string(),
+            "2".to_string(),
+            "--out".to_string(),
+            to_s(&remove_proposal_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-proposal".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--proposal-file".to_string(),
+            to_s(&remove_proposal_file),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-commit".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_remove),
+            "--commit-out".to_string(),
+            to_s(&remove_commit_file),
+            "--path-update-out".to_string(),
+            to_s(&remove_path_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-update-proposal".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_update),
+            "--keypackage-file".to_string(),
+            to_s(&alice_v2_kp),
+            "--out".to_string(),
+            to_s(&update_proposal_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+            "--target-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "create-commit".to_string(),
+            "--group-state".to_string(),
+            to_s(&alice_group_update),
+            "--commit-out".to_string(),
+            to_s(&update_commit_file),
+            "--path-update-out".to_string(),
+            to_s(&update_path_file),
+            "--sender-leaf".to_string(),
+            "0".to_string(),
+        ],
+    );
+
+    let remove_env =
+        CommitEnvelope::decode(&fs::read(&remove_commit_file).expect("read remove commit"))
+            .expect("decode remove commit");
+    let update_path_env =
+        PathUpdateEnvelope::decode(&fs::read(&update_path_file).expect("read update path"))
+            .expect("decode update path");
+    assert_eq!(remove_env.group_id, update_path_env.group_id);
+    assert_eq!(remove_env.epoch, update_path_env.epoch);
+    assert_eq!(remove_env.sender_leaf, update_path_env.sender_leaf);
+
+    run_ds_client(
+        client_bin,
+        &base_url,
+        &alice_state,
+        &[
+            "submit-commit".to_string(),
+            "--group-id".to_string(),
+            group_id.to_string(),
+            "--commit-file".to_string(),
+            to_s(&remove_commit_file),
+            "--path-update-file".to_string(),
+            to_s(&update_path_file),
+        ],
+    );
+
+    run_ds_client_expect_fail(
+        client_bin,
+        &base_url,
+        &bob_state,
+        &[
+            "fetch-and-apply-latest".to_string(),
+            "--group-state".to_string(),
+            to_s(&bob_group_state),
+            "--receiver-private-file".to_string(),
+            to_s(&bob_recv),
+            "--limit".to_string(),
+            "100".to_string(),
+        ],
+        "failed to apply commit+path update during sync",
+    );
+
+    let loaded = ClientGroupState::load_from_file(&bob_group_state).expect("load state");
+    assert_eq!(loaded.epoch, 0);
+    assert_eq!(loaded.last_applied_commit_id, None);
+
+    let _ = shutdown_tx.send(());
+    let result = server.await.expect("join server");
+    if let Err(err) = result {
+        panic!("server returned error: {err}");
+    }
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn malformed_encoded_path_update_stream_non_receiver_underflow_triggers_strict_rejection() {
     let fixture = setup_encoded_path_sync_fixture(
         "malformed-encoded-path-underflow",

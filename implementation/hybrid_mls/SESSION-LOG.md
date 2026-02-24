@@ -457,3 +457,7 @@
 [2026-02-23 23:20] [AGENT] Verification passed after vector additions: `cargo test --lib`, `cargo test --bin ds_client`, and `cargo test --bin ds_ui_gateway` all green.
 [2026-02-23 23:20] [AGENT] Updated `PROJECT.md` status (Task 7 done, Task 8 current) and `README.md` progress notes.
 [2026-02-23 23:24] [AGENT] Re-verified after formatting: `cargo test --lib`, `cargo test --bin ds_client`, and `cargo test --bin ds_ui_gateway` all passed with deterministic Task 7 vectors in place.
+[2026-02-23 23:32] [AGENT] Started Part 12 / Task 8 and added DS-backed strict-lineage negative sync tests in `tests/ds_fetch_apply_e2e.rs`: (1) Add commit with tampered parent path key rejected on receiver apply, (2) Remove commit submitted with inconsistent path-update payload rejected on receiver apply.
+[2026-02-23 23:32] [AGENT] Re-used existing DS-backed Update tampered path payload strict-rejection test as Task 8 coverage for tampered path secrets.
+[2026-02-23 23:32] [AGENT] Verification passed: targeted DS-backed tests for new Add/Remove cases and existing Update tamper case, plus `cargo test --lib` full pass.
+[2026-02-23 23:35] [AGENT] Re-verified Task 8 DS-backed lineage negatives after formatting: `strict_lineage_add_commit_with_tampered_parent_path_key_is_rejected_on_sync`, `strict_lineage_remove_commit_with_inconsistent_path_update_is_rejected_on_sync`, and `tampered_path_update_payload_with_valid_metadata_triggers_strict_receiver_rejection` all passed.
