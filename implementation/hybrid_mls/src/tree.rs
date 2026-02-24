@@ -573,6 +573,21 @@ impl PathSecretCiphertext {
     }
 }
 
+/// Derive a deterministic key-schedule commit-secret input from the TreeKEM
+/// lineage carried in `Commit.path`.
+pub fn lineage_commit_secret_input(commit: &Commit) -> Option<[u8; 32]> {
+    let root_parent = commit.path.last()?;
+    let mut context = Vec::new();
+    encode_u32(&mut context, commit.sender as u32);
+    encode_u32(&mut context, commit.path.len() as u32);
+    let root_parent_key = root_parent.public_key.to_bytes();
+    Some(mls_tree_labeled_hash(
+        b"derive commit secret input",
+        &context,
+        &[&root_parent_key],
+    ))
+}
+
 impl PathUpdate {
     /// Serialize the PathUpdate in a TLS-style encoding.
     pub fn encode(&self) -> Vec<u8> {

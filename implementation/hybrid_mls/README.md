@@ -507,6 +507,6 @@ Sync notes:
 - Part 12 / Task 6 is complete: key schedule transitions now accept TreeKEM lineage commit-secret input via `ensure_epoch_with_tree_commit_secret` (`src/key_schedule.rs`) and this is wired from sender/receiver/joiner commit-apply paths in `src/client_state.rs`, `src/bin/ds_client.rs`, and `src/bin/ds_ui_gateway.rs`.
 - Added lineage key-schedule tests in `src/key_schedule.rs` and `src/client_state.rs`, plus rebaselined deterministic welcome joiner-secret vector in `src/bin/ds_client.rs`.
 - Part 12 / Task 7 is complete: deterministic TreeKEM lineage vectors are now added in `src/tree.rs` for `leaf_secret -> path_secret -> node_secret` chain values and derived parent key material across both hybrid branches (classic exact bytes + PQ key digest fixtures).
-- Part 12 / Task 8 has started: DS-backed strict-lineage negative sync tests now include Add commit with tampered parent path key and Remove commit with inconsistent commit/path payload rejection in `tests/ds_fetch_apply_e2e.rs`; existing Update tampered path payload strict-rejection test remains active.
+- Part 12 / Task 8 is complete: DS-backed strict-lineage coverage now includes Add/Update/Remove tamper negatives and a positive 3-member Add→Update→Remove convergence test with explicit epoch alignment and key-schedule chain-secret lineage equality/rotation assertions in `tests/ds_fetch_apply_e2e.rs`.
 
-Last updated: 2026-02-23 23:32
+Last updated: 2026-02-24 22:10

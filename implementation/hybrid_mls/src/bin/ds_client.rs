@@ -33,7 +33,10 @@ use hybrid_mls::crypto::{
 use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
 use hybrid_mls::key_schedule::tree_snapshot_hash;
 use hybrid_mls::transcript::{derive_confirmation_tag, verify_confirmation_tag};
-use hybrid_mls::tree::{Commit, KeyPackage, LeafNode, Node, PathUpdate, Proposal, RatchetTree};
+use hybrid_mls::tree::{
+    lineage_commit_secret_input, Commit, KeyPackage, LeafNode, Node, PathUpdate, Proposal,
+    RatchetTree,
+};
 use hybrid_mls::welcome::{EncryptedGroupSecrets, GroupInfo, GroupSecrets, Welcome};
 
 #[derive(Parser, Debug)]
@@ -1080,7 +1083,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("failed to apply generated commit to local state")?;
             state.apply_group_context_extensions_from_proposals(&commit.proposals);
             state.clear_pending_proposals();
-            let tree_commit_secret = path_update.path_secrets.first().copied();
+            let tree_commit_secret = lineage_commit_secret_input(&commit);
             state.advance_epoch_with_context_and_tree_commit_secret(
                 Some(&commit_context),
                 tree_commit_secret,
@@ -1169,9 +1172,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
             state.clear_pending_proposals();
             let commit_context = commit_envelope.commit.encode();
-            let tree_commit_secret = derived
-                .as_ref()
-                .and_then(|secrets| secrets.first().copied().flatten());
+            let tree_commit_secret = lineage_commit_secret_input(&commit_envelope.commit);
             state.advance_epoch_with_context_and_tree_commit_secret(
                 Some(&commit_context),
                 tree_commit_secret,
@@ -1684,7 +1685,7 @@ fn join_from_commit_material(
 
     state.clear_pending_proposals();
     let commit_context = commit_envelope.commit.encode();
-    let tree_commit_secret = derived.first().copied().flatten();
+    let tree_commit_secret = lineage_commit_secret_input(&commit_envelope.commit);
     state.advance_epoch_with_context_and_tree_commit_secret(
         Some(&commit_context),
         tree_commit_secret,
@@ -2163,7 +2164,7 @@ fn build_welcome_for_commit(
     let next_epoch = state.epoch.saturating_add(1);
     let commit_context = commit.encode();
     let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
-    let tree_commit_secret = path_update.path_secrets.first().copied();
+    let tree_commit_secret = lineage_commit_secret_input(commit);
 
     let mut key_schedule = state.key_schedule.clone();
     let _ = key_schedule.ensure_epoch_with_tree_commit_secret(
@@ -2670,11 +2671,10 @@ async fn fetch_and_apply_latest_once(
         state.apply_group_context_extensions_from_proposals(&commit_env.commit.proposals);
 
         state.clear_pending_proposals();
-        let tree_commit_secret = derived_for_commit
-            .as_ref()
-            .and_then(|secrets| secrets.first().copied().flatten());
+        let tree_commit_secret = lineage_commit_secret_input(&commit_env.commit);
+        let commit_context = commit_env.commit.encode();
         state.advance_epoch_with_context_and_tree_commit_secret(
-            Some(&commit_bytes),
+            Some(&commit_context),
             tree_commit_secret,
         );
         ensure_group_state_consistency(state, "fetch-and-apply-latest commit apply")?;
@@ -3519,7 +3519,7 @@ mod tests {
             &state.group_id,
             tree_snapshot_hash(&tree_after_commit.encode()),
             Some(&commit.encode()),
-            path_update.path_secrets.first(),
+            lineage_commit_secret_input(&commit).as_ref(),
         );
         let chain = key_schedule
             .chain_secrets_for_epoch(state.epoch + 1)
@@ -3553,7 +3553,7 @@ mod tests {
             &state.group_id,
             tree_hash,
             Some(&commit_context),
-            path_update.path_secrets.first(),
+            lineage_commit_secret_input(&commit).as_ref(),
         );
         let chain = key_schedule
             .chain_secrets_for_epoch(next_epoch)
@@ -3614,7 +3614,7 @@ mod tests {
             &sender_state.group_id,
             tree_hash,
             Some(&commit_context),
-            path_update.path_secrets.first(),
+            lineage_commit_secret_input(&commit).as_ref(),
         );
         let chain = key_schedule
             .chain_secrets_for_epoch(next_epoch)
@@ -3658,9 +3658,10 @@ mod tests {
             )
             .expect("process path update");
         join_state.clear_pending_proposals();
+        let tree_commit_secret = lineage_commit_secret_input(&commit_env.commit);
         join_state.advance_epoch_with_context_and_tree_commit_secret(
             Some(&commit_context),
-            derived.first().copied().flatten(),
+            tree_commit_secret,
         );
 
         let err = validate_welcome_for_joiner(
@@ -3719,7 +3720,7 @@ mod tests {
         );
         assert_eq!(
             hex(&group_secrets.joiner_secret),
-            "57a7cbd433e48b1c70436863faf166dea40e8d16f153fb0255b7304f9708d8ad"
+            "deb08c7a79d233ca174e508d247fc1116a6e2a9de19dc8303672782060663b24"
         );
     }
 }

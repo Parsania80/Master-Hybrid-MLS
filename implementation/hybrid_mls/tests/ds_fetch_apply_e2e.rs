@@ -3731,6 +3731,24 @@ async fn three_member_add_update_remove_chain_converges_after_membership_change(
         bob_sync_1.contains("applied_total=1"),
         "bob sync 1 output:\n{bob_sync_1}"
     );
+    let alice_epoch1 = ClientGroupState::load_from_file(&alice_group_state).expect("alice epoch1");
+    let bob_epoch1 = ClientGroupState::load_from_file(&bob_group_state).expect("bob epoch1");
+    assert_eq!(alice_epoch1.epoch, 1);
+    assert_eq!(bob_epoch1.epoch, 1);
+    assert!(alice_epoch1.key_schedule.is_epoch_aligned(1));
+    assert!(bob_epoch1.key_schedule.is_epoch_aligned(1));
+    let alice_chain1 = alice_epoch1
+        .key_schedule
+        .chain_secrets_for_epoch(1)
+        .expect("alice chain epoch1");
+    let bob_chain1 = bob_epoch1
+        .key_schedule
+        .chain_secrets_for_epoch(1)
+        .expect("bob chain epoch1");
+    assert_eq!(alice_chain1.commit_secret, bob_chain1.commit_secret);
+    assert_eq!(alice_chain1.joiner_secret, bob_chain1.joiner_secret);
+    assert_eq!(alice_chain1.epoch_secret, bob_chain1.epoch_secret);
+    assert_eq!(alice_chain1.root_secret, bob_chain1.root_secret);
 
     // C joins from commit #1 material.
     run_ds_client(
@@ -3756,6 +3774,16 @@ async fn three_member_add_update_remove_chain_converges_after_membership_change(
             "--force".to_string(),
         ],
     );
+    let carol_epoch1 =
+        ClientGroupState::load_from_file(&carol_group_state).expect("carol epoch1 after join");
+    assert_eq!(carol_epoch1.epoch, 1);
+    assert!(carol_epoch1.key_schedule.is_epoch_aligned(1));
+    let carol_chain1 = carol_epoch1
+        .key_schedule
+        .chain_secrets_for_epoch(1)
+        .expect("carol chain epoch1");
+    assert_eq!(alice_chain1.commit_secret, carol_chain1.commit_secret);
+    assert_eq!(alice_chain1.root_secret, carol_chain1.root_secret);
 
     // Commit #2: B updates self, then A and C sync.
     run_ds_client(
@@ -3853,6 +3881,33 @@ async fn three_member_add_update_remove_chain_converges_after_membership_change(
         carol_sync_2.contains("applied_total=1"),
         "carol sync 2 output:\n{carol_sync_2}"
     );
+    let alice_epoch2 = ClientGroupState::load_from_file(&alice_group_state).expect("alice epoch2");
+    let bob_epoch2 = ClientGroupState::load_from_file(&bob_group_state).expect("bob epoch2");
+    let carol_epoch2 = ClientGroupState::load_from_file(&carol_group_state).expect("carol epoch2");
+    assert_eq!(alice_epoch2.epoch, 2);
+    assert_eq!(bob_epoch2.epoch, 2);
+    assert_eq!(carol_epoch2.epoch, 2);
+    for s in [&alice_epoch2, &bob_epoch2, &carol_epoch2] {
+        assert!(s.key_schedule.is_epoch_aligned(2));
+    }
+    let alice_chain2 = alice_epoch2
+        .key_schedule
+        .chain_secrets_for_epoch(2)
+        .expect("alice chain epoch2");
+    let bob_chain2 = bob_epoch2
+        .key_schedule
+        .chain_secrets_for_epoch(2)
+        .expect("bob chain epoch2");
+    let carol_chain2 = carol_epoch2
+        .key_schedule
+        .chain_secrets_for_epoch(2)
+        .expect("carol chain epoch2");
+    assert_eq!(alice_chain2.commit_secret, bob_chain2.commit_secret);
+    assert_eq!(bob_chain2.commit_secret, carol_chain2.commit_secret);
+    assert_eq!(alice_chain2.root_secret, bob_chain2.root_secret);
+    assert_eq!(bob_chain2.root_secret, carol_chain2.root_secret);
+    assert_ne!(alice_chain1.commit_secret, alice_chain2.commit_secret);
+    assert_ne!(alice_chain1.root_secret, alice_chain2.root_secret);
 
     // Commit #3: A removes C (leaf 2), then B syncs and final A/B converge.
     run_ds_client(
@@ -3941,6 +3996,23 @@ async fn three_member_add_update_remove_chain_converges_after_membership_change(
     assert_eq!(bob_loaded.epoch, 3);
     assert_eq!(carol_loaded.epoch, 2);
     assert_eq!(alice_loaded.ratchet_tree, bob_loaded.ratchet_tree);
+    assert!(alice_loaded.key_schedule.is_epoch_aligned(3));
+    assert!(bob_loaded.key_schedule.is_epoch_aligned(3));
+    let alice_chain3 = alice_loaded
+        .key_schedule
+        .chain_secrets_for_epoch(3)
+        .expect("alice chain epoch3");
+    let bob_chain3 = bob_loaded
+        .key_schedule
+        .chain_secrets_for_epoch(3)
+        .expect("bob chain epoch3");
+    assert_eq!(alice_chain3.commit_secret, bob_chain3.commit_secret);
+    assert_eq!(alice_chain3.joiner_secret, bob_chain3.joiner_secret);
+    assert_eq!(alice_chain3.epoch_secret, bob_chain3.epoch_secret);
+    assert_eq!(alice_chain3.root_secret, bob_chain3.root_secret);
+    assert_ne!(alice_chain2.commit_secret, alice_chain3.commit_secret);
+    assert_ne!(alice_chain2.root_secret, alice_chain3.root_secret);
+    assert!(carol_loaded.key_schedule.chain_secrets_for_epoch(3).is_none());
 
     let leaf_0 = RatchetTree::leaf_to_node_index(0);
     let leaf_1 = RatchetTree::leaf_to_node_index(1);

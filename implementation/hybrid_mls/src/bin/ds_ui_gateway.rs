@@ -45,7 +45,10 @@ use hybrid_mls::ds::admin::{derive_admin_key_material, ADMIN_PASSWORD, ADMIN_USE
 use hybrid_mls::envelope::{CommitEnvelope, PathUpdateEnvelope, ProposalEnvelope};
 use hybrid_mls::key_schedule::tree_snapshot_hash;
 use hybrid_mls::transcript::{derive_confirmation_tag, verify_confirmation_tag};
-use hybrid_mls::tree::{Commit, KeyPackage, LeafNode, Node, PathUpdate, Proposal, RatchetTree};
+use hybrid_mls::tree::{
+    lineage_commit_secret_input, Commit, KeyPackage, LeafNode, Node, PathUpdate, Proposal,
+    RatchetTree,
+};
 use hybrid_mls::welcome::{EncryptedGroupSecrets, GroupInfo, GroupSecrets, Welcome};
 
 #[derive(Clone)]
@@ -5730,7 +5733,7 @@ fn build_welcome_for_commit(
     let next_epoch = state.epoch.saturating_add(1);
     let commit_context = commit.encode();
     let tree_hash = tree_snapshot_hash(&tree_after_commit.encode());
-    let tree_commit_secret = path_update.path_secrets.first().copied();
+    let tree_commit_secret = lineage_commit_secret_input(commit);
 
     let mut key_schedule = state.key_schedule.clone();
     let _ = key_schedule.ensure_epoch_with_tree_commit_secret(
@@ -5894,9 +5897,10 @@ fn build_join_state_from_commit_material(
 
     group_state.clear_pending_proposals();
     let commit_context = commit.commit.encode();
+    let tree_commit_secret = lineage_commit_secret_input(&commit.commit);
     group_state.advance_epoch_with_context_and_tree_commit_secret(
         Some(&commit_context),
-        derived.first().copied().flatten(),
+        tree_commit_secret,
     );
     ensure_group_state_consistency(&group_state, "join-from-latest apply")?;
 
@@ -6386,7 +6390,6 @@ async fn fetch_and_apply_latest_once(
             continue;
         }
 
-        let mut derived_for_commit: Option<Vec<Option<[u8; 32]>>> = None;
         if let Some(receiver_private) = receiver_private {
             let mut matched_path_update: Option<PathUpdateEnvelope> = None;
             let candidate_path_ids = candidate_path_update_ids(*commit_id, next_commit, &path_ids);
@@ -6416,7 +6419,7 @@ async fn fetch_and_apply_latest_once(
                     commit_id, commit_env.group_id, commit_env.epoch, commit_env.sender_leaf
                 )
             })?;
-            let derived = group_state
+            let _derived = group_state
                 .ratchet_tree
                 .apply_commit_with_path_update(
                     &commit_env.commit,
@@ -6425,7 +6428,6 @@ async fn fetch_and_apply_latest_once(
                     receiver_private,
                 )
                 .ok_or_else(|| "failed to apply commit+path update during sync".to_string())?;
-            derived_for_commit = Some(derived);
         } else {
             group_state
                 .ratchet_tree
@@ -6435,11 +6437,10 @@ async fn fetch_and_apply_latest_once(
         group_state.apply_group_context_extensions_from_proposals(&commit_env.commit.proposals);
 
         group_state.clear_pending_proposals();
-        let tree_commit_secret = derived_for_commit
-            .as_ref()
-            .and_then(|secrets| secrets.first().copied().flatten());
+        let tree_commit_secret = lineage_commit_secret_input(&commit_env.commit);
+        let commit_context = commit_env.commit.encode();
         group_state.advance_epoch_with_context_and_tree_commit_secret(
-            Some(&commit_bytes),
+            Some(&commit_context),
             tree_commit_secret,
         );
         ensure_group_state_consistency(group_state, "sync-apply-latest commit apply")?;
@@ -6465,7 +6466,7 @@ async fn action_commit_from_pending(
 
     let sender_leaf = resolve_sender_leaf(&group_state, payload.sender_leaf)?;
     let (commit, path_update) = build_commit_from_pending(&group_state, sender_leaf)?;
-    let tree_commit_secret = path_update.path_secrets.first().copied();
+    let tree_commit_secret = lineage_commit_secret_input(&commit);
     let welcome = build_welcome_for_commit(&group_state, &commit, &path_update)?;
     let commit_envelope = CommitEnvelope {
         group_id: group_state.group_id.clone(),
