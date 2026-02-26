@@ -102,6 +102,21 @@ Suspicious Findings:
    RFC 9420 Basis: group-state and epoch-0 key schedule initialization primitives.
    Suspicious Finding: This can be local-only before network commit/welcome synchronization.
 
+7. What to Watch (Presentation Callouts)
+   Inputs: introduction walkthrough output
+   Outputs: callout tuple $(\mathrm{checkpoints},\Delta\mathrm{state},\mathrm{suspicious\_summary})$
+   Equation:
+   $$
+   \mathrm{Callout}_{intro}=(\mathrm{KP\_verified},\mathrm{index\_mapping\_clear},\mathrm{bootstrap\_scope\_clear})
+   $$
+   | What to watch | Expected state delta | Suspicious summary |
+   |---|---|---|
+   | Verify each KeyPackage before leaf placement | Invalid packages are rejected before tree construction | None |
+   | Explain `LeafIndex -> NodeIndex` mapping with one concrete example | Conceptual clarity only (no network state change) | Order-dependent indexing can confuse operators |
+   | Explain local bootstrap scope clearly | Local state can exist before any commit/welcome exchange | Local-first initialization can diverge from DS until sync |
+   RFC 9420 Basis: presentation checkpoints over KeyPackage/tree/index/bootstrap primitives.
+   Suspicious Finding: None (summary step; suspicious items are listed in table).
+
 ## Protocol Visual (Mermaid)
 ```mermaid
 sequenceDiagram
