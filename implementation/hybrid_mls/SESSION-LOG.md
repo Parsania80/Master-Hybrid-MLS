@@ -502,3 +502,47 @@
 [2026-02-25 00:05] [AGENT] Refined `protocol-actions/Introduction.md` in protocol-style 4-section format with beginner-friendly definitions, concrete index-mapping examples, richer Mermaid notes, and explicit code-grounded traceability for identity/init_key/tree construction semantics.
 [2026-02-25 00:08] [OPERATOR] Asked `Q-` about meaning of `σ` in `KP` and whether it is the signature of `init_key` in `protocol-actions/Introduction.md`.
 [2026-02-25 00:08] [AGENT] Answered and logged in `QUESTIONS.md`: in current implementation `σ` is the hybrid signature over `init_key.to_bytes()` verified with `identity`, binding identity to init key; included code references and RFC-note context.
+[2026-02-26 19:15] [OPERATOR] Requested continuing `create-group.md` and simplifying wording to match the new beginner intro style.
+[2026-02-26 19:15] [AGENT] Rewrote `protocol-actions/create-group.md` in simpler, professor-friendly language while preserving protocol-style structure (formal setup, math flow, mermaid, traceability) and explicit suspicious findings.
+[2026-02-26 19:15] [AGENT] Updated `PROJECT.md` Part 13 status: Task 2 marked done, Task 3 marked current, and Current/Next pointers moved to create-group then add-member.
+[2026-02-26 19:28] [OPERATOR] Requested continuation of Part 13 / Task 4 with a simplified `add-member` walkthrough.
+[2026-02-26 19:28] [AGENT] Drafted `protocol-actions/add-member.md` in the required 4-section protocol style with RFC 9420 grounding, math flow, Mermaid sequence, and code-traceable suspicious findings.
+[2026-02-26 19:28] [AGENT] Updated `PROJECT.md` Part 13 status to Task 4 current and moved Current/Next pointers to Task 4/5.
+[2026-02-26 19:32] [OPERATOR] Requested continuation to Part 13 / Task 5 and drafting `remove-member.md` in the simplified protocol-doc style.
+[2026-02-26 19:32] [AGENT] Drafted `protocol-actions/remove-member.md` with RFC 9420 + code-grounded remove flow: remove proposal, commit/path update, strict receiver sync/apply, and post-remove security semantics.
+[2026-02-26 19:32] [AGENT] Updated `PROJECT.md` Part 13 statuses: Task 4 marked done, Task 5 marked current, and Current/Next pointers moved to Task 5/6.
+[2026-02-26 19:36] [OPERATOR] Requested continuation to Part 13 / Task 6 and drafting `self-update-path-update.md` in the simplified protocol-doc style.
+[2026-02-26 19:36] [AGENT] Drafted `protocol-actions/self-update-path-update.md` with RFC 9420 + code-grounded self-update flow, direct-path secret lineage equations, ciphertext fanout, strict receiver validation, and suspicious notes.
+[2026-02-26 19:36] [AGENT] Updated `PROJECT.md` Part 13 statuses: Task 5 marked done, Task 6 marked current, and Current/Next pointers moved to Task 6/7.
+[2026-02-26 19:40] [OPERATOR] Requested continuation to Part 13 / Task 7 and drafting joiner onboarding (`join-from-welcome` + UI `join-from-latest`) in simplified protocol-doc style.
+[2026-02-26 19:40] [AGENT] Drafted `protocol-actions/joiner-onboarding.md` with RFC 9420 + code-grounded onboarding flow covering CLI/UI tuple selection, base-tree reconstruction, commit/path apply, Welcome/GroupInfo checks, and suspicious deviations.
+[2026-02-26 19:40] [AGENT] Updated `PROJECT.md` Part 13 statuses: Task 6 marked done, Task 7 marked current, and Current/Next pointers moved to Task 7/8.
+[2026-02-26 19:44] [OPERATOR] Requested continuation to Part 13 / Task 8 and drafting receiver sync state machine doc (`fetch-and-apply-latest` + UI sync) in simplified protocol-doc style.
+[2026-02-26 19:44] [AGENT] Drafted `protocol-actions/receiver-sync-state-machine.md` with RFC 9420 + code-grounded sync state machine: replay markers, ordered ID scanning, epoch-gap stop, strict path-update matching, CLI/UI differences, and compat fallback behavior.
+[2026-02-26 19:44] [AGENT] Updated `PROJECT.md` Part 13 statuses: Task 7 marked done, Task 8 marked current, and Current/Next pointers moved to Task 8/9.
+[2026-02-26 19:49] [OPERATOR] Requested continuation to Part 13 / Task 9 and drafting proposal families + commit validation matrix in simplified protocol-doc style.
+[2026-02-26 19:49] [AGENT] Drafted `protocol-actions/proposal-families-commit-validation.md` with RFC 9420 + code-grounded proposal-family semantics, commit validation matrix, DS-vs-receiver guard layers, and DS-backed rejection test mapping.
+[2026-02-26 19:49] [AGENT] Updated `PROJECT.md` Part 13 statuses: Task 8 marked done, Task 9 marked current, and Current/Next pointers moved to Task 9/10.
+[2026-02-26 20:08] [OPERATOR] Requested re-reading `agent.md` rules (including options expectation) and immediate continuation with Part 13 / Task 10.
+[2026-02-26 20:08] [AGENT] Re-read `agent.md` and `protocol-style.md`, then drafted `protocol-actions/key-schedule-transcript-transitions.md` in the required 4-section style with RFC 9420 + code-grounded per-action key-schedule/transcript transitions and explicit suspicious findings.
+[2026-02-26 20:08] [AGENT] Updated `PROJECT.md` Part 13 statuses: Task 9 marked done, Task 10 marked current, and Current/Next pointers moved to Task 10/11.
+[2026-02-26 20:23] [OPERATOR] Requested continuation to Part 13 / Task 11 and drafting protocol-action presentation index.
+[2026-02-26 20:23] [AGENT] Drafted `protocol-actions/protocol-action-index.md` in protocol-style 4-section format with primary/deep-dive reading order, professor Q/A routing map, RFC 9420 grounding, and explicit pending-task suspicious notes.
+[2026-02-26 20:23] [AGENT] Updated `PROJECT.md` Part 13 statuses: Task 10 marked done, Task 11 marked current, and Current/Next pointers moved to Task 11/12.
+[2026-02-26 20:39] [OPERATOR] Requested continuation to Part 13 / Task 12 and adding presentation-ready "What to watch" callouts to each protocol doc.
+[2026-02-26 20:39] [AGENT] Added `What to Watch (Presentation Callouts)` steps to all current protocol docs in `protocol-actions/` with checkpoint tables that include expected state deltas and suspicious-summary items for professor narration.
+[2026-02-26 20:39] [AGENT] Updated `PROJECT.md` Part 13 statuses: Task 11 marked done, Task 12 marked current, and Current/Next pointers moved to Task 12/13.
+[2026-02-26 20:57] [OPERATOR] Requested continuation to Part 13 / Task 13 and final clarity/correctness review across protocol docs.
+[2026-02-26 20:57] [AGENT] Completed final review pass across protocol docs: validated 4-section structure in all files, validated all traceability `File:Line` targets, and corrected stale traceability function labels from `sync_once` to `fetch_and_apply_latest_once` in add/remove/self-update docs.
+[2026-02-26 20:57] [AGENT] Tightened `protocol-actions/protocol-action-index.md` suspicious mappings to be code-grounded (removed roadmap-line placeholders and replaced with concrete code references).
+[2026-02-26 20:57] [AGENT] Updated `PROJECT.md` Part 13 statuses: Tasks 12 and 13 marked done; Current/Next pointers moved to Tasks 14/15.
+[2026-02-26 21:14] [OPERATOR] Requested continuation to Part 13 / Task 14 and drafting `welcome-message-lifecycle.md` end-to-end.
+[2026-02-26 21:14] [AGENT] Drafted `protocol-actions/welcome-message-lifecycle.md` in protocol-style 4-section format with RFC 9420 + code-grounded Welcome lifecycle: generation on Add commit, signed DS transport/store/fetch, joiner decryption/validation checks, unknown-group auto-bootstrap, UI parity, and presentation callouts.
+[2026-02-26 21:14] [AGENT] Updated `PROJECT.md` Part 13 Task 14 status to current with reference to the new Welcome lifecycle document.
+[2026-02-26 21:20] [OPERATOR] Requested continuation to Part 13 / Task 15 and drafting external join/commit semantics + implementation status mapping.
+[2026-02-26 21:20] [AGENT] Drafted `protocol-actions/external-join-commit-semantics.md` in protocol-style 4-section format with RFC 9420 + code-grounded status mapping (Supported/Partial/Unsupported), explicit suspicious findings, Mermaid flow, and implementation traceability.
+[2026-02-26 21:20] [AGENT] Updated `PROJECT.md` Part 13 statuses: Task 15 marked done, Task 16 marked current, and Current/Next pointers moved to Task 16 and final presentation polish.
+[2026-02-26 20:26] [OPERATOR] Requested continuation to Part 13 / Task 16 and drafting `application-message-protection.md` in the same simplified protocol-doc style.
+[2026-02-26 20:26] [AGENT] Drafted `protocol-actions/application-message-protection.md` in protocol-style 4-section format with RFC 9420 + code-grounded application-message protection/open flow, Mermaid sequence, implementation traceability, and explicit suspicious findings.
+[2026-02-26 20:26] [AGENT] Updated `PROJECT.md` Part 13 status: Task 16 marked done, and Current/Next pointers moved to Part 13 completion and next roadmap selection.
+[2026-02-26 21:26] [AGENT] Correction: the three immediately previous Task 16 log entries were recorded with local shell time `20:26`; chronological order for this session should be interpreted as `21:26` after Task 15 entries.

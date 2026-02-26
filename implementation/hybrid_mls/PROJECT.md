@@ -162,22 +162,22 @@ Implement a Hybrid Post-Quantum MLS (RFC 9420) library in Rust with a supporting
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | 1 | Enforce `protocol-style.md` as mandatory standard for all new protocol-action docs | ✅ Done | Style now requires RFC 9420 + code grounding, explicit suspicious-item notes, LaTeX math, Mermaid sequence flow, and implementation traceability. |
-| 2 | Create fundamentals introduction doc (`Introduction.md`) for non-MLS audience | 🔄 Current | Explain first concepts clearly: KeyPackage, RatchetTree, LeafIndex/NodeIndex, and how these appear in this codebase before action-level docs. |
-| 3 | Document `create-group` action end-to-end | ⬜ Todo | Explain exact state construction, tree/key-schedule initialization, and where behavior is implementation convenience vs direct RFC flow. |
-| 4 | Document `add-member` action end-to-end | ⬜ Todo | Include proposal creation, commit generation, path update, welcome emission, sync/apply behavior, and suspicious deviations if found. |
-| 5 | Document `remove-member` action end-to-end | ⬜ Todo | Cover remove proposal/commit effects, tree transitions, receiver apply, and post-remove security semantics. |
-| 6 | Document `self-update / path update` action end-to-end | ⬜ Todo | Show direct-path math (leaf/path/node secret lineage), ciphertext fanout, and strict lineage validation in apply path. |
-| 7 | Document joiner onboarding (`join-from-welcome` and UI `join-from-latest`) | ⬜ Todo | Include welcome/commit/path tuple validation, GroupInfo checks, and key-schedule/transcript consistency gates. |
-| 8 | Document receiver sync state machine (`fetch-and-apply-latest` / UI sync) | ⬜ Todo | Cover ID ordering/replay markers, epoch-gap policy, strict path-update requirements, and compat fallback marker behavior. |
-| 9 | Document proposal families and commit validation matrix | ⬜ Todo | Add/Update/Remove/PSK/ReInit/GroupContextExtensions rules, conflict constraints, and DS-backed rejection behavior. |
-| 10 | Document key schedule and transcript transitions per action | ⬜ Todo | For each action, map commit/welcome/epoch/root/derived secrets and transcript-confirmation effects with RFC names. |
-| 11 | Build protocol-action index for presentation | ⬜ Todo | Add one concise index page linking all action docs in recommended reading order (create -> add -> update -> remove -> sync). |
-| 12 | Add presentation-ready “What to watch” callouts per action | ⬜ Todo | Each action doc must include clear human-readable checkpoints, expected state deltas, and suspicious notes summary for demo narration. |
-| 13 | Final review pass on all protocol docs for clarity and correctness | ⬜ Todo | Verify each equation maps to real code lines and each suspected non-RFC behavior is explicitly called out. |
-| 14 | Document Welcome-message lifecycle end-to-end | ⬜ Todo | Cover Welcome creation, DS transport, recipient decryption/validation, GroupInfo checks, and bootstrap behavior with explicit RFC 9420 section mapping. |
-| 15 | Document external join/commit semantics and implementation status | ⬜ Todo | Map RFC 9420 external commit/join paths to code; if unsupported/partial, document explicitly as suspicious or out-of-scope for current implementation. |
-| 16 | Document application-message protection flow | ⬜ Todo | Explain RFC 9420 private message framing, sender-data protection, decrypt path, and any implementation-specific deviations. |
+| 2 | Create fundamentals introduction doc (`Introduction.md`) for non-MLS audience | ✅ Done | Completed with beginner-first wording, key term definitions (`identity`, `init_key`, `RatchetTreeFromLeaves`), examples, visuals, and code grounding. |
+| 3 | Document `create-group` action end-to-end | ✅ Done | Simplified walkthrough completed with RFC 9420 + code grounding and suspicious notes. |
+| 4 | Document `add-member` action end-to-end | ✅ Done | Drafted in `protocol-actions/add-member.md` with proposal/commit/path/welcome/sync/join flow and suspicious deviations. |
+| 5 | Document `remove-member` action end-to-end | ✅ Done | Drafted in `protocol-actions/remove-member.md` with remove proposal/commit/path flow, receiver sync/apply, and post-remove security behavior notes. |
+| 6 | Document `self-update / path update` action end-to-end | ✅ Done | Drafted in `protocol-actions/self-update-path-update.md` with direct-path secret lineage, ciphertext fanout, strict apply validation, and suspicious deviations. |
+| 7 | Document joiner onboarding (`join-from-welcome` and UI `join-from-latest`) | ✅ Done | Drafted in `protocol-actions/joiner-onboarding.md` with tuple selection, base-tree reconstruction, Welcome/GroupInfo checks, and CLI+UI mapping. |
+| 8 | Document receiver sync state machine (`fetch-and-apply-latest` / UI sync) | ✅ Done | Drafted in `protocol-actions/receiver-sync-state-machine.md` with replay markers, ID ordering, epoch-gap handling, strict path requirements, and compat fallback behavior. |
+| 9 | Document proposal families and commit validation matrix | ✅ Done | Drafted in `protocol-actions/proposal-families-commit-validation.md` covering all proposal families, commit constraints, DS vs receiver guard layers, and DS-backed rejection matrix. |
+| 10 | Document key schedule and transcript transitions per action | ✅ Done | Drafted in `protocol-actions/key-schedule-transcript-transitions.md` covering per-action epoch/key-schedule/transcript transitions with RFC names and suspicious findings. |
+| 11 | Build protocol-action index for presentation | ✅ Done | Drafted in `protocol-actions/protocol-action-index.md` with primary/deep-dive reading order and fast Q/A routing for presentation. |
+| 12 | Add presentation-ready “What to watch” callouts per action | ✅ Done | Added `What to Watch (Presentation Callouts)` blocks to protocol docs with checkpoints, expected state deltas, and suspicious-summary rows for demo narration. |
+| 13 | Final review pass on all protocol docs for clarity and correctness | ✅ Done | Completed final review pass across current protocol docs: fixed stale traceability function names, validated 4-section structure, validated traceability line references, and tightened code-grounded suspicious mappings. |
+| 14 | Document Welcome-message lifecycle end-to-end | ✅ Done | Drafted in `protocol-actions/welcome-message-lifecycle.md` covering creation, signed DS transport, joiner validation, unknown-group bootstrap, UI parity, and suspicious deviations. |
+| 15 | Document external join/commit semantics and implementation status | ✅ Done | Drafted in `protocol-actions/external-join-commit-semantics.md` with supported/partial/unsupported RFC mapping, evidence-backed gaps, and presentation-ready scope boundaries. |
+| 16 | Document application-message protection flow | ✅ Done | Drafted in `protocol-actions/application-message-protection.md` covering PrivateMessage protection/open flow, DS transport mapping, and suspicious implementation deviations. |
 
 ---
-Current: `Part 13 / Task 2 (Create fundamentals Introduction.md for non-MLS audience)`
-Next: `Part 13 / Task 3 (Document create-group action end-to-end)`
+Current: `Part 13 Complete (all protocol-action documentation tasks done)`
+Next: `Select next roadmap part or run presentation rehearsal pass`
