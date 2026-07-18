@@ -8,6 +8,15 @@ No maintained, compatible, and auditable Rust implementation of the thesis's mKy
 
 Therefore, no third-party mKyber backend is approved for this project. Ordinary ML-KEM/Kyber, including RustCrypto's `ml-kem`, is not an mKyber substitute. A later ADR must authorize either a newly written, clearly reference-only Rust implementation from the published specification or an adapter only after a compatible implementation, its provenance, and its license have been independently established.
 
+### Backend implementation gate
+
+Task 14 cannot safely turn the available paper overview into a cryptographic backend. Its Figure 2 expressly simplifies Kyber: it omits or merges hash/PRF calls and omits bit-representation and NTT/coefficient-representation transitions. Those choices determine key and ciphertext bytes, rejection behavior, and the Fujisaki-Okamoto re-encryption check; the published mKyber512 sizes alone do not define them. The paper remains the authoritative source for the high-level construction and Table 1 parameters, but it is not a complete implementable byte-level specification. See the paper's [simplifications statement and construction](https://csrc.nist.gov/csrc/media/Events/2024/fifth-pqc-standardization-conference/documents/papers/how-multi-recipient-kems.pdf) (Section 3.1).
+
+The additional primary-source search on 2026-07-18 located mKEM research and ordinary Kyber reference code, but no complete licensed mKyber512 implementation specification, compatible implementation, or mKyber512 KAT corpus. Consequently, this project must not invent those unspecified details or label a toy construction as mKyber512. Task 14 requires one of these inputs before code can be added:
+
+1. an authoritatively approved, versioned mKyber512 specification that fixes XOF/hash/PRF domains, noise sampling, rejection sampling, NTT and compression/packing, secret-key layout, Fujisaki-Okamoto fallback, and byte encoding; or
+2. an independently auditable, license-compatible mKyber512 implementation with matching test material and permission to adapt it.
+
 ## Audited Target: Paper mKyber512
 
 The thesis target is the paper's mKyber512 construction, not FIPS 203 ML-KEM-512 and not an arbitrary multi-recipient Kyber variant. The paper defines a multi-recipient ciphertext as one common component `u` and one recipient-specific component `v_i` per recipient. A recipient decapsulates only `(u, v_i)`.
@@ -90,4 +99,3 @@ Task 4 must record all of the following in ADRs:
 3. The exact security claim is mKyber's non-adaptive multi-user setting, with adaptive-corruption limitations prominently documented.
 4. The shared public matrix/domain is a validated public protocol parameter, distinct from a reproducible experiment seed and secret randomness.
 5. Project-owned deterministic regression vectors are not called official KATs and must assert the paper's sizes exactly.
-

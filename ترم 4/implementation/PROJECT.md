@@ -81,7 +81,7 @@
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | 13 | Define the replaceable `MultiRecipientKem` trait and typed errors | ✅ Done | Defines domain-bound key/ciphertext/recipient types, fixed public component sizes, zeroized redacted secret wrappers, and object-safe keygen/encapsulation/extraction/decapsulation operations; no backend exists. |
-| 14 | Integrate an audited compatible backend or implement a clearly labeled reference-only mKyber512 research backend | 🔄 Current | Reference code is unsuitable for production and must remain replaceable. |
+| 14 | Integrate an audited compatible backend or implement a clearly labeled reference-only mKyber512 research backend | 🔄 Current | Blocked pending an exact licensed mKyber512 specification or compatible audited implementation; do not infer missing backend-critical details from the simplified paper overview. |
 | 15 | Separate common and per-recipient ciphertext components and instrument their real serialized byte costs | ⬜ Todo | Do not report ordinary ML-KEM costs as mKyber measurements. |
 | 16 | Implement deterministic test mode, OS-RNG production path, secret redaction, and zeroization where applicable | ⬜ Todo | A published experiment seed must never reconstruct private key material. |
 | 17 | Add known-answer/unit/property tests for recipient agreement, non-recipient failure, malformed ciphertexts, and deterministic reproducibility | ⬜ Todo | Include common and per-recipient tamper cases. |

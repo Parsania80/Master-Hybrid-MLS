@@ -2,7 +2,7 @@
 
 ## Status and Scope
 
-This repository is a thesis research prototype under design. It contains no Rust implementation, generated key material, runnable MLS group, or experimental result at this stage. This document defines the security claims that future work must not exceed.
+This repository is a thesis research prototype. It contains an upstream-only baseline MLS adapter and a typed mKyber interface, but no mKyber cryptographic backend, generated key material, or experimental result. This document defines the security claims that future work must not exceed.
 
 `BaselineBinaryMls` is intended to exercise unmodified OpenMLS 0.8.1 with RFC 9420 ciphersuite `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`. It can only be described as an RFC 9420 baseline after the upstream dependency is pinned, the baseline code is implemented without a fork, and the required regression tests pass. It is not a security certification of this repository or OpenMLS.
 
@@ -77,6 +77,8 @@ If a future thesis revision changes the KDF input, cipher suite, mKyber construc
 
 mKyber512 is a research construction with parameter values distinct from standard ML-KEM. The paper's mKyber construction has a standard non-adaptive multi-user IND-CCA security statement; the paper presents amKyber as the construction with an adaptive-corruption proof. No known attack is needed to justify this limitation: the missing proof itself is sufficient reason not to make the stronger claim, especially for potentially long-lived MLS keys. See the [mKyber paper](https://csrc.nist.gov/csrc/media/Events/2024/fifth-pqc-standardization-conference/documents/papers/how-multi-recipient-kems.pdf).
 
+The available mKyber paper overview is not sufficient to implement a byte-compatible backend by inference: it explicitly simplifies its Kyber description, including hash/PRF and representation details. Until the exact specification or a compatible licensed implementation and test material are supplied, a native backend is blocked; the project must not invent those details or treat ordinary Kyber code as mKyber512.
+
 The future native Rust backend must never:
 
 - substitute ML-KEM, Kyber, amKyber, or an incompatible multi-recipient variant while still calling results mKyber512;
@@ -106,7 +108,7 @@ Public experiment configuration may include a non-secret reproducibility identif
 
 | ID | Unresolved assumption | Risk if false | Required closure before a stronger claim |
 |---|---|---|---|
-| SEC-01 | The paper supplies sufficient precise detail to implement interoperable mKyber512 without copying unlicensed code | Incorrect reference backend or wrong parameters | Independent specification review, versioned implementation notes, and cross-implementation test material if it becomes available |
+| SEC-01 | An exact, license-compatible mKyber512 specification or implementation can be obtained without copying unlicensed code | Incorrect reference backend, wrong encoding, or false mKyber512 claim | Authoritatively approved byte-level specification or independently auditable compatible implementation, plus versioned implementation notes and cross-implementation test material if it becomes available |
 | SEC-02 | mKyber's non-adaptive multi-user security is acceptable for the thesis's MLS key lifetime | Overstated adaptive-corruption resilience | Threat-model justification or a switch to a separately reviewed adaptive construction, with new ADRs |
 | SEC-03 | HKDF composition of classical and mKyber secrets is secure for this exact wire and MLS context | Hybrid secrecy or integrity claim is unsupported | Applicable formal analysis and cryptographic review; until then retain research-only wording |
 | SEC-04 | Excluding ciphertext bytes from the KDF is safe for this construction | X-Wing/C2PRI claim could be wrongly inferred | A proof that covers mKyber and the exact transcript, or a redesigned combiner |
@@ -127,4 +129,3 @@ No experimental benchmark may be described as a successful security evaluation u
 4. Adaptive transition convergence and single-active-root invariants pass under multi-committer workloads.
 5. Output redaction tests verify that reports contain no prohibited secret material.
 6. The report labels every result as experimental, identifies unresolved assumptions SEC-01 through SEC-10, and distinguishes measurements from security proofs.
-
