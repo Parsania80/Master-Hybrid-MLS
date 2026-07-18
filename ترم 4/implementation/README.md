@@ -14,14 +14,14 @@ The planned software will create a valid 128-member baseline MLS group, replay c
 
 ## Current status
 
-Documentation and Phase 1 ecosystem research only. There is no Cargo workspace or runnable implementation yet. See `PROJECT.md` for the authoritative roadmap and `SESSION-LOG.md` for the append-only audit trail.
+The Rust workspace pins the approved dependencies and contains an unchanged OpenMLS 0.8.1 baseline adapter. It can create and join a standard group, stage and merge normal Add/remove/self-update commits from multiple members, process standard messages, and encrypt application data. Independent regression tests verify epoch, authenticated GroupContext, RFC tree-hash convergence, and application delivery. The Phase 2 quality gate has passed on Rust 1.93.1. The mKyber crate now also implements `EducationalMkyber512Reference`, the paper-based `mkyber512-thesis-v1` profile: it validates the shared domain, emits exact 768/704/48-byte artifacts, and has project self-consistency tests for multi-recipient agreement and fallback selection. This is thesis-local educational reference code, not an author-approved profile or vector corpus; it makes no interoperability, audit, side-channel, security-proof, business, or production claim. Hybrid path-secret delivery, adaptive transition, and a runnable experiment remain unimplemented. `SECURITY.md` records the non-standard protocol changes, threat model, interoperability boundary, X-Wing/C2PRI limitation, and unresolved assumptions. See `PROJECT.md`, `SECURITY.md`, `docs/adr/`, and `SESSION-LOG.md` for the authoritative decisions and audit trail.
 
 ## How to use it
 
-There is nothing to build or run yet. The current task is to select a maintained Rust MLS foundation and a defensible extension boundary before scaffolding code. Reproducible Cargo commands will be added only after the toolchain and dependencies are pinned.
+Run `cargo +stable test --workspace --all-targets --locked --offline` to verify the baseline and educational mKyber reference tests. There is not yet a user-facing CLI, 128-member bootstrap, or experiment runner.
 
 ## Security and interoperability warning
 
-This is thesis research software, not production cryptography. All mKyber, hybrid path-secret, adaptive-tree, and TreeCover behavior is non-standard and experimental. Experimental modes must not claim RFC 9420 interoperability or a formal security proof.
+This is educational thesis research software, not production cryptography, and it is not recommended for business or production use. All mKyber, hybrid path-secret, adaptive-tree, and TreeCover behavior is non-standard and experimental. Experimental modes must not claim RFC 9420 interoperability or a formal security proof.
 
 The thesis specifically requires the post-quantum ciphertext to be transmitted and authenticated while excluding it from the hybrid KDF input. That omission is an experimental design choice and is not automatically covered by the X-Wing C2PRI security argument. Reports must never contain shared secrets, path secrets, private keys, AEAD keys, raw entropy, or seed material that reconstructs private state.

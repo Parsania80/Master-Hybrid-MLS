@@ -2,45 +2,54 @@
 
 ## Tech Stack
 
-- Language: stable Rust. The repository must pin the toolchain and minimum supported Rust version after dependency selection; the available development host currently has Rust 1.93.1.
+- Language: Rust 1.93.1, pinned by `rust-toolchain.toml`; the initial workspace will set `rust-version = "1.93.1"`, edition 2021, and resolver 3. See ADR 0007.
 - Build and workspace management: Cargo workspace with `rustfmt` and Clippy as mandatory quality gates.
-- Baseline MLS: no library is approved yet. OpenMLS 0.8.1 and `mls-rs` are the Phase 1 candidates; an architecture decision record (ADR) must select and pin one before code depends on it.
+- Baseline MLS: upstream `openmls = "=0.8.1"` using `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`; a separately named, feature-gated `openmls-hybrid` fork is permitted only for experimental modes. See ADR 0001 and ADR 0003.
+- Baseline credential signer: `openmls_basic_credential = "=0.5.0"`, the upstream MIT Basic Credential signer implementation required to construct the unchanged OpenMLS baseline; no test or debug feature is enabled. See ADR 0007.
 - Baseline protocol: RFC 9420 binary TreeKEM behavior must remain available, isolated, and independently testable.
-- Experimental post-quantum component: mKyber512 parameters from the cited multi-recipient KEM research paper, isolated behind a replaceable `MultiRecipientKem` trait. Ordinary ML-KEM is not an acceptable substitute for mKyber.
-- Experimental hybrid construction: classical MLS/HPKE plus mKyber, with HKDF and AEAD choices inherited from the selected MLS ciphersuite unless the Phase 1 ADR explicitly justifies a different construction.
+- Experimental post-quantum component: a paper-based mKyber512 educational reference profile, isolated behind a replaceable `MultiRecipientKem` trait. Ordinary ML-KEM is not an acceptable substitute for mKyber.
+- Experimental hybrid construction: classical MLS/HPKE plus reference-only mKyber512, HKDF-SHA256, and AES-128-GCM as defined in ADR 0002 and ADR 0003; experimental modes are non-interoperable research code.
 - Configuration and outputs: TOML input; CSV, JSON, Markdown, and optional SVG output; filesystem storage only and no database.
 - Randomness: deterministic seeded RNG only for tests and reproducible experiments; operating-system cryptographic RNG for non-experiment operation.
-- Supporting crates: none are approved yet. CLI, serialization, error, metrics, statistics, zeroization, testing, and plotting dependencies must be added here and pinned before use.
+- Approved direct crates: exact versions and feature limits for OpenMLS, its RustCrypto provider, TLS codec, hybrid primitives, RNGs, zeroization, serialization, CLI, reports, and tests are locked in ADR 0007. No other direct crate is approved without a new ADR and log entry.
 - Dependency rule: `Cargo.lock` is committed for reproducibility. No language, framework, library, or new crate may be introduced until this section is updated and the choice is recorded in `SESSION-LOG.md`.
 
 ## Architecture
 
-- Current state: documentation initialization only. No Cargo workspace, Rust source, configuration, tests, or generated results exist yet.
+- Current state: stable-Rust workspace with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, a validated public configuration schema, and a paper-based educational mKyber512 reference backend. Hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
 - `/agent.md`: Human-agent operating protocol and documentation rules.
 - `/PROJECT.md`: Single source of truth for scope, architecture, dependency lock, and progress.
 - `/SESSION-LOG.md`: Append-only audit trail for actions, commands, results, decisions, and limitations.
 - `/README.md`: Plain-language project purpose, status, security warning, and high-level usage.
-- `/docs/adr` (planned): Architecture decisions, including the MLS library, extension seam, mKyber implementation strategy, wire encoding, and measurement methodology.
-- `/Cargo.toml` and `/Cargo.lock` (planned): Stable-Rust workspace definition and exact reproducible dependency resolution.
-- `/configs` (planned): Default, update-only, removal-heavy, and other experiment configurations. CLI values override TOML values through one validated configuration model.
-- `/crates/mls-adapter` (planned): Thin adapter around the selected maintained MLS library. Standard binary MLS behavior remains unchanged and independently testable.
-- `/crates/mkyber` (planned): Experimental mKyber512 implementation or audited adapter behind `MultiRecipientKem`; common and per-recipient ciphertext components remain distinct.
-- `/crates/hybrid-path-secret` (planned): Experimental authenticated wire structure and domain-separated path-key derivation combining the classical and mKyber shared secrets.
-- `/crates/adaptive-tree` (planned): Binary active tree, quaternary shadow/new tree, deterministic leaf mapping, `ArityState`, and old binary `TreeCover`, with old and new state strictly separated.
-- `/crates/transition-policy` (planned): Sliding evaluation window, impactful-commit classification, transition-start savings formulas, maturity formulas, edge-case handling, and OR-based retirement rule.
-- `/crates/metrics` (planned): Typed counters, serialized byte measurements, timings, transition values, and measured-versus-estimated provenance.
-- `/crates/simulation` (planned): Deterministic member population, workload generation, committer strategies, commit broadcast/application, and convergence checks.
-- `/crates/report` (planned): Plot-ready CSV, JSON summaries, Markdown reports, descriptive statistics, and optional SVG charts.
+- `/SECURITY.md`: Mandatory security boundary, non-standard protocol inventory, threat model, interoperability limits, and unresolved thesis assumptions.
+- `/docs/research/MLS-CANDIDATE-COMPARISON.md`: Completed Task 2 source-level comparison of OpenMLS and `mls-rs`; this is evidence for a future ADR, not a dependency selection.
+- `/docs/research/MKYBER-IMPLEMENTATION-AUDIT.md`: Completed Task 3 audit of the paper parameters, available implementations, licenses, test-vector status, and reuse boundary.
+- `/docs/adr`: Accepted architecture decisions for the MLS base/fork boundary, mKyber strategy, ciphersuite/KDF/AEAD, hybrid wire encoding, and extension authentication.
+- `/docs/adr/0006-measurement-semantics.md`: Accepted definitions for experiment windows, impactful commits, byte-cost provenance, migration accounting, target-set aggregation, and statistics.
+- `/docs/adr/0007-toolchain-and-dependency-lock.md`: Accepted Rust toolchain pin, direct dependency allowlist, feature restrictions, license record, and compatibility-gate outcome.
+- `/rust-toolchain.toml`: Exact Rust compiler pin with required formatting and lint components.
+- `/Cargo.toml` and `/Cargo.lock`: Stable-Rust workspace definition and exact reproducible dependency resolution.
+- `/configs`: Configuration guidance; runnable workload configurations are deferred until the policy and CLI tasks.
+- `/crates/experiment-config`: Validated public configuration schema with no implicit Delta and safe relative output paths.
+- `/crates/mls-adapter`: Upstream OpenMLS 0.8.1 baseline adapter for group creation/join, standard Add/remove/self-update commits, validated inbound messages, and application messages; no experimental behavior is present.
+- `/crates/mkyber`: Reference-only `mkyber512-thesis-v1` backend plus typed artifact/error boundary; it has no author-compatible interoperability claim or ML-KEM fallback.
+- `/crates/hybrid-path-secret`: Empty boundary for the experimental authenticated path-secret wrapper.
+- `/crates/adaptive-tree`: Empty boundary for binary/quaternary topology and delivery-only TreeCover state.
+- `/crates/transition-policy`: Empty boundary for ADR 0006 formulas and retirement policy.
+- `/crates/metrics`: Empty typed measurement-record boundary.
+- `/crates/simulation`: Empty deterministic workload and convergence-simulation boundary.
+- `/crates/report`: Empty safe report-generation boundary.
 - `/src/bin/bootstrap_128.rs` (planned): Build and verify a valid 128-member baseline binary MLS group and emit safe public experiment artifacts.
 - `/src/bin/evaluate_transition.rs` (planned): Run controlled multi-committer workloads, evaluate 2-to-4 transition policy, and generate complete reports.
-- `/tests` (planned): Baseline, hybrid-path, tamper/replay, transition-start, transition-end, property, regression, and 128-member convergence tests.
+- `/tests/baseline_regression.rs`: Independent baseline integration tests for epoch, authenticated GroupContext, RFC tree hash, multi-committer convergence, and application-message delivery.
+- `/tests` (planned additions): Hybrid-path, tamper/replay, transition-start, transition-end, property, and 128-member convergence tests.
 - `/output` and `/report` (planned): Generated artifacts only; reports must never contain private keys, shared secrets, path secrets, AEAD keys, raw entropy, or a seed capable of reconstructing secret key material.
 - Data flow: validated configuration and separate public experiment seed/secret entropy feed the simulator; the MLS adapter executes the unchanged baseline path; experimental modes add mKyber delivery and hybrid key derivation; the shadow quaternary tree evaluates the same logical operation without mutating group state; transition policy consumes measured serialized costs; metrics and reports receive only safe observations.
 - Supported modes: `BaselineBinaryMls`, `BinaryMlsWithMkyber`, and `AdaptiveBinaryToQuaternaryMls`.
 - Transition invariant: while transitioning, the quaternary tree produces fresh secrets and the old binary tree is delivery-only `TreeCover`; epoch secrets are derived from exactly one active root.
 - Authentication invariant: arity, transition state, tree version, deterministic leaf mapping, TreeCover version, node indices, and group-context binding are authenticated and checked for member convergence.
 - Hybrid KDF invariant: the input is `ss_classical || ss_pq || domain_separation_context`; mKyber ciphertext bytes are transmitted and authenticated but explicitly excluded from the KDF input. The context includes the label `Adaptive-Hybrid-TreeKEM-PathSecret-v1`, ciphersuite, group, epoch, tree version, current arity, path-node index, recipient-node index, and authenticated group-context hash.
-- Research boundary: every non-standard component is experimental and not production cryptography. Experimental modes must not claim RFC 9420 interoperability, a formal security proof, or automatic coverage by the X-Wing C2PRI argument.
+- Research boundary: every non-standard component is experimental thesis software for educational use only and is not recommended for business or production use. Experimental modes must not claim RFC 9420 interoperability, a formal security proof, or automatic coverage by the X-Wing C2PRI argument.
 - Measurement invariant: use actual serialized message sizes whenever possible. Any unavoidable estimate records `measured_bytes`, `estimated_bytes`, and `estimation_method`; fake or unexplained constants are forbidden.
 
 ## Roadmap
@@ -50,33 +59,48 @@
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | 1 | Capture the complete thesis requirements, audit the greenfield directory, and initialize governed documentation | ✅ Done | No implementation artifacts exist; documentation status must not imply otherwise. |
-| 2 | Compare maintained Rust MLS candidates and identify the least invasive UpdatePath, extension, serialization, and instrumentation seams | 🔄 Current | Initial official-source scan found OpenMLS 0.8.1 and `mls-rs`; source/API compatibility work and a reproducible spike remain. |
-| 3 | Audit the mKyber paper, parameter set, available implementations, licenses, test vectors, and reuse options | ⬜ Todo | Confirm whether any compatible audited Rust implementation exists; never silently substitute ordinary ML-KEM. |
-| 4 | Write ADRs for the selected MLS base, mKyber strategy, ciphersuite/KDF/AEAD choices, wire encoding, extension authentication, and fork/module boundary | ⬜ Todo | Pin exact versions only after the decisions are evidence-backed. |
-| 5 | Specify every non-standard protocol change, threat, interoperability limitation, and unresolved thesis assumption in `SECURITY.md` | ⬜ Todo | Prominently document PQ-ciphertext KDF exclusion and the X-Wing proof limitation. |
-| 6 | Resolve measurement semantics and ambiguities before scaffolding | ⬜ Todo | Define window length, Delta precedence, pre-transition cost measurement, effective commits, target-set aggregation, leaf mapping, TreeCover construction, warmups, repetitions, and standard-deviation convention. |
-| 7 | Lock the toolchain and approved dependencies, then run the Phase 1 documentation and compatibility gate | ⬜ Todo | Record exact commands, results, changed files, and remaining limitations. |
+| 2 | Compare maintained Rust MLS candidates and identify the least invasive UpdatePath, extension, serialization, and instrumentation seams | ✅ Done | Both require an experimental fork for UpdatePath changes; OpenMLS is the preliminary recommendation for Task 4. See `docs/research/MLS-CANDIDATE-COMPARISON.md`. |
+| 3 | Audit the mKyber paper, parameter set, available implementations, licenses, test vectors, and reuse options | ✅ Done | No compatible maintained Rust backend was found. The relevant public C WIP is parameter-incompatible and lacks an explicit repository license for its modifications; see `docs/research/MKYBER-IMPLEMENTATION-AUDIT.md`. |
+| 4 | Write ADRs for the selected MLS base, mKyber strategy, ciphersuite/KDF/AEAD choices, wire encoding, extension authentication, and fork/module boundary | ✅ Done | ADRs 0001-0005 pin OpenMLS 0.8.1, the reference-only mKyber strategy, hybrid KDF/AEAD, wire constraints, and private-use authenticated state. |
+| 5 | Specify every non-standard protocol change, threat, interoperability limitation, and unresolved thesis assumption in `SECURITY.md` | ✅ Done | `SECURITY.md` documents the experimental boundary, KDF ciphertext exclusion, X-Wing/C2PRI limitation, redaction rules, and SEC-01 through SEC-10 closure criteria. |
+| 6 | Resolve measurement semantics and ambiguities before scaffolding | ✅ Done | ADR 0006 defines windows, Delta precedence, preflight/actual transition costs, impactful commits, target-set aggregation, mapping/TreeCover rules, warmups, repetitions, and statistics. |
+| 7 | Lock the toolchain and approved dependencies, then run the Phase 1 documentation and compatibility gate | ✅ Done | Rust 1.93.1 and the exact direct dependency allowlist are locked in ADR 0007; Cargo resolution is intentionally deferred until Task 8 creates the workspace. |
 
 ### Part 2: Baseline Binary MLS
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 8 | Scaffold the Cargo workspace and crate boundaries without experimental behavior in the baseline path | ⬜ Todo | Preserve dependency and feature isolation. |
-| 9 | Implement the maintained-library adapter for normal RFC 9420 proposals, commits, UpdatePath processing, and application messages | ⬜ Todo | Baseline behavior must remain unchanged. |
-| 10 | Create a small group, add/remove/update members through valid MLS operations, and deliver each commit to every valid member | ⬜ Todo | Use multiple valid committers. |
-| 11 | Add independent baseline integration/regression tests for convergence, tree hashes, epochs, group contexts, and message encryption/decryption | ⬜ Todo | Retain upstream baseline tests where a fork is required. |
-| 12 | Pass the Phase 2 formatting, strict lint, unit, integration, and baseline regression gate | ⬜ Todo | Log exact commands and raw outcome summaries. |
+| 8 | Scaffold the Cargo workspace and crate boundaries without experimental behavior in the baseline path | ✅ Done | Workspace, exact lockfile, safe output/report layout, and validated public configuration schema exist; no protocol behavior is implemented. |
+| 9 | Implement the maintained-library adapter for normal RFC 9420 proposals, commits, UpdatePath processing, and application messages | ✅ Done | `mls-adapter` uses upstream OpenMLS 0.8.1 only, fixes ciphersuite 0x0001, serializes standard messages, and covers Add/Welcome, application, and self-update UpdatePath convergence. |
+| 10 | Create a small group, add/remove/update members through valid MLS operations, and deliver each commit to every valid member | ✅ Done | A three-member, four-epoch test uses Alice, Bob, and Charlie as committers; every remaining valid member receives each Add, self-update, and Remove commit. |
+| 11 | Add independent baseline integration/regression tests for convergence, tree hashes, epochs, group contexts, and message encryption/decryption | ✅ Done | Black-box tests compare exact authenticated GroupContext bytes, RFC tree hashes, epochs, membership, and application delivery after valid commits. |
+| 12 | Pass the Phase 2 formatting, strict lint, unit, integration, and baseline regression gate | ✅ Done | Rust 1.93.1; locked offline format/check/Clippy/test/doc-test/release-build/metadata and OpenMLS feature audit all passed; 8 tests passed. |
 
 ### Part 3: Experimental mKyber Abstraction
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 13 | Define the replaceable `MultiRecipientKem` trait and typed errors | ⬜ Todo | Cover keygen, set encapsulation, per-recipient extraction, and decapsulation. |
-| 14 | Integrate an audited compatible backend or implement a clearly labeled reference-only mKyber512 research backend | ⬜ Todo | Reference code is unsuitable for production and must remain replaceable. |
-| 15 | Separate common and per-recipient ciphertext components and instrument their real serialized byte costs | ⬜ Todo | Do not report ordinary ML-KEM costs as mKyber measurements. |
+| 13 | Define the replaceable `MultiRecipientKem` trait and typed errors | ✅ Done | Defines domain-bound key/ciphertext/recipient types, fixed public component sizes, zeroized redacted secret wrappers, and object-safe keygen/encapsulation/extraction/decapsulation operations. |
+| 14 | Implement the paper-based, clearly labeled mKyber512 educational reference backend | ✅ Done | `mkyber512-thesis-v1` implements the paper parameters, exact 768/704/48-byte artifacts, shared-domain validation, multi-recipient agreement, and fallback selection. It is thesis-local reference code only: no business/production, interoperability, audit, or security-proof claim. |
+| 15 | Separate common and per-recipient ciphertext components and instrument their real serialized byte costs | 🔄 Current | Instrument the already-separated 704-byte common and 48-byte per-recipient serialized artifacts. Do not report ordinary ML-KEM costs as mKyber measurements. |
 | 16 | Implement deterministic test mode, OS-RNG production path, secret redaction, and zeroization where applicable | ⬜ Todo | A published experiment seed must never reconstruct private key material. |
 | 17 | Add known-answer/unit/property tests for recipient agreement, non-recipient failure, malformed ciphertexts, and deterministic reproducibility | ⬜ Todo | Include common and per-recipient tamper cases. |
 | 18 | Pass the Phase 3 formatting, strict lint, test, and standalone benchmark gate | ⬜ Todo | Report exact mKyber implementation status honestly. |
+
+#### Task 14 paper-based reference checklist
+
+Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایان نامه\related_works\3-4\how-multi-recipient-kems.pdf`, Section 3 and Table 1. Every paper-specified item below is required; this checklist does not turn paper omissions into a published standard.
+
+1. Fix the mKyber512 paper parameters: `q=3329`, `n=256`, `k=2`, `eta1=3`, `eta2=2`, `du=11`, `dv=3`, 16-byte message, 768-byte encapsulation key, 704-byte common `u`, and 48-byte recipient `v_i`.
+2. Model the public mKyber domain as a shared matrix seed `seedA` expanded by an XOF into `A`; all recipient keys in one encapsulation set must use that same domain, and keys from another domain must fail validation.
+3. Implement paper key generation: sample secret/error values, compute `b = A * s + e`, expose `b` as the 768-byte encapsulation key, and retain the secret material plus public/fallback material required by decapsulation. Do not substitute ordinary Kyber/ML-KEM/amKyber key generation.
+4. Implement paper encapsulation for a non-empty, duplicate-free recipient set: choose a 16-byte message, derive `K'`, derive shared `r,e'` from `G1`/`PRF1`, compute and compress the common `u = r * A + e'`, derive recipient-specific coins/noise with `G2(ek_i,msg)` and `PRF2`, then compute and compress each `v_i = r * b_i + e''_i + Encode(msg)`.
+5. Implement paper decapsulation: decompress `(u,v_i)`, recover and decode the message with `v_i - u * s_i`, deterministically re-encrypt the recipient component, compare the reconstructed component with the received component without exposing secret-dependent diagnostics, and select `KDF(K',ct_i)` only on a match or the paper's fallback-key KDF otherwise.
+6. Encode the multi-recipient ciphertext as one 704-byte common component plus one 48-byte component per recipient. Implement the paper's 128-coefficient recipient-component reduction and 3-bit compression, preserving canonical ordering and rejecting malformed lengths, duplicate recipients, wrong-recipient components, and domain mismatches.
+7. Before code assigns concrete bytes to `H`, `G1`, `G2`, `PRF1`, `PRF2`, `KDF`, matrix expansion, coefficient selection/order, packing, compression rounding, NTT representation, secret-key layout, or fallback serialization, record each choice in the thesis-local reference profile and ADR. The paper abstracts or simplifies these details, so such choices must be labelled thesis-local rather than author-standardized mKyber512 interoperability behavior.
+8. Keep operating-system randomness for normal reference runs and isolated deterministic randomness only for tests. Zeroize private/shared-secret buffers, redact secret-bearing debug output, and never place secrets or reconstructible entropy in logs, fixtures, or reports.
+9. Add self-consistency tests for key generation, multi-recipient agreement, extraction, malformed inputs, common/recipient tampering, wrong recipient, domain mismatch, re-encryption failure/fallback selection, exact 768/704/48-byte serialization, and deterministic test reproducibility. These are project regression tests, not official known-answer tests.
+10. Label the implementation, benchmarks, reports, and generated vectors as `educational thesis reference only`. Do not recommend it for business or production use; do not claim mKyber512 interoperability, an audit, side-channel resistance, IND-CCA security for the implementation, or any formal security proof.
 
 ### Part 4: Experimental Hybrid Path-Secret Delivery
 
@@ -157,6 +181,6 @@
 
 ---
 
-**Current:** Part 1, Task 2 — Compare maintained Rust MLS candidates and identify safe extension and instrumentation seams.
+**Current:** Part 3, Task 15 — Separate mKyber wire components and instrument their sizes.
 
-**Next:** Part 1, Task 3 — Audit mKyber implementations, parameters, licenses, test vectors, and reuse options.
+**Next:** Part 3, Task 16 — Implement deterministic test mode, OS-RNG production path, secret redaction, and zeroization where applicable.

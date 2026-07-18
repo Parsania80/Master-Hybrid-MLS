@@ -1,0 +1,18 @@
+[package]
+name = "simulation"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+adaptive-tree = { path = "../adaptive-tree" }
+experiment-config = { path = "../experiment-config" }
+metrics = { path = "../metrics" }
+mls-adapter = { path = "../mls-adapter" }
+rand.workspace = true
+rand_chacha.workspace = true
+thiserror.workspace = true
+transition-policy = { path = "../transition-policy" }
+
+[lints]
+workspace = true
