@@ -24,6 +24,7 @@
 - `/docs/research/MLS-CANDIDATE-COMPARISON.md`: Completed Task 2 source-level comparison of OpenMLS and `mls-rs`; this is evidence for a future ADR, not a dependency selection.
 - `/docs/research/MKYBER-IMPLEMENTATION-AUDIT.md`: Completed Task 3 audit of the paper parameters, available implementations, licenses, test-vector status, and reuse boundary.
 - `/docs/adr`: Accepted architecture decisions for the MLS base/fork boundary, mKyber strategy, ciphersuite/KDF/AEAD, hybrid wire encoding, and extension authentication.
+- `/docs/adr/0006-measurement-semantics.md`: Accepted definitions for experiment windows, impactful commits, byte-cost provenance, migration accounting, target-set aggregation, and statistics.
 - `/Cargo.toml` and `/Cargo.lock` (planned): Stable-Rust workspace definition and exact reproducible dependency resolution.
 - `/configs` (planned): Default, update-only, removal-heavy, and other experiment configurations. CLI values override TOML values through one validated configuration model.
 - `/crates/mls-adapter` (planned): Thin adapter around the selected maintained MLS library. Standard binary MLS behavior remains unchanged and independently testable.
@@ -57,8 +58,8 @@
 | 3 | Audit the mKyber paper, parameter set, available implementations, licenses, test vectors, and reuse options | ✅ Done | No compatible maintained Rust backend was found. The relevant public C WIP is parameter-incompatible and lacks an explicit repository license for its modifications; see `docs/research/MKYBER-IMPLEMENTATION-AUDIT.md`. |
 | 4 | Write ADRs for the selected MLS base, mKyber strategy, ciphersuite/KDF/AEAD choices, wire encoding, extension authentication, and fork/module boundary | ✅ Done | ADRs 0001-0005 pin OpenMLS 0.8.1, the reference-only mKyber strategy, hybrid KDF/AEAD, wire constraints, and private-use authenticated state. |
 | 5 | Specify every non-standard protocol change, threat, interoperability limitation, and unresolved thesis assumption in `SECURITY.md` | ✅ Done | `SECURITY.md` documents the experimental boundary, KDF ciphertext exclusion, X-Wing/C2PRI limitation, redaction rules, and SEC-01 through SEC-10 closure criteria. |
-| 6 | Resolve measurement semantics and ambiguities before scaffolding | 🔄 Current | Define window length, Delta precedence, pre-transition cost measurement, effective commits, target-set aggregation, leaf mapping, TreeCover construction, warmups, repetitions, and standard-deviation convention. |
-| 7 | Lock the toolchain and approved dependencies, then run the Phase 1 documentation and compatibility gate | ⬜ Todo | Record exact commands, results, changed files, and remaining limitations. |
+| 6 | Resolve measurement semantics and ambiguities before scaffolding | ✅ Done | ADR 0006 defines windows, Delta precedence, preflight/actual transition costs, impactful commits, target-set aggregation, mapping/TreeCover rules, warmups, repetitions, and statistics. |
+| 7 | Lock the toolchain and approved dependencies, then run the Phase 1 documentation and compatibility gate | 🔄 Current | Record exact commands, results, changed files, and remaining limitations. |
 
 ### Part 2: Baseline Binary MLS
 
@@ -160,6 +161,6 @@
 
 ---
 
-**Current:** Part 1, Task 6 — Resolve measurement semantics and ambiguities before scaffolding.
+**Current:** Part 1, Task 7 — Lock the toolchain and approved dependencies, then run the Phase 1 documentation and compatibility gate.
 
-**Next:** Part 1, Task 7 — Lock the toolchain and approved dependencies, then run the Phase 1 documentation and compatibility gate.
+**Next:** Part 2, Task 8 — Scaffold the stable-Rust workspace, crate boundaries, configuration model, and safe output layout.
