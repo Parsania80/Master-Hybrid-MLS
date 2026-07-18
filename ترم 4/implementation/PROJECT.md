@@ -16,7 +16,7 @@
 
 ## Architecture
 
-- Current state: stable-Rust workspace scaffold with a maintained-library baseline MLS adapter, independent baseline regression coverage, and validated public configuration schema. The mKyber algorithm, hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
+- Current state: stable-Rust workspace scaffold with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, and validated public configuration schema. The mKyber algorithm, hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
 - `/agent.md`: Human-agent operating protocol and documentation rules.
 - `/PROJECT.md`: Single source of truth for scope, architecture, dependency lock, and progress.
 - `/SESSION-LOG.md`: Append-only audit trail for actions, commands, results, decisions, and limitations.
@@ -74,13 +74,13 @@
 | 9 | Implement the maintained-library adapter for normal RFC 9420 proposals, commits, UpdatePath processing, and application messages | ✅ Done | `mls-adapter` uses upstream OpenMLS 0.8.1 only, fixes ciphersuite 0x0001, serializes standard messages, and covers Add/Welcome, application, and self-update UpdatePath convergence. |
 | 10 | Create a small group, add/remove/update members through valid MLS operations, and deliver each commit to every valid member | ✅ Done | A three-member, four-epoch test uses Alice, Bob, and Charlie as committers; every remaining valid member receives each Add, self-update, and Remove commit. |
 | 11 | Add independent baseline integration/regression tests for convergence, tree hashes, epochs, group contexts, and message encryption/decryption | ✅ Done | Black-box tests compare exact authenticated GroupContext bytes, RFC tree hashes, epochs, membership, and application delivery after valid commits. |
-| 12 | Pass the Phase 2 formatting, strict lint, unit, integration, and baseline regression gate | 🔄 Current | Log exact commands and raw outcome summaries. |
+| 12 | Pass the Phase 2 formatting, strict lint, unit, integration, and baseline regression gate | ✅ Done | Rust 1.93.1; locked offline format/check/Clippy/test/doc-test/release-build/metadata and OpenMLS feature audit all passed; 8 tests passed. |
 
 ### Part 3: Experimental mKyber Abstraction
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 13 | Define the replaceable `MultiRecipientKem` trait and typed errors | ⬜ Todo | Cover keygen, set encapsulation, per-recipient extraction, and decapsulation. |
+| 13 | Define the replaceable `MultiRecipientKem` trait and typed errors | 🔄 Current | Cover keygen, set encapsulation, per-recipient extraction, and decapsulation. |
 | 14 | Integrate an audited compatible backend or implement a clearly labeled reference-only mKyber512 research backend | ⬜ Todo | Reference code is unsuitable for production and must remain replaceable. |
 | 15 | Separate common and per-recipient ciphertext components and instrument their real serialized byte costs | ⬜ Todo | Do not report ordinary ML-KEM costs as mKyber measurements. |
 | 16 | Implement deterministic test mode, OS-RNG production path, secret redaction, and zeroization where applicable | ⬜ Todo | A published experiment seed must never reconstruct private key material. |
@@ -166,6 +166,6 @@
 
 ---
 
-**Current:** Part 2, Task 12 — Pass the Phase 2 baseline quality gate.
+**Current:** Part 3, Task 13 — Define the replaceable mKyber abstraction and typed errors.
 
-**Next:** Part 3, Task 13 — Define the replaceable mKyber abstraction and typed errors.
+**Next:** Part 3, Task 14 — Integrate a compatible reference-only mKyber backend.
