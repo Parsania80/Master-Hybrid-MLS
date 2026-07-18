@@ -1,0 +1,17 @@
+[package]
+name = "hybrid-path-secret"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+aes-gcm.workspace = true
+hkdf.workspace = true
+mkyber = { path = "../mkyber" }
+sha2.workspace = true
+thiserror.workspace = true
+tls_codec.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

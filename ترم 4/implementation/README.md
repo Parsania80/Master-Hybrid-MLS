@@ -14,7 +14,7 @@ The planned software will create a valid 128-member baseline MLS group, replay c
 
 ## Current status
 
-Documentation and Phase 1 is complete. Rust 1.93.1 and the exact direct-dependency allowlist are pinned in ADR 0007; the first Cargo workspace and lockfile will be created in the next task. ADRs select OpenMLS 0.8.1 for the unchanged baseline, a separately gated experimental fork for hybrid modes, and a reference-only mKyber512 strategy. `SECURITY.md` records the non-standard protocol changes, threat model, interoperability boundary, X-Wing/C2PRI limitation, and unresolved assumptions. There is no Cargo workspace or runnable implementation yet. See `PROJECT.md`, `SECURITY.md`, `docs/adr/`, and `SESSION-LOG.md` for the authoritative decisions and audit trail.
+The Rust workspace is scaffolded and pins the approved dependencies, but it contains no MLS group lifecycle, mKyber implementation, hybrid path-secret delivery, adaptive transition, or runnable experiment yet. ADRs select OpenMLS 0.8.1 for the unchanged future baseline, a separately gated experimental fork for hybrid modes, and a reference-only mKyber512 strategy. `SECURITY.md` records the non-standard protocol changes, threat model, interoperability boundary, X-Wing/C2PRI limitation, and unresolved assumptions. See `PROJECT.md`, `SECURITY.md`, `docs/adr/`, and `SESSION-LOG.md` for the authoritative decisions and audit trail.
 
 ## How to use it
 

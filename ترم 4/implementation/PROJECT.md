@@ -15,7 +15,7 @@
 
 ## Architecture
 
-- Current state: documentation initialization only. No Cargo workspace, Rust source, configuration, tests, or generated results exist yet.
+- Current state: stable-Rust workspace scaffold only. It contains a validated public configuration schema and empty crate boundaries, but no MLS group lifecycle, mKyber algorithm, hybrid delivery, adaptive transition, tests, or generated results.
 - `/agent.md`: Human-agent operating protocol and documentation rules.
 - `/PROJECT.md`: Single source of truth for scope, architecture, dependency lock, and progress.
 - `/SESSION-LOG.md`: Append-only audit trail for actions, commands, results, decisions, and limitations.
@@ -27,16 +27,17 @@
 - `/docs/adr/0006-measurement-semantics.md`: Accepted definitions for experiment windows, impactful commits, byte-cost provenance, migration accounting, target-set aggregation, and statistics.
 - `/docs/adr/0007-toolchain-and-dependency-lock.md`: Accepted Rust toolchain pin, direct dependency allowlist, feature restrictions, license record, and compatibility-gate outcome.
 - `/rust-toolchain.toml`: Exact Rust compiler pin with required formatting and lint components.
-- `/Cargo.toml` and `/Cargo.lock` (planned): Stable-Rust workspace definition and exact reproducible dependency resolution.
-- `/configs` (planned): Default, update-only, removal-heavy, and other experiment configurations. CLI values override TOML values through one validated configuration model.
-- `/crates/mls-adapter` (planned): Thin adapter around the selected maintained MLS library. Standard binary MLS behavior remains unchanged and independently testable.
-- `/crates/mkyber` (planned): Experimental mKyber512 implementation or audited adapter behind `MultiRecipientKem`; common and per-recipient ciphertext components remain distinct.
-- `/crates/hybrid-path-secret` (planned): Experimental authenticated wire structure and domain-separated path-key derivation combining the classical and mKyber shared secrets.
-- `/crates/adaptive-tree` (planned): Binary active tree, quaternary shadow/new tree, deterministic leaf mapping, `ArityState`, and old binary `TreeCover`, with old and new state strictly separated.
-- `/crates/transition-policy` (planned): Sliding evaluation window, impactful-commit classification, transition-start savings formulas, maturity formulas, edge-case handling, and OR-based retirement rule.
-- `/crates/metrics` (planned): Typed counters, serialized byte measurements, timings, transition values, and measured-versus-estimated provenance.
-- `/crates/simulation` (planned): Deterministic member population, workload generation, committer strategies, commit broadcast/application, and convergence checks.
-- `/crates/report` (planned): Plot-ready CSV, JSON summaries, Markdown reports, descriptive statistics, and optional SVG charts.
+- `/Cargo.toml` and `/Cargo.lock`: Stable-Rust workspace definition and exact reproducible dependency resolution.
+- `/configs`: Configuration guidance; runnable workload configurations are deferred until the policy and CLI tasks.
+- `/crates/experiment-config`: Validated public configuration schema with no implicit Delta and safe relative output paths.
+- `/crates/mls-adapter`: Empty boundary for the selected maintained MLS library; standard behavior implementation is deferred to Task 9.
+- `/crates/mkyber`: Empty reference-only mKyber512 boundary; no ML-KEM fallback exists.
+- `/crates/hybrid-path-secret`: Empty boundary for the experimental authenticated path-secret wrapper.
+- `/crates/adaptive-tree`: Empty boundary for binary/quaternary topology and delivery-only TreeCover state.
+- `/crates/transition-policy`: Empty boundary for ADR 0006 formulas and retirement policy.
+- `/crates/metrics`: Empty typed measurement-record boundary.
+- `/crates/simulation`: Empty deterministic workload and convergence-simulation boundary.
+- `/crates/report`: Empty safe report-generation boundary.
 - `/src/bin/bootstrap_128.rs` (planned): Build and verify a valid 128-member baseline binary MLS group and emit safe public experiment artifacts.
 - `/src/bin/evaluate_transition.rs` (planned): Run controlled multi-committer workloads, evaluate 2-to-4 transition policy, and generate complete reports.
 - `/tests` (planned): Baseline, hybrid-path, tamper/replay, transition-start, transition-end, property, regression, and 128-member convergence tests.
@@ -67,8 +68,8 @@
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 8 | Scaffold the Cargo workspace and crate boundaries without experimental behavior in the baseline path | 🔄 Current | Preserve dependency and feature isolation. |
-| 9 | Implement the maintained-library adapter for normal RFC 9420 proposals, commits, UpdatePath processing, and application messages | ⬜ Todo | Baseline behavior must remain unchanged. |
+| 8 | Scaffold the Cargo workspace and crate boundaries without experimental behavior in the baseline path | ✅ Done | Workspace, exact lockfile, safe output/report layout, and validated public configuration schema exist; no protocol behavior is implemented. |
+| 9 | Implement the maintained-library adapter for normal RFC 9420 proposals, commits, UpdatePath processing, and application messages | 🔄 Current | Baseline behavior must remain unchanged. |
 | 10 | Create a small group, add/remove/update members through valid MLS operations, and deliver each commit to every valid member | ⬜ Todo | Use multiple valid committers. |
 | 11 | Add independent baseline integration/regression tests for convergence, tree hashes, epochs, group contexts, and message encryption/decryption | ⬜ Todo | Retain upstream baseline tests where a fork is required. |
 | 12 | Pass the Phase 2 formatting, strict lint, unit, integration, and baseline regression gate | ⬜ Todo | Log exact commands and raw outcome summaries. |
@@ -163,6 +164,6 @@
 
 ---
 
-**Current:** Part 2, Task 8 — Scaffold the stable-Rust workspace, crate boundaries, configuration model, and safe output layout.
+**Current:** Part 2, Task 9 — Implement the maintained-library adapter for normal RFC 9420 operations.
 
-**Next:** Part 2, Task 9 — Implement the maintained-library adapter for normal RFC 9420 operations.
+**Next:** Part 2, Task 10 — Create a small group and deliver valid multi-committer MLS operations.
