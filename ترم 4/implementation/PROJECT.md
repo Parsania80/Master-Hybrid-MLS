@@ -31,7 +31,7 @@
 - `/Cargo.toml` and `/Cargo.lock`: Stable-Rust workspace definition and exact reproducible dependency resolution.
 - `/configs`: Configuration guidance; runnable workload configurations are deferred until the policy and CLI tasks.
 - `/crates/experiment-config`: Validated public configuration schema with no implicit Delta and safe relative output paths.
-- `/crates/mls-adapter`: Upstream OpenMLS 0.8.1 baseline adapter for group creation/join, standard Add and self-update commits, validated inbound messages, and application messages; no experimental behavior is present.
+- `/crates/mls-adapter`: Upstream OpenMLS 0.8.1 baseline adapter for group creation/join, standard Add/remove/self-update commits, validated inbound messages, and application messages; no experimental behavior is present.
 - `/crates/mkyber`: Empty reference-only mKyber512 boundary; no ML-KEM fallback exists.
 - `/crates/hybrid-path-secret`: Empty boundary for the experimental authenticated path-secret wrapper.
 - `/crates/adaptive-tree`: Empty boundary for binary/quaternary topology and delivery-only TreeCover state.
@@ -71,8 +71,8 @@
 |---|------|--------|-------|
 | 8 | Scaffold the Cargo workspace and crate boundaries without experimental behavior in the baseline path | ✅ Done | Workspace, exact lockfile, safe output/report layout, and validated public configuration schema exist; no protocol behavior is implemented. |
 | 9 | Implement the maintained-library adapter for normal RFC 9420 proposals, commits, UpdatePath processing, and application messages | ✅ Done | `mls-adapter` uses upstream OpenMLS 0.8.1 only, fixes ciphersuite 0x0001, serializes standard messages, and covers Add/Welcome, application, and self-update UpdatePath convergence. |
-| 10 | Create a small group, add/remove/update members through valid MLS operations, and deliver each commit to every valid member | 🔄 Current | Use multiple valid committers. |
-| 11 | Add independent baseline integration/regression tests for convergence, tree hashes, epochs, group contexts, and message encryption/decryption | ⬜ Todo | Retain upstream baseline tests where a fork is required. |
+| 10 | Create a small group, add/remove/update members through valid MLS operations, and deliver each commit to every valid member | ✅ Done | A three-member, four-epoch test uses Alice, Bob, and Charlie as committers; every remaining valid member receives each Add, self-update, and Remove commit. |
+| 11 | Add independent baseline integration/regression tests for convergence, tree hashes, epochs, group contexts, and message encryption/decryption | 🔄 Current | Retain upstream baseline tests where a fork is required. |
 | 12 | Pass the Phase 2 formatting, strict lint, unit, integration, and baseline regression gate | ⬜ Todo | Log exact commands and raw outcome summaries. |
 
 ### Part 3: Experimental mKyber Abstraction
@@ -165,6 +165,6 @@
 
 ---
 
-**Current:** Part 2, Task 10 — Create a small group and deliver valid multi-committer MLS operations.
+**Current:** Part 2, Task 11 — Add independent baseline integration and regression tests.
 
-**Next:** Part 2, Task 11 — Add independent baseline integration and regression tests.
+**Next:** Part 2, Task 12 — Pass the Phase 2 baseline quality gate.

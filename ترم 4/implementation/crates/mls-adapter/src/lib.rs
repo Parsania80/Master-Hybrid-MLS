@@ -28,6 +28,15 @@ pub enum BaselineError {
     /// An operation needs a group that has been created or joined first.
     #[error("no MLS group is initialized for this client")]
     GroupNotInitialized,
+    /// A member operation did not specify at least one public identity.
+    #[error("at least one member identity is required")]
+    EmptyMemberList,
+    /// A supplied public identity is not an active group member.
+    #[error("the requested member is not in the active group")]
+    MemberNotFound,
+    /// A member operation repeated the same public identity.
+    #[error("a member identity was supplied more than once")]
+    DuplicateMember,
     /// An upstream MLS operation rejected the supplied public input or state.
     #[error("the upstream OpenMLS baseline operation failed")]
     OpenMls,
@@ -180,6 +189,54 @@ impl BaselineClient {
         Ok(OutboundCommit {
             commit: serialize_message(&commit)?,
             welcome: Some(serialize_message(&welcome)?),
+        })
+    }
+
+    /// Stages a normal Remove commit for the current public member identities.
+    ///
+    /// Identities are resolved against the current group immediately before
+    /// staging, so callers cannot accidentally use a leaf index from an older
+    /// tree. The sender must call [`Self::merge_pending_commit`] after each
+    /// remaining member has received `commit`.
+    pub fn remove_members_by_identity(
+        &mut self,
+        identities: &[Vec<u8>],
+    ) -> Result<OutboundCommit, BaselineError> {
+        if identities.is_empty() {
+            return Err(BaselineError::EmptyMemberList);
+        }
+
+        let leaf_indices = {
+            let group = self.group_ref()?;
+            let mut indices = Vec::with_capacity(identities.len());
+            for identity in identities {
+                let index = group
+                    .members()
+                    .find(|member| member.credential.serialized_content() == identity)
+                    .map(|member| member.index)
+                    .ok_or(BaselineError::MemberNotFound)?;
+                if indices.contains(&index) {
+                    return Err(BaselineError::DuplicateMember);
+                }
+                indices.push(index);
+            }
+            indices
+        };
+
+        let provider = &self.provider;
+        let signer = &self.signer;
+        let group = self
+            .group
+            .as_mut()
+            .ok_or(BaselineError::GroupNotInitialized)?;
+        let (commit, welcome, _) = group
+            .remove_members(provider, signer, &leaf_indices)
+            .map_err(|_| BaselineError::OpenMls)?;
+        Ok(OutboundCommit {
+            commit: serialize_message(&commit)?,
+            welcome: welcome
+                .map(|message| serialize_message(&message))
+                .transpose()?,
         })
     }
 
@@ -361,5 +418,89 @@ mod tests {
             client.create_application_message(b"not yet"),
             Err(BaselineError::GroupNotInitialized)
         );
+    }
+
+    #[test]
+    fn multi_committer_add_remove_and_update_converge_for_every_valid_member() {
+        let mut alice = BaselineClient::new(b"alice").expect("Alice identity must be valid");
+        let mut bob = BaselineClient::new(b"bob").expect("Bob identity must be valid");
+        let mut charlie = BaselineClient::new(b"charlie").expect("Charlie identity must be valid");
+        alice
+            .create_group(b"baseline-task-ten")
+            .expect("group creation must succeed");
+
+        let bob_key_package = bob.key_package().expect("Bob key package must be created");
+        let add_bob = alice
+            .add_members(core::slice::from_ref(bob_key_package.key_package()))
+            .expect("Alice must stage Bob's add commit");
+        alice
+            .merge_pending_commit()
+            .expect("Alice must merge Bob's add commit");
+        bob.join_from_welcome(add_bob.welcome.as_deref().expect("add has welcome"))
+            .expect("Bob must join from welcome");
+
+        let charlie_key_package = charlie
+            .key_package()
+            .expect("Charlie key package must be created");
+        let add_charlie = bob
+            .add_members(core::slice::from_ref(charlie_key_package.key_package()))
+            .expect("Bob must stage Charlie's add commit");
+        assert_eq!(
+            alice
+                .process_message(&add_charlie.commit)
+                .expect("Alice must receive Bob's add commit"),
+            InboundEvent::CommitMerged
+        );
+        bob.merge_pending_commit()
+            .expect("Bob must merge Charlie's add commit");
+        charlie
+            .join_from_welcome(add_charlie.welcome.as_deref().expect("add has welcome"))
+            .expect("Charlie must join from welcome");
+        assert_converged(&[&alice, &bob, &charlie], 2, 3);
+
+        let update = charlie.self_update().expect("Charlie must stage an update");
+        assert_eq!(
+            alice
+                .process_message(&update.commit)
+                .expect("Alice must receive Charlie's update"),
+            InboundEvent::CommitMerged
+        );
+        assert_eq!(
+            bob.process_message(&update.commit)
+                .expect("Bob must receive Charlie's update"),
+            InboundEvent::CommitMerged
+        );
+        charlie
+            .merge_pending_commit()
+            .expect("Charlie must merge its update");
+        assert_converged(&[&alice, &bob, &charlie], 3, 3);
+
+        let remove_bob = alice
+            .remove_members_by_identity(&[b"bob".to_vec()])
+            .expect("Alice must stage Bob's removal");
+        assert_eq!(
+            charlie
+                .process_message(&remove_bob.commit)
+                .expect("Charlie must receive Bob's removal"),
+            InboundEvent::CommitMerged
+        );
+        alice
+            .merge_pending_commit()
+            .expect("Alice must merge Bob's removal");
+        assert_converged(&[&alice, &charlie], 4, 2);
+    }
+
+    fn assert_converged(clients: &[&BaselineClient], epoch: u64, member_count: usize) {
+        let first_state = clients[0]
+            .state()
+            .expect("first member state must be available");
+        assert_eq!(first_state.epoch, epoch);
+        assert_eq!(first_state.member_count, member_count);
+        for client in &clients[1..] {
+            assert_eq!(
+                client.state().expect("member state must be available"),
+                first_state
+            );
+        }
     }
 }
