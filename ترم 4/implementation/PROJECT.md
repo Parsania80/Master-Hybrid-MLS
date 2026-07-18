@@ -16,7 +16,7 @@
 
 ## Architecture
 
-- Current state: stable-Rust workspace scaffold with a maintained-library baseline MLS adapter and validated public configuration schema. The mKyber algorithm, hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
+- Current state: stable-Rust workspace scaffold with a maintained-library baseline MLS adapter, independent baseline regression coverage, and validated public configuration schema. The mKyber algorithm, hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
 - `/agent.md`: Human-agent operating protocol and documentation rules.
 - `/PROJECT.md`: Single source of truth for scope, architecture, dependency lock, and progress.
 - `/SESSION-LOG.md`: Append-only audit trail for actions, commands, results, decisions, and limitations.
@@ -41,7 +41,8 @@
 - `/crates/report`: Empty safe report-generation boundary.
 - `/src/bin/bootstrap_128.rs` (planned): Build and verify a valid 128-member baseline binary MLS group and emit safe public experiment artifacts.
 - `/src/bin/evaluate_transition.rs` (planned): Run controlled multi-committer workloads, evaluate 2-to-4 transition policy, and generate complete reports.
-- `/tests` (planned): Baseline, hybrid-path, tamper/replay, transition-start, transition-end, property, regression, and 128-member convergence tests.
+- `/tests/baseline_regression.rs`: Independent baseline integration tests for epoch, authenticated GroupContext, RFC tree hash, multi-committer convergence, and application-message delivery.
+- `/tests` (planned additions): Hybrid-path, tamper/replay, transition-start, transition-end, property, and 128-member convergence tests.
 - `/output` and `/report` (planned): Generated artifacts only; reports must never contain private keys, shared secrets, path secrets, AEAD keys, raw entropy, or a seed capable of reconstructing secret key material.
 - Data flow: validated configuration and separate public experiment seed/secret entropy feed the simulator; the MLS adapter executes the unchanged baseline path; experimental modes add mKyber delivery and hybrid key derivation; the shadow quaternary tree evaluates the same logical operation without mutating group state; transition policy consumes measured serialized costs; metrics and reports receive only safe observations.
 - Supported modes: `BaselineBinaryMls`, `BinaryMlsWithMkyber`, and `AdaptiveBinaryToQuaternaryMls`.
@@ -72,8 +73,8 @@
 | 8 | Scaffold the Cargo workspace and crate boundaries without experimental behavior in the baseline path | ✅ Done | Workspace, exact lockfile, safe output/report layout, and validated public configuration schema exist; no protocol behavior is implemented. |
 | 9 | Implement the maintained-library adapter for normal RFC 9420 proposals, commits, UpdatePath processing, and application messages | ✅ Done | `mls-adapter` uses upstream OpenMLS 0.8.1 only, fixes ciphersuite 0x0001, serializes standard messages, and covers Add/Welcome, application, and self-update UpdatePath convergence. |
 | 10 | Create a small group, add/remove/update members through valid MLS operations, and deliver each commit to every valid member | ✅ Done | A three-member, four-epoch test uses Alice, Bob, and Charlie as committers; every remaining valid member receives each Add, self-update, and Remove commit. |
-| 11 | Add independent baseline integration/regression tests for convergence, tree hashes, epochs, group contexts, and message encryption/decryption | 🔄 Current | Retain upstream baseline tests where a fork is required. |
-| 12 | Pass the Phase 2 formatting, strict lint, unit, integration, and baseline regression gate | ⬜ Todo | Log exact commands and raw outcome summaries. |
+| 11 | Add independent baseline integration/regression tests for convergence, tree hashes, epochs, group contexts, and message encryption/decryption | ✅ Done | Black-box tests compare exact authenticated GroupContext bytes, RFC tree hashes, epochs, membership, and application delivery after valid commits. |
+| 12 | Pass the Phase 2 formatting, strict lint, unit, integration, and baseline regression gate | 🔄 Current | Log exact commands and raw outcome summaries. |
 
 ### Part 3: Experimental mKyber Abstraction
 
@@ -165,6 +166,6 @@
 
 ---
 
-**Current:** Part 2, Task 11 — Add independent baseline integration and regression tests.
+**Current:** Part 2, Task 12 — Pass the Phase 2 baseline quality gate.
 
-**Next:** Part 2, Task 12 — Pass the Phase 2 baseline quality gate.
+**Next:** Part 3, Task 13 — Define the replaceable mKyber abstraction and typed errors.

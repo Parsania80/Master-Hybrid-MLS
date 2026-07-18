@@ -58,3 +58,6 @@ version.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+mls-adapter = { path = "crates/mls-adapter" }

@@ -7,7 +7,10 @@
 //! encryption to `openmls` 0.8.1. It contains no mKyber, hybrid KDF,
 //! experimental extension, adaptive-tree, or fork behavior.
 
-use openmls::prelude::{tls_codec::Deserialize, *};
+use openmls::prelude::{
+    tls_codec::{Deserialize, Serialize},
+    *,
+};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use thiserror::Error;
@@ -74,6 +77,10 @@ pub struct BaselineState {
     pub epoch: u64,
     /// Number of currently active group members.
     pub member_count: usize,
+    /// TLS encoding of the authenticated public MLS GroupContext.
+    pub group_context: Vec<u8>,
+    /// The RFC 9420 tree hash carried by the authenticated GroupContext.
+    pub tree_hash: Vec<u8>,
 }
 
 /// A single baseline MLS member and its local OpenMLS state.
@@ -338,10 +345,21 @@ impl BaselineClient {
     /// Returns metadata suitable for convergence checks and safe reports.
     pub fn state(&self) -> Result<BaselineState, BaselineError> {
         let group = self.group_ref()?;
+        let group_info = group
+            .export_group_info(self.provider.crypto(), &self.signer, false)
+            .map_err(|_| BaselineError::OpenMls)?;
+        let group_context = match group_info.body() {
+            MlsMessageBodyOut::GroupInfo(group_info) => group_info.group_context(),
+            _ => return Err(BaselineError::OpenMls),
+        };
         Ok(BaselineState {
             group_id: group.group_id().as_slice().to_vec(),
             epoch: group.epoch().as_u64(),
             member_count: group.members().count(),
+            group_context: group_context
+                .tls_serialize_detached()
+                .map_err(|_| BaselineError::OpenMls)?,
+            tree_hash: group_context.tree_hash().to_vec(),
         })
     }
 
