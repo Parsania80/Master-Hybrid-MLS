@@ -31,3 +31,8 @@
 [2026-07-18 21:35] [AGENT] Decision: Use private-use extension 0xF001 for authenticated thesis-local ArityState and a versioned TLS-coded HybridPathCiphertext inside UpdatePath; the common mKyber component is encoded once per path level.
 [2026-07-18 21:35] [AGENT] Recorded ADRs 0001-0005, marked Task 4 Done, and made Task 5 the sole Current task.
 [2026-07-18 21:38] [AGENT] Verified five accepted ADRs, exactly one Current roadmap task, zero trailing-whitespace lines, valid dated log entries after the title, and clean diff whitespace; no Cargo build or test applies because the workspace has not been scaffolded.
+[2026-07-18 21:40] [OPERATOR] Started Part 1 Task 5: specify every non-standard protocol change, threat, interoperability limitation, and unresolved thesis assumption in SECURITY.md.
+[2026-07-18 21:40] [AGENT] Documented the non-standard hybrid UpdatePath, mKyber domain, hybrid KDF, private-use ArityState extension, and adaptive-tree boundaries in SECURITY.md.
+[2026-07-18 21:40] [AGENT] Decision: Explicitly prohibit claims that the ciphertext-excluding hybrid KDF is covered by X-Wing or C2PRI; the prototype uses a different mKyber512 and MLS-specific construction without that proof.
+[2026-07-18 21:40] [AGENT] Defined SEC-01 through SEC-10 unresolved assumptions and required closure evidence, marked Task 5 Done, and made Task 6 the sole Current task.
+[2026-07-18 21:41] [AGENT] Verified one Current roadmap task, ten documented unresolved-assumption rows, required non-production/interoperability/X-Wing limitations, zero trailing-whitespace lines, valid dated log entries after the title, and clean diff whitespace; no Cargo build or test applies because the workspace has not been scaffolded.

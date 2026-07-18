@@ -14,7 +14,7 @@ The planned software will create a valid 128-member baseline MLS group, replay c
 
 ## Current status
 
-Documentation and Phase 1 ecosystem research only. ADRs now select OpenMLS 0.8.1 for the unchanged baseline, a separately gated experimental fork for hybrid modes, and a reference-only mKyber512 implementation strategy. The experimental wire format, hybrid HKDF-SHA256/AES-128-GCM wrapper, and authenticated adaptive-tree state are deliberately non-standard. There is no Cargo workspace or runnable implementation yet. See `PROJECT.md`, `docs/adr/`, and `SESSION-LOG.md` for the authoritative decisions and audit trail.
+Documentation and Phase 1 ecosystem research only. ADRs select OpenMLS 0.8.1 for the unchanged baseline, a separately gated experimental fork for hybrid modes, and a reference-only mKyber512 strategy. `SECURITY.md` now records the non-standard protocol changes, threat model, interoperability boundary, X-Wing/C2PRI limitation, and unresolved assumptions. There is no Cargo workspace or runnable implementation yet. See `PROJECT.md`, `SECURITY.md`, `docs/adr/`, and `SESSION-LOG.md` for the authoritative decisions and audit trail.
 
 ## How to use it
 
