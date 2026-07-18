@@ -2,7 +2,7 @@
 
 ## Status and Scope
 
-This repository is a thesis research prototype. It contains an upstream-only baseline MLS adapter and a typed mKyber interface, but no mKyber cryptographic backend, generated key material, or experimental result. This document defines the security claims that future work must not exceed.
+This repository is a thesis research prototype. It contains an upstream-only baseline MLS adapter and the thesis-local `mkyber512-thesis-v1` educational reference backend, but no experimental MLS integration, generated experiment result, author-compatible profile, or official vector corpus. This document defines the security claims that future work must not exceed.
 
 `BaselineBinaryMls` is intended to exercise unmodified OpenMLS 0.8.1 with RFC 9420 ciphersuite `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`. It can only be described as an RFC 9420 baseline after the upstream dependency is pinned, the baseline code is implemented without a fork, and the required regression tests pass. It is not a security certification of this repository or OpenMLS.
 
@@ -77,12 +77,14 @@ If a future thesis revision changes the KDF input, cipher suite, mKyber construc
 
 mKyber512 is a research construction with parameter values distinct from standard ML-KEM. The paper's mKyber construction has a standard non-adaptive multi-user IND-CCA security statement; the paper presents amKyber as the construction with an adaptive-corruption proof. No known attack is needed to justify this limitation: the missing proof itself is sufficient reason not to make the stronger claim, especially for potentially long-lived MLS keys. See the [mKyber paper](https://csrc.nist.gov/csrc/media/Events/2024/fifth-pqc-standardization-conference/documents/papers/how-multi-recipient-kems.pdf).
 
-The available mKyber paper overview is not sufficient to implement a byte-compatible backend by inference: it explicitly simplifies its Kyber description, including hash/PRF and representation details. Until the exact specification or a compatible licensed implementation and test material are supplied, a native backend is blocked; the project must not invent those details or treat ordinary Kyber code as mKyber512.
+The available mKyber paper overview is not sufficient to implement an author-compatible byte-level backend by inference: it explicitly simplifies its Kyber description, including hash/PRF and representation details. The generic mPKE FO source describes `G1`, `G2`, and `H` as random oracles rather than fixing concrete byte-level instantiations, while the Kyber Round-3 specification covers ordinary Kyber rather than mKyber's shortened message and recipient encoding. Until an author-approved profile or a compatible licensed implementation and test material are supplied, author-compatible mKyber512 interoperability is blocked; the project must not treat ordinary Kyber code as mKyber512.
+
+The operator has authorized a paper-based educational reference implementation for the thesis. It must implement every stated paper parameter and algorithm step, while labelling any necessary concrete mapping as thesis-local. It is not recommended for business or production use and must not claim interoperability, audit status, or a formal security proof.
 
 The future native Rust backend must never:
 
 - substitute ML-KEM, Kyber, amKyber, or an incompatible multi-recipient variant while still calling results mKyber512;
-- copy or translate the unlicensed repository-specific modifications identified in the audit;
+- adapt the author-released legacy Kyber-mKEM artifact as mKyber512; its 1,280/257-byte K=2 ciphertext layout is incompatible with the target 704/48-byte layout;
 - call project-generated deterministic fixtures official known-answer tests; or
 - report an mKyber benchmark without stating the exact backend revision, parameter set, and whether the measurement is real serialized output.
 

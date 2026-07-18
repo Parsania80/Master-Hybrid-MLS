@@ -1,6 +1,6 @@
 # ADR 0002: Implement mKyber512 as a Replaceable Reference-Only Backend
 
-**Status:** Accepted on 2026-07-18
+**Status:** Accepted; `mkyber512-thesis-v1` implemented on 2026-07-18
 **Decision scope:** mKyber implementation, provenance, parameters, and test vectors
 
 ## Context
@@ -17,6 +17,17 @@ The target is the paper's mKyber512: `q=3329`, `n=256`, `k=2`, `eta1=3`, `eta2=2
 4. Expose common and recipient components separately and assert the exact target serialized sizes (704 and 48 bytes) at the codec boundary.
 5. Generate project-owned deterministic regression vectors with a versioned generator, but label them regression vectors, never official or external KATs. An independent compatible implementation or published KAT corpus is required before adding a cross-implementation claim.
 6. Document mKyber's non-adaptive multi-user security scope. Do not claim amKyber's adaptive-corruption proof or silently replace the thesis construction with amKyber.
+
+### Educational reference profile `mkyber512-thesis-v1`
+
+The paper fixes the high-level construction and Table 1 parameters but deliberately simplifies several byte-level operations. The operator has authorized an educational thesis reference implementation, so the following project-local profile makes every such mapping explicit. It is **not** an author-approved mKyber512 wire profile and it creates no interoperability, security, audit, side-channel, or production-use claim.
+
+1. Work in `Z_3329[x]/(x^256 + 1)` with `k=2`, `eta1=3`, `eta2=2`, `du=11`, `dv=3`, 16-byte messages, a 768-byte `b`, a 704-byte `u`, and a 48-byte `v_i`. The reference arithmetic uses canonical coefficient representation and schoolbook negacyclic multiplication; it does not claim a paper-specified NTT representation.
+2. `MkyberDomain` is the public 32-byte `seedA`. Matrix expansion is SHAKE128 over a profile tag, `seedA`, row index, and column index, followed by Kyber-style 12-bit rejection sampling below `q`.
+3. `H`, `G1`, `G2`, and `KDF` use SHA3-256 with distinct ASCII profile tags. `G2` also binds the domain and the recipient's 768-byte `b`. `PRF1` and `PRF2` use SHAKE256 with distinct tags, a 32-byte seed, and a one-byte nonce; centered-binomial sampling uses the stated `eta` values.
+4. A message is encoded in coefficients 0 through 127 as zero or `(q+1)/2`; coefficients 128 through 255 are zero. Recipient serialization compresses and packs exactly those first 128 coefficients in ascending coefficient order at three bits each. Full `b` serialization packs canonical coefficients in ascending vector/coefficient order at 12 bits each; `u` packs both vector polynomials in the same order at 11 bits each.
+5. Key generation samples `s,e` with `eta1`, computes `b=A*s+e`, and stores packed `s`, packed `b`, and a 32-byte fallback value `z`. Encapsulation derives a 16-byte message from randomness, produces one `u` from `r,e'`, and produces every `v_i` from recipient-specific `e''_i`. Decapsulation recomputes both components and uses their constant-time equality result only to select the normal or fallback output.
+6. To preserve the paper's required single shared key for every valid recipient, normal output is `SHA3-256(tag || K' || domain || u)`. Invalid decapsulation returns `SHA3-256(fallback-tag || z || domain || u || v_i)`. This resolves the paper's simplified `KDF(K',ct)` notation as a thesis-local mapping; it must never be described as an author-standardized KDF input.
 
 ## Consequences
 

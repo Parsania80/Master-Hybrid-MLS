@@ -4,7 +4,7 @@
 
 ## Conclusion
 
-No maintained, compatible, and auditable Rust implementation of the thesis's mKyber512 construction was identified. The only directly relevant public implementation found is a C/AVX2 work-in-progress repository whose `K=2` parameters and ciphertext layout differ materially from the paper's mKyber512 parameters, and whose repository does not include an explicit license for its modifications.
+No maintained, compatible, and auditable Rust implementation of the thesis's mKyber512 construction was identified. The only directly relevant public implementation found is a C/AVX2 work-in-progress repository whose `K=2` parameters and ciphertext layout differ materially from the paper's mKyber512 parameters. The repository archive has no embedded license file, although its authors' associated paper describes the legacy artifact as public domain (CC0).
 
 Therefore, no third-party mKyber backend is approved for this project. Ordinary ML-KEM/Kyber, including RustCrypto's `ml-kem`, is not an mKyber substitute. A later ADR must authorize either a newly written, clearly reference-only Rust implementation from the published specification or an adapter only after a compatible implementation, its provenance, and its license have been independently established.
 
@@ -16,6 +16,16 @@ The additional primary-source search on 2026-07-18 located mKEM research and ord
 
 1. an authoritatively approved, versioned mKyber512 specification that fixes XOF/hash/PRF domains, noise sampling, rejection sampling, NTT and compression/packing, secret-key layout, Fujisaki-Okamoto fallback, and byte encoding; or
 2. an independently auditable, license-compatible mKyber512 implementation with matching test material and permission to adapt it.
+
+#### Source-chain result
+
+The cited source chain does not provide the missing profile. The generic mPKE Fujisaki-Okamoto transform used by the later research treats `G1`, `G2`, and `H` as random oracles and defines only their abstract inputs and outputs; it does not select concrete hash/XOF functions, output widths, or byte-domain encodings. The mKyber overview uses those same names while changing the message length and ciphertext layout. The CRYSTALS-Kyber Round-3 materials provide exact ordinary-Kyber primitives, serialization, and vectors, but do not define mKyber's 128-bit message hash, the `G1`/`G2` mappings, or its 128-coefficient recipient encoding. Consequently, combining these documents would create a thesis-local derived profile, not an authoritative mKyber512 specification. See the [mPKE FO transform](https://eprint.iacr.org/2022/1046.pdf) (Figure 6), the [mKyber construction and parameters](https://csrc.nist.gov/csrc/media/Events/2024/fifth-pqc-standardization-conference/documents/papers/how-multi-recipient-kems.pdf) (Section 3), and the [Kyber Round-3 resources](https://pq-crystals.org/kyber/resources.shtml).
+
+#### Author-hosted artifact check
+
+On 2026-07-18, the author-hosted `kyber-mkem.tar.bz2` archive cited by the [mPKE paper](https://eprint.iacr.org/2022/1046.pdf) remained available. That paper explicitly says that its Kyber-mKEM implementation is placed in the public domain (CC0); the served archive itself contains no root license file. Its `KYBER_K=2` parameter header fixes a 32-byte CPA message, an 800-byte public key, a 1,280-byte common component, and a 257-byte recipient component. Its vector program emits deterministic test output but contains no expected mKyber512 fixture corpus. This is author-approved evidence for a legacy Kyber-mKEM artifact only. It neither specifies nor validates the paper mKyber512 profile, whose corresponding values are 16, 768, 704, and 48 bytes. Do not adapt it as mKyber512.
+
+An additional public-release sweep on 2026-07-18 queried GitHub repositories for `mkyber`, `mkyber512`, `kyber-mkem`, and `multi-recipient kyber`, and queried crates.io for `mkyber`. The only relevant repository result was the incompatible `cryptojedi/kyber-mkem`; no `mkyber`/`mkyber512` Rust package, released byte-level profile, or compatible vector corpus was found. This is a time-bounded public-discovery result. Obtaining an author-approved compatible artifact now requires an author response or a new author-controlled release.
 
 ## Audited Target: Paper mKyber512
 
@@ -51,13 +61,13 @@ The paper describes mKyber as providing its standard multi-user IND-CCA security
 | Maintenance/release signal | The repository calls itself “Heavily Work in Progress (don't use!)”; no Rust package or release was identified. |
 | Multi-recipient API | Separate common-C1 and per-recipient-C2 encapsulation functions, with a decapsulation input comprising both components. |
 | Common-domain input | Key generation takes the same public seed for all key-pair computations, matching the general shared-matrix requirement but requiring an explicit domain identifier in any future integration. |
-| Reuse decision | Rejected: technically incompatible, not Rust, explicitly WIP, and unsuitable for source reuse until the license of the repository-specific changes is clarified. |
+| Reuse decision | Rejected: technically incompatible, not Rust, and explicitly WIP. The associated author paper describes the legacy artifact as CC0, but that does not make it mKyber512-compatible. |
 
 The implementation is a useful historical comparison, not the paper's mKyber512 backend. Its [`ref/params.h`](https://github.com/cryptojedi/kyber-mkem/blob/531bbe284bdde1e621fa470648519741db03f9ba/ref/params.h) gives, at `KYBER_K=2`, a 32-byte message, a 1,280-byte common C1, and a 257-byte per-recipient C2. Those values do not match mKyber512's 16-byte message, 704-byte `u`, or 48-byte `v_i`; measurements or vectors from this code must never be presented as mKyber512 results.
 
 #### License determination
 
-The repository has no root `LICENSE`, `COPYING`, or `NOTICE` file at the audited commit. Its [README](https://github.com/cryptojedi/kyber-mkem/blob/531bbe284bdde1e621fa470648519741db03f9ba/README.md) says that most code was inherited from public-domain/CC0 Kyber code, but that statement does not establish a license for the repository's own mKEM modifications. Do not copy, translate, vendor, or distribute those modifications unless the copyright holders provide an explicit compatible license. This is a provenance restriction, not a claim about the legal status of individual inherited files.
+The repository and author-hosted archive have no root `LICENSE`, `COPYING`, or `NOTICE` file. However, the author paper for the archive explicitly states that the Kyber-mKEM implementation is placed in the public domain (CC0). That is evidence of author intent for this legacy artifact, while the archive itself should still be pinned and independently reviewed before any future source reuse. It remains prohibited here because its construction and byte layout are incompatible with mKyber512, not because ordinary Kyber code may be relabelled as mKyber512.
 
 ### RustCrypto `ml-kem`
 

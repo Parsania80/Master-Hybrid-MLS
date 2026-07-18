@@ -7,7 +7,7 @@
 - Baseline MLS: upstream `openmls = "=0.8.1"` using `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`; a separately named, feature-gated `openmls-hybrid` fork is permitted only for experimental modes. See ADR 0001 and ADR 0003.
 - Baseline credential signer: `openmls_basic_credential = "=0.5.0"`, the upstream MIT Basic Credential signer implementation required to construct the unchanged OpenMLS baseline; no test or debug feature is enabled. See ADR 0007.
 - Baseline protocol: RFC 9420 binary TreeKEM behavior must remain available, isolated, and independently testable.
-- Experimental post-quantum component: mKyber512 parameters from the cited multi-recipient KEM research paper, isolated behind a replaceable `MultiRecipientKem` trait. Ordinary ML-KEM is not an acceptable substitute for mKyber.
+- Experimental post-quantum component: a paper-based mKyber512 educational reference profile, isolated behind a replaceable `MultiRecipientKem` trait. Ordinary ML-KEM is not an acceptable substitute for mKyber.
 - Experimental hybrid construction: classical MLS/HPKE plus reference-only mKyber512, HKDF-SHA256, and AES-128-GCM as defined in ADR 0002 and ADR 0003; experimental modes are non-interoperable research code.
 - Configuration and outputs: TOML input; CSV, JSON, Markdown, and optional SVG output; filesystem storage only and no database.
 - Randomness: deterministic seeded RNG only for tests and reproducible experiments; operating-system cryptographic RNG for non-experiment operation.
@@ -16,7 +16,7 @@
 
 ## Architecture
 
-- Current state: stable-Rust workspace scaffold with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, a validated public configuration schema, and an mKyber interface layer. The mKyber algorithm/backend, hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
+- Current state: stable-Rust workspace with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, a validated public configuration schema, and a paper-based educational mKyber512 reference backend. Hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
 - `/agent.md`: Human-agent operating protocol and documentation rules.
 - `/PROJECT.md`: Single source of truth for scope, architecture, dependency lock, and progress.
 - `/SESSION-LOG.md`: Append-only audit trail for actions, commands, results, decisions, and limitations.
@@ -32,7 +32,7 @@
 - `/configs`: Configuration guidance; runnable workload configurations are deferred until the policy and CLI tasks.
 - `/crates/experiment-config`: Validated public configuration schema with no implicit Delta and safe relative output paths.
 - `/crates/mls-adapter`: Upstream OpenMLS 0.8.1 baseline adapter for group creation/join, standard Add/remove/self-update commits, validated inbound messages, and application messages; no experimental behavior is present.
-- `/crates/mkyber`: Reference-only mKyber512 trait and typed artifact/error boundary; no cryptographic backend or ML-KEM fallback exists.
+- `/crates/mkyber`: Reference-only `mkyber512-thesis-v1` backend plus typed artifact/error boundary; it has no author-compatible interoperability claim or ML-KEM fallback.
 - `/crates/hybrid-path-secret`: Empty boundary for the experimental authenticated path-secret wrapper.
 - `/crates/adaptive-tree`: Empty boundary for binary/quaternary topology and delivery-only TreeCover state.
 - `/crates/transition-policy`: Empty boundary for ADR 0006 formulas and retirement policy.
@@ -49,7 +49,7 @@
 - Transition invariant: while transitioning, the quaternary tree produces fresh secrets and the old binary tree is delivery-only `TreeCover`; epoch secrets are derived from exactly one active root.
 - Authentication invariant: arity, transition state, tree version, deterministic leaf mapping, TreeCover version, node indices, and group-context binding are authenticated and checked for member convergence.
 - Hybrid KDF invariant: the input is `ss_classical || ss_pq || domain_separation_context`; mKyber ciphertext bytes are transmitted and authenticated but explicitly excluded from the KDF input. The context includes the label `Adaptive-Hybrid-TreeKEM-PathSecret-v1`, ciphersuite, group, epoch, tree version, current arity, path-node index, recipient-node index, and authenticated group-context hash.
-- Research boundary: every non-standard component is experimental and not production cryptography. Experimental modes must not claim RFC 9420 interoperability, a formal security proof, or automatic coverage by the X-Wing C2PRI argument.
+- Research boundary: every non-standard component is experimental thesis software for educational use only and is not recommended for business or production use. Experimental modes must not claim RFC 9420 interoperability, a formal security proof, or automatic coverage by the X-Wing C2PRI argument.
 - Measurement invariant: use actual serialized message sizes whenever possible. Any unavoidable estimate records `measured_bytes`, `estimated_bytes`, and `estimation_method`; fake or unexplained constants are forbidden.
 
 ## Roadmap
@@ -80,12 +80,27 @@
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 13 | Define the replaceable `MultiRecipientKem` trait and typed errors | ✅ Done | Defines domain-bound key/ciphertext/recipient types, fixed public component sizes, zeroized redacted secret wrappers, and object-safe keygen/encapsulation/extraction/decapsulation operations; no backend exists. |
-| 14 | Integrate an audited compatible backend or implement a clearly labeled reference-only mKyber512 research backend | 🔄 Current | Blocked pending an exact licensed mKyber512 specification or compatible audited implementation; do not infer missing backend-critical details from the simplified paper overview. |
-| 15 | Separate common and per-recipient ciphertext components and instrument their real serialized byte costs | ⬜ Todo | Do not report ordinary ML-KEM costs as mKyber measurements. |
+| 13 | Define the replaceable `MultiRecipientKem` trait and typed errors | ✅ Done | Defines domain-bound key/ciphertext/recipient types, fixed public component sizes, zeroized redacted secret wrappers, and object-safe keygen/encapsulation/extraction/decapsulation operations. |
+| 14 | Implement the paper-based, clearly labeled mKyber512 educational reference backend | ✅ Done | `mkyber512-thesis-v1` implements the paper parameters, exact 768/704/48-byte artifacts, shared-domain validation, multi-recipient agreement, and fallback selection. It is thesis-local reference code only: no business/production, interoperability, audit, or security-proof claim. |
+| 15 | Separate common and per-recipient ciphertext components and instrument their real serialized byte costs | 🔄 Current | Instrument the already-separated 704-byte common and 48-byte per-recipient serialized artifacts. Do not report ordinary ML-KEM costs as mKyber measurements. |
 | 16 | Implement deterministic test mode, OS-RNG production path, secret redaction, and zeroization where applicable | ⬜ Todo | A published experiment seed must never reconstruct private key material. |
 | 17 | Add known-answer/unit/property tests for recipient agreement, non-recipient failure, malformed ciphertexts, and deterministic reproducibility | ⬜ Todo | Include common and per-recipient tamper cases. |
 | 18 | Pass the Phase 3 formatting, strict lint, test, and standalone benchmark gate | ⬜ Todo | Report exact mKyber implementation status honestly. |
+
+#### Task 14 paper-based reference checklist
+
+Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایان نامه\related_works\3-4\how-multi-recipient-kems.pdf`, Section 3 and Table 1. Every paper-specified item below is required; this checklist does not turn paper omissions into a published standard.
+
+1. Fix the mKyber512 paper parameters: `q=3329`, `n=256`, `k=2`, `eta1=3`, `eta2=2`, `du=11`, `dv=3`, 16-byte message, 768-byte encapsulation key, 704-byte common `u`, and 48-byte recipient `v_i`.
+2. Model the public mKyber domain as a shared matrix seed `seedA` expanded by an XOF into `A`; all recipient keys in one encapsulation set must use that same domain, and keys from another domain must fail validation.
+3. Implement paper key generation: sample secret/error values, compute `b = A * s + e`, expose `b` as the 768-byte encapsulation key, and retain the secret material plus public/fallback material required by decapsulation. Do not substitute ordinary Kyber/ML-KEM/amKyber key generation.
+4. Implement paper encapsulation for a non-empty, duplicate-free recipient set: choose a 16-byte message, derive `K'`, derive shared `r,e'` from `G1`/`PRF1`, compute and compress the common `u = r * A + e'`, derive recipient-specific coins/noise with `G2(ek_i,msg)` and `PRF2`, then compute and compress each `v_i = r * b_i + e''_i + Encode(msg)`.
+5. Implement paper decapsulation: decompress `(u,v_i)`, recover and decode the message with `v_i - u * s_i`, deterministically re-encrypt the recipient component, compare the reconstructed component with the received component without exposing secret-dependent diagnostics, and select `KDF(K',ct_i)` only on a match or the paper's fallback-key KDF otherwise.
+6. Encode the multi-recipient ciphertext as one 704-byte common component plus one 48-byte component per recipient. Implement the paper's 128-coefficient recipient-component reduction and 3-bit compression, preserving canonical ordering and rejecting malformed lengths, duplicate recipients, wrong-recipient components, and domain mismatches.
+7. Before code assigns concrete bytes to `H`, `G1`, `G2`, `PRF1`, `PRF2`, `KDF`, matrix expansion, coefficient selection/order, packing, compression rounding, NTT representation, secret-key layout, or fallback serialization, record each choice in the thesis-local reference profile and ADR. The paper abstracts or simplifies these details, so such choices must be labelled thesis-local rather than author-standardized mKyber512 interoperability behavior.
+8. Keep operating-system randomness for normal reference runs and isolated deterministic randomness only for tests. Zeroize private/shared-secret buffers, redact secret-bearing debug output, and never place secrets or reconstructible entropy in logs, fixtures, or reports.
+9. Add self-consistency tests for key generation, multi-recipient agreement, extraction, malformed inputs, common/recipient tampering, wrong recipient, domain mismatch, re-encryption failure/fallback selection, exact 768/704/48-byte serialization, and deterministic test reproducibility. These are project regression tests, not official known-answer tests.
+10. Label the implementation, benchmarks, reports, and generated vectors as `educational thesis reference only`. Do not recommend it for business or production use; do not claim mKyber512 interoperability, an audit, side-channel resistance, IND-CCA security for the implementation, or any formal security proof.
 
 ### Part 4: Experimental Hybrid Path-Secret Delivery
 
@@ -166,6 +181,6 @@
 
 ---
 
-**Current:** Part 3, Task 14 — Integrate a compatible reference-only mKyber backend.
+**Current:** Part 3, Task 15 — Separate mKyber wire components and instrument their sizes.
 
-**Next:** Part 3, Task 15 — Separate mKyber wire components and instrument their sizes.
+**Next:** Part 3, Task 16 — Implement deterministic test mode, OS-RNG production path, secret redaction, and zeroization where applicable.
