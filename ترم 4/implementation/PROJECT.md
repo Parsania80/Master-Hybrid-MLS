@@ -2,7 +2,7 @@
 
 ## Tech Stack
 
-- Language: stable Rust. The repository must pin the toolchain and minimum supported Rust version after dependency selection; the available development host currently has Rust 1.93.1.
+- Language: Rust 1.93.1, pinned by `rust-toolchain.toml`; the initial workspace will set `rust-version = "1.93.1"`, edition 2021, and resolver 3. See ADR 0007.
 - Build and workspace management: Cargo workspace with `rustfmt` and Clippy as mandatory quality gates.
 - Baseline MLS: upstream `openmls = "=0.8.1"` using `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`; a separately named, feature-gated `openmls-hybrid` fork is permitted only for experimental modes. See ADR 0001 and ADR 0003.
 - Baseline protocol: RFC 9420 binary TreeKEM behavior must remain available, isolated, and independently testable.
@@ -10,7 +10,7 @@
 - Experimental hybrid construction: classical MLS/HPKE plus reference-only mKyber512, HKDF-SHA256, and AES-128-GCM as defined in ADR 0002 and ADR 0003; experimental modes are non-interoperable research code.
 - Configuration and outputs: TOML input; CSV, JSON, Markdown, and optional SVG output; filesystem storage only and no database.
 - Randomness: deterministic seeded RNG only for tests and reproducible experiments; operating-system cryptographic RNG for non-experiment operation.
-- Supporting crates: none are approved yet. CLI, serialization, error, metrics, statistics, zeroization, testing, and plotting dependencies must be added here and pinned before use.
+- Approved direct crates: exact versions and feature limits for OpenMLS, its RustCrypto provider, TLS codec, hybrid primitives, RNGs, zeroization, serialization, CLI, reports, and tests are locked in ADR 0007. No other direct crate is approved without a new ADR and log entry.
 - Dependency rule: `Cargo.lock` is committed for reproducibility. No language, framework, library, or new crate may be introduced until this section is updated and the choice is recorded in `SESSION-LOG.md`.
 
 ## Architecture
@@ -25,6 +25,8 @@
 - `/docs/research/MKYBER-IMPLEMENTATION-AUDIT.md`: Completed Task 3 audit of the paper parameters, available implementations, licenses, test-vector status, and reuse boundary.
 - `/docs/adr`: Accepted architecture decisions for the MLS base/fork boundary, mKyber strategy, ciphersuite/KDF/AEAD, hybrid wire encoding, and extension authentication.
 - `/docs/adr/0006-measurement-semantics.md`: Accepted definitions for experiment windows, impactful commits, byte-cost provenance, migration accounting, target-set aggregation, and statistics.
+- `/docs/adr/0007-toolchain-and-dependency-lock.md`: Accepted Rust toolchain pin, direct dependency allowlist, feature restrictions, license record, and compatibility-gate outcome.
+- `/rust-toolchain.toml`: Exact Rust compiler pin with required formatting and lint components.
 - `/Cargo.toml` and `/Cargo.lock` (planned): Stable-Rust workspace definition and exact reproducible dependency resolution.
 - `/configs` (planned): Default, update-only, removal-heavy, and other experiment configurations. CLI values override TOML values through one validated configuration model.
 - `/crates/mls-adapter` (planned): Thin adapter around the selected maintained MLS library. Standard binary MLS behavior remains unchanged and independently testable.
@@ -59,13 +61,13 @@
 | 4 | Write ADRs for the selected MLS base, mKyber strategy, ciphersuite/KDF/AEAD choices, wire encoding, extension authentication, and fork/module boundary | ✅ Done | ADRs 0001-0005 pin OpenMLS 0.8.1, the reference-only mKyber strategy, hybrid KDF/AEAD, wire constraints, and private-use authenticated state. |
 | 5 | Specify every non-standard protocol change, threat, interoperability limitation, and unresolved thesis assumption in `SECURITY.md` | ✅ Done | `SECURITY.md` documents the experimental boundary, KDF ciphertext exclusion, X-Wing/C2PRI limitation, redaction rules, and SEC-01 through SEC-10 closure criteria. |
 | 6 | Resolve measurement semantics and ambiguities before scaffolding | ✅ Done | ADR 0006 defines windows, Delta precedence, preflight/actual transition costs, impactful commits, target-set aggregation, mapping/TreeCover rules, warmups, repetitions, and statistics. |
-| 7 | Lock the toolchain and approved dependencies, then run the Phase 1 documentation and compatibility gate | 🔄 Current | Record exact commands, results, changed files, and remaining limitations. |
+| 7 | Lock the toolchain and approved dependencies, then run the Phase 1 documentation and compatibility gate | ✅ Done | Rust 1.93.1 and the exact direct dependency allowlist are locked in ADR 0007; Cargo resolution is intentionally deferred until Task 8 creates the workspace. |
 
 ### Part 2: Baseline Binary MLS
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 8 | Scaffold the Cargo workspace and crate boundaries without experimental behavior in the baseline path | ⬜ Todo | Preserve dependency and feature isolation. |
+| 8 | Scaffold the Cargo workspace and crate boundaries without experimental behavior in the baseline path | 🔄 Current | Preserve dependency and feature isolation. |
 | 9 | Implement the maintained-library adapter for normal RFC 9420 proposals, commits, UpdatePath processing, and application messages | ⬜ Todo | Baseline behavior must remain unchanged. |
 | 10 | Create a small group, add/remove/update members through valid MLS operations, and deliver each commit to every valid member | ⬜ Todo | Use multiple valid committers. |
 | 11 | Add independent baseline integration/regression tests for convergence, tree hashes, epochs, group contexts, and message encryption/decryption | ⬜ Todo | Retain upstream baseline tests where a fork is required. |
@@ -161,6 +163,6 @@
 
 ---
 
-**Current:** Part 1, Task 7 — Lock the toolchain and approved dependencies, then run the Phase 1 documentation and compatibility gate.
+**Current:** Part 2, Task 8 — Scaffold the stable-Rust workspace, crate boundaries, configuration model, and safe output layout.
 
-**Next:** Part 2, Task 8 — Scaffold the stable-Rust workspace, crate boundaries, configuration model, and safe output layout.
+**Next:** Part 2, Task 9 — Implement the maintained-library adapter for normal RFC 9420 operations.
