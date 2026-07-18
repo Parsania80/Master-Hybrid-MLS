@@ -14,11 +14,11 @@ The planned software will create a valid 128-member baseline MLS group, replay c
 
 ## Current status
 
-The Rust workspace is scaffolded and pins the approved dependencies, but it contains no MLS group lifecycle, mKyber implementation, hybrid path-secret delivery, adaptive transition, or runnable experiment yet. ADRs select OpenMLS 0.8.1 for the unchanged future baseline, a separately gated experimental fork for hybrid modes, and a reference-only mKyber512 strategy. `SECURITY.md` records the non-standard protocol changes, threat model, interoperability boundary, X-Wing/C2PRI limitation, and unresolved assumptions. See `PROJECT.md`, `SECURITY.md`, `docs/adr/`, and `SESSION-LOG.md` for the authoritative decisions and audit trail.
+The Rust workspace pins the approved dependencies and now contains an unchanged OpenMLS 0.8.1 baseline adapter. It can create and join a standard group, stage and merge normal Add/self-update commits, process standard messages, and encrypt application data. mKyber, hybrid path-secret delivery, adaptive transition, and a runnable experiment remain unimplemented. `SECURITY.md` records the non-standard protocol changes, threat model, interoperability boundary, X-Wing/C2PRI limitation, and unresolved assumptions. See `PROJECT.md`, `SECURITY.md`, `docs/adr/`, and `SESSION-LOG.md` for the authoritative decisions and audit trail.
 
 ## How to use it
 
-There is nothing to build or run yet. The current task is to select a maintained Rust MLS foundation and a defensible extension boundary before scaffolding code. Reproducible Cargo commands will be added only after the toolchain and dependencies are pinned.
+Run `cargo +stable test -p mls-adapter --all-targets --locked` to verify the current baseline adapter. There is not yet a user-facing CLI, 128-member bootstrap, or experiment runner.
 
 ## Security and interoperability warning
 

@@ -25,6 +25,7 @@ All production dependencies use an exact `=` version requirement. The feature se
 |---|---:|---|---|
 | `openmls` | 0.8.1 | Unchanged RFC 9420 baseline; `default-features = false`, `openmls_rust_crypto` only | MIT |
 | `openmls_rust_crypto` | 0.5.1 | Matching OpenMLS RustCrypto provider | MIT |
+| `openmls_basic_credential` | 0.5.0 | Upstream Basic Credential signer needed to construct the unchanged baseline; no optional features | MIT |
 | `tls_codec` | 0.4.2 | Canonical TLS encoding for forked experimental wire data; `derive`, `mls` | Apache-2.0 OR MIT |
 | `hkdf` | 0.12.4 | ADR 0003 hybrid KDF | MIT OR Apache-2.0 |
 | `sha2` | 0.10.9 | SHA-256 / HKDF support | MIT OR Apache-2.0 |
@@ -53,6 +54,7 @@ All production dependencies use an exact `=` version requirement. The feature se
 ### Feature and provenance constraints
 
 - Do not enable OpenMLS `content-debug`, `crypto-debug`, `test-utils`, SQLite, libcrux, or JavaScript features in normal or release builds. Test-only feature use requires a documented reason and must not reach experiment binaries.
+- `openmls_basic_credential` is approved only for its upstream `SignatureKeyPair` implementation in the baseline adapter; do not enable its `clonable` or `test-utils` features.
 - `openmls-hybrid` is a local, separately named fork based on the `openmls-v0.8.1` tag. It is not a crates.io dependency and must retain upstream license/notice material.
 - No ML-KEM, Kyber, mKyber, native-code, database, telemetry, plotting, statistics, or logging crate is approved by this ADR. In particular, ordinary ML-KEM remains prohibited as an mKyber substitute.
 - All manifest versions must be exact. `Cargo.lock` is generated and committed in Task 8; direct or transitive updates require an explicit review, lockfile diff, and `SESSION-LOG.md` entry.

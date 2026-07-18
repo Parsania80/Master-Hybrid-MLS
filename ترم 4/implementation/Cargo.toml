@@ -25,6 +25,7 @@ csv = "=1.4.0"
 hex = "=0.4.3"
 hkdf = "=0.12.4"
 openmls = { version = "=0.8.1", default-features = false, features = ["openmls_rust_crypto"] }
+openmls_basic_credential = "=0.5.0"
 openmls_rust_crypto = "=0.5.1"
 proptest = "=1.11.0"
 rand = "=0.8.5"

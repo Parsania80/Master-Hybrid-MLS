@@ -5,6 +5,7 @@
 - Language: Rust 1.93.1, pinned by `rust-toolchain.toml`; the initial workspace will set `rust-version = "1.93.1"`, edition 2021, and resolver 3. See ADR 0007.
 - Build and workspace management: Cargo workspace with `rustfmt` and Clippy as mandatory quality gates.
 - Baseline MLS: upstream `openmls = "=0.8.1"` using `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`; a separately named, feature-gated `openmls-hybrid` fork is permitted only for experimental modes. See ADR 0001 and ADR 0003.
+- Baseline credential signer: `openmls_basic_credential = "=0.5.0"`, the upstream MIT Basic Credential signer implementation required to construct the unchanged OpenMLS baseline; no test or debug feature is enabled. See ADR 0007.
 - Baseline protocol: RFC 9420 binary TreeKEM behavior must remain available, isolated, and independently testable.
 - Experimental post-quantum component: mKyber512 parameters from the cited multi-recipient KEM research paper, isolated behind a replaceable `MultiRecipientKem` trait. Ordinary ML-KEM is not an acceptable substitute for mKyber.
 - Experimental hybrid construction: classical MLS/HPKE plus reference-only mKyber512, HKDF-SHA256, and AES-128-GCM as defined in ADR 0002 and ADR 0003; experimental modes are non-interoperable research code.
@@ -15,7 +16,7 @@
 
 ## Architecture
 
-- Current state: stable-Rust workspace scaffold only. It contains a validated public configuration schema and empty crate boundaries, but no MLS group lifecycle, mKyber algorithm, hybrid delivery, adaptive transition, tests, or generated results.
+- Current state: stable-Rust workspace scaffold with a maintained-library baseline MLS adapter and validated public configuration schema. The mKyber algorithm, hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
 - `/agent.md`: Human-agent operating protocol and documentation rules.
 - `/PROJECT.md`: Single source of truth for scope, architecture, dependency lock, and progress.
 - `/SESSION-LOG.md`: Append-only audit trail for actions, commands, results, decisions, and limitations.
@@ -30,7 +31,7 @@
 - `/Cargo.toml` and `/Cargo.lock`: Stable-Rust workspace definition and exact reproducible dependency resolution.
 - `/configs`: Configuration guidance; runnable workload configurations are deferred until the policy and CLI tasks.
 - `/crates/experiment-config`: Validated public configuration schema with no implicit Delta and safe relative output paths.
-- `/crates/mls-adapter`: Empty boundary for the selected maintained MLS library; standard behavior implementation is deferred to Task 9.
+- `/crates/mls-adapter`: Upstream OpenMLS 0.8.1 baseline adapter for group creation/join, standard Add and self-update commits, validated inbound messages, and application messages; no experimental behavior is present.
 - `/crates/mkyber`: Empty reference-only mKyber512 boundary; no ML-KEM fallback exists.
 - `/crates/hybrid-path-secret`: Empty boundary for the experimental authenticated path-secret wrapper.
 - `/crates/adaptive-tree`: Empty boundary for binary/quaternary topology and delivery-only TreeCover state.
@@ -69,8 +70,8 @@
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | 8 | Scaffold the Cargo workspace and crate boundaries without experimental behavior in the baseline path | ✅ Done | Workspace, exact lockfile, safe output/report layout, and validated public configuration schema exist; no protocol behavior is implemented. |
-| 9 | Implement the maintained-library adapter for normal RFC 9420 proposals, commits, UpdatePath processing, and application messages | 🔄 Current | Baseline behavior must remain unchanged. |
-| 10 | Create a small group, add/remove/update members through valid MLS operations, and deliver each commit to every valid member | ⬜ Todo | Use multiple valid committers. |
+| 9 | Implement the maintained-library adapter for normal RFC 9420 proposals, commits, UpdatePath processing, and application messages | ✅ Done | `mls-adapter` uses upstream OpenMLS 0.8.1 only, fixes ciphersuite 0x0001, serializes standard messages, and covers Add/Welcome, application, and self-update UpdatePath convergence. |
+| 10 | Create a small group, add/remove/update members through valid MLS operations, and deliver each commit to every valid member | 🔄 Current | Use multiple valid committers. |
 | 11 | Add independent baseline integration/regression tests for convergence, tree hashes, epochs, group contexts, and message encryption/decryption | ⬜ Todo | Retain upstream baseline tests where a fork is required. |
 | 12 | Pass the Phase 2 formatting, strict lint, unit, integration, and baseline regression gate | ⬜ Todo | Log exact commands and raw outcome summaries. |
 
@@ -164,6 +165,6 @@
 
 ---
 
-**Current:** Part 2, Task 9 — Implement the maintained-library adapter for normal RFC 9420 operations.
+**Current:** Part 2, Task 10 — Create a small group and deliver valid multi-committer MLS operations.
 
-**Next:** Part 2, Task 10 — Create a small group and deliver valid multi-committer MLS operations.
+**Next:** Part 2, Task 11 — Add independent baseline integration and regression tests.

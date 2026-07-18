@@ -6,6 +6,7 @@ version.workspace = true
 
 [dependencies]
 openmls.workspace = true
+openmls_basic_credential.workspace = true
 openmls_rust_crypto.workspace = true
 thiserror.workspace = true
 
