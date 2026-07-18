@@ -4,10 +4,10 @@
 
 - Language: stable Rust. The repository must pin the toolchain and minimum supported Rust version after dependency selection; the available development host currently has Rust 1.93.1.
 - Build and workspace management: Cargo workspace with `rustfmt` and Clippy as mandatory quality gates.
-- Baseline MLS: no library is approved yet. OpenMLS 0.8.1 and `mls-rs` are the Phase 1 candidates; an architecture decision record (ADR) must select and pin one before code depends on it.
+- Baseline MLS: upstream `openmls = "=0.8.1"` using `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`; a separately named, feature-gated `openmls-hybrid` fork is permitted only for experimental modes. See ADR 0001 and ADR 0003.
 - Baseline protocol: RFC 9420 binary TreeKEM behavior must remain available, isolated, and independently testable.
 - Experimental post-quantum component: mKyber512 parameters from the cited multi-recipient KEM research paper, isolated behind a replaceable `MultiRecipientKem` trait. Ordinary ML-KEM is not an acceptable substitute for mKyber.
-- Experimental hybrid construction: classical MLS/HPKE plus mKyber, with HKDF and AEAD choices inherited from the selected MLS ciphersuite unless the Phase 1 ADR explicitly justifies a different construction.
+- Experimental hybrid construction: classical MLS/HPKE plus reference-only mKyber512, HKDF-SHA256, and AES-128-GCM as defined in ADR 0002 and ADR 0003; experimental modes are non-interoperable research code.
 - Configuration and outputs: TOML input; CSV, JSON, Markdown, and optional SVG output; filesystem storage only and no database.
 - Randomness: deterministic seeded RNG only for tests and reproducible experiments; operating-system cryptographic RNG for non-experiment operation.
 - Supporting crates: none are approved yet. CLI, serialization, error, metrics, statistics, zeroization, testing, and plotting dependencies must be added here and pinned before use.
@@ -22,7 +22,7 @@
 - `/README.md`: Plain-language project purpose, status, security warning, and high-level usage.
 - `/docs/research/MLS-CANDIDATE-COMPARISON.md`: Completed Task 2 source-level comparison of OpenMLS and `mls-rs`; this is evidence for a future ADR, not a dependency selection.
 - `/docs/research/MKYBER-IMPLEMENTATION-AUDIT.md`: Completed Task 3 audit of the paper parameters, available implementations, licenses, test-vector status, and reuse boundary.
-- `/docs/adr` (planned): Architecture decisions, including the MLS library, extension seam, mKyber implementation strategy, wire encoding, and measurement methodology.
+- `/docs/adr`: Accepted architecture decisions for the MLS base/fork boundary, mKyber strategy, ciphersuite/KDF/AEAD, hybrid wire encoding, and extension authentication.
 - `/Cargo.toml` and `/Cargo.lock` (planned): Stable-Rust workspace definition and exact reproducible dependency resolution.
 - `/configs` (planned): Default, update-only, removal-heavy, and other experiment configurations. CLI values override TOML values through one validated configuration model.
 - `/crates/mls-adapter` (planned): Thin adapter around the selected maintained MLS library. Standard binary MLS behavior remains unchanged and independently testable.
@@ -54,8 +54,8 @@
 | 1 | Capture the complete thesis requirements, audit the greenfield directory, and initialize governed documentation | ✅ Done | No implementation artifacts exist; documentation status must not imply otherwise. |
 | 2 | Compare maintained Rust MLS candidates and identify the least invasive UpdatePath, extension, serialization, and instrumentation seams | ✅ Done | Both require an experimental fork for UpdatePath changes; OpenMLS is the preliminary recommendation for Task 4. See `docs/research/MLS-CANDIDATE-COMPARISON.md`. |
 | 3 | Audit the mKyber paper, parameter set, available implementations, licenses, test vectors, and reuse options | ✅ Done | No compatible maintained Rust backend was found. The relevant public C WIP is parameter-incompatible and lacks an explicit repository license for its modifications; see `docs/research/MKYBER-IMPLEMENTATION-AUDIT.md`. |
-| 4 | Write ADRs for the selected MLS base, mKyber strategy, ciphersuite/KDF/AEAD choices, wire encoding, extension authentication, and fork/module boundary | 🔄 Current | Pin exact versions only after the decisions are evidence-backed. |
-| 5 | Specify every non-standard protocol change, threat, interoperability limitation, and unresolved thesis assumption in `SECURITY.md` | ⬜ Todo | Prominently document PQ-ciphertext KDF exclusion and the X-Wing proof limitation. |
+| 4 | Write ADRs for the selected MLS base, mKyber strategy, ciphersuite/KDF/AEAD choices, wire encoding, extension authentication, and fork/module boundary | ✅ Done | ADRs 0001-0005 pin OpenMLS 0.8.1, the reference-only mKyber strategy, hybrid KDF/AEAD, wire constraints, and private-use authenticated state. |
+| 5 | Specify every non-standard protocol change, threat, interoperability limitation, and unresolved thesis assumption in `SECURITY.md` | 🔄 Current | Prominently document PQ-ciphertext KDF exclusion and the X-Wing proof limitation. |
 | 6 | Resolve measurement semantics and ambiguities before scaffolding | ⬜ Todo | Define window length, Delta precedence, pre-transition cost measurement, effective commits, target-set aggregation, leaf mapping, TreeCover construction, warmups, repetitions, and standard-deviation convention. |
 | 7 | Lock the toolchain and approved dependencies, then run the Phase 1 documentation and compatibility gate | ⬜ Todo | Record exact commands, results, changed files, and remaining limitations. |
 
@@ -159,6 +159,6 @@
 
 ---
 
-**Current:** Part 1, Task 4 — Write evidence-backed ADRs for the selected MLS base and experimental boundaries.
+**Current:** Part 1, Task 5 — Specify all non-standard protocol changes, threat limitations, and unresolved assumptions in `SECURITY.md`.
 
-**Next:** Part 1, Task 5 — Specify all non-standard protocol changes, threat limitations, and unresolved assumptions in `SECURITY.md`.
+**Next:** Part 1, Task 6 — Resolve measurement semantics and ambiguities before scaffolding.
