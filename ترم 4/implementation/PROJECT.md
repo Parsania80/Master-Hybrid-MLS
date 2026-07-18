@@ -16,7 +16,7 @@
 
 ## Architecture
 
-- Current state: stable-Rust workspace scaffold with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, and validated public configuration schema. The mKyber algorithm, hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
+- Current state: stable-Rust workspace scaffold with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, a validated public configuration schema, and an mKyber interface layer. The mKyber algorithm/backend, hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
 - `/agent.md`: Human-agent operating protocol and documentation rules.
 - `/PROJECT.md`: Single source of truth for scope, architecture, dependency lock, and progress.
 - `/SESSION-LOG.md`: Append-only audit trail for actions, commands, results, decisions, and limitations.
@@ -32,7 +32,7 @@
 - `/configs`: Configuration guidance; runnable workload configurations are deferred until the policy and CLI tasks.
 - `/crates/experiment-config`: Validated public configuration schema with no implicit Delta and safe relative output paths.
 - `/crates/mls-adapter`: Upstream OpenMLS 0.8.1 baseline adapter for group creation/join, standard Add/remove/self-update commits, validated inbound messages, and application messages; no experimental behavior is present.
-- `/crates/mkyber`: Empty reference-only mKyber512 boundary; no ML-KEM fallback exists.
+- `/crates/mkyber`: Reference-only mKyber512 trait and typed artifact/error boundary; no cryptographic backend or ML-KEM fallback exists.
 - `/crates/hybrid-path-secret`: Empty boundary for the experimental authenticated path-secret wrapper.
 - `/crates/adaptive-tree`: Empty boundary for binary/quaternary topology and delivery-only TreeCover state.
 - `/crates/transition-policy`: Empty boundary for ADR 0006 formulas and retirement policy.
@@ -80,8 +80,8 @@
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 13 | Define the replaceable `MultiRecipientKem` trait and typed errors | 🔄 Current | Cover keygen, set encapsulation, per-recipient extraction, and decapsulation. |
-| 14 | Integrate an audited compatible backend or implement a clearly labeled reference-only mKyber512 research backend | ⬜ Todo | Reference code is unsuitable for production and must remain replaceable. |
+| 13 | Define the replaceable `MultiRecipientKem` trait and typed errors | ✅ Done | Defines domain-bound key/ciphertext/recipient types, fixed public component sizes, zeroized redacted secret wrappers, and object-safe keygen/encapsulation/extraction/decapsulation operations; no backend exists. |
+| 14 | Integrate an audited compatible backend or implement a clearly labeled reference-only mKyber512 research backend | 🔄 Current | Reference code is unsuitable for production and must remain replaceable. |
 | 15 | Separate common and per-recipient ciphertext components and instrument their real serialized byte costs | ⬜ Todo | Do not report ordinary ML-KEM costs as mKyber measurements. |
 | 16 | Implement deterministic test mode, OS-RNG production path, secret redaction, and zeroization where applicable | ⬜ Todo | A published experiment seed must never reconstruct private key material. |
 | 17 | Add known-answer/unit/property tests for recipient agreement, non-recipient failure, malformed ciphertexts, and deterministic reproducibility | ⬜ Todo | Include common and per-recipient tamper cases. |
@@ -166,6 +166,6 @@
 
 ---
 
-**Current:** Part 3, Task 13 — Define the replaceable mKyber abstraction and typed errors.
+**Current:** Part 3, Task 14 — Integrate a compatible reference-only mKyber backend.
 
-**Next:** Part 3, Task 14 — Integrate a compatible reference-only mKyber backend.
+**Next:** Part 3, Task 15 — Separate mKyber wire components and instrument their sizes.

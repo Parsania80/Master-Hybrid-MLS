@@ -14,11 +14,11 @@ The planned software will create a valid 128-member baseline MLS group, replay c
 
 ## Current status
 
-The Rust workspace pins the approved dependencies and now contains an unchanged OpenMLS 0.8.1 baseline adapter. It can create and join a standard group, stage and merge normal Add/remove/self-update commits from multiple members, process standard messages, and encrypt application data. Independent regression tests verify epoch, authenticated GroupContext, RFC tree-hash convergence, and application delivery. The Phase 2 quality gate has passed on Rust 1.93.1. mKyber, hybrid path-secret delivery, adaptive transition, and a runnable experiment remain unimplemented. `SECURITY.md` records the non-standard protocol changes, threat model, interoperability boundary, X-Wing/C2PRI limitation, and unresolved assumptions. See `PROJECT.md`, `SECURITY.md`, `docs/adr/`, and `SESSION-LOG.md` for the authoritative decisions and audit trail.
+The Rust workspace pins the approved dependencies and now contains an unchanged OpenMLS 0.8.1 baseline adapter. It can create and join a standard group, stage and merge normal Add/remove/self-update commits from multiple members, process standard messages, and encrypt application data. Independent regression tests verify epoch, authenticated GroupContext, RFC tree-hash convergence, and application delivery. The Phase 2 quality gate has passed on Rust 1.93.1. The mKyber crate now defines a reference-only interface and validated public artifact types, but no mKyber cryptographic backend exists. Hybrid path-secret delivery, adaptive transition, and a runnable experiment remain unimplemented. `SECURITY.md` records the non-standard protocol changes, threat model, interoperability boundary, X-Wing/C2PRI limitation, and unresolved assumptions. See `PROJECT.md`, `SECURITY.md`, `docs/adr/`, and `SESSION-LOG.md` for the authoritative decisions and audit trail.
 
 ## How to use it
 
-Run `cargo +stable test -p mls-adapter --all-targets --locked` to verify the current baseline adapter. There is not yet a user-facing CLI, 128-member bootstrap, or experiment runner.
+Run `cargo +stable test --workspace --all-targets --locked --offline` to verify the current baseline and mKyber-interface tests. There is not yet a user-facing CLI, mKyber backend, 128-member bootstrap, or experiment runner.
 
 ## Security and interoperability warning
 
