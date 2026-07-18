@@ -14,7 +14,7 @@ The planned software will create a valid 128-member baseline MLS group, replay c
 
 ## Current status
 
-Documentation and Phase 1 ecosystem research only. Task 2 compared OpenMLS and `mls-rs` at source level and carried OpenMLS forward as a preliminary recommendation, not a selected dependency. Task 3 now audits mKyber options. There is no Cargo workspace or runnable implementation yet. See `PROJECT.md` for the authoritative roadmap and `SESSION-LOG.md` for the append-only audit trail.
+Documentation and Phase 1 ecosystem research only. Task 2 compared OpenMLS and `mls-rs` at source level and carried OpenMLS forward as a preliminary recommendation, not a selected dependency. Task 3 found no compatible maintained Rust mKyber backend; the relevant C work-in-progress is parameter-incompatible and is not approved for reuse. There is no Cargo workspace or runnable implementation yet. See `PROJECT.md` for the authoritative roadmap, `docs/research/MKYBER-IMPLEMENTATION-AUDIT.md` for the evidence, and `SESSION-LOG.md` for the append-only audit trail.
 
 ## How to use it
 

@@ -21,6 +21,7 @@
 - `/SESSION-LOG.md`: Append-only audit trail for actions, commands, results, decisions, and limitations.
 - `/README.md`: Plain-language project purpose, status, security warning, and high-level usage.
 - `/docs/research/MLS-CANDIDATE-COMPARISON.md`: Completed Task 2 source-level comparison of OpenMLS and `mls-rs`; this is evidence for a future ADR, not a dependency selection.
+- `/docs/research/MKYBER-IMPLEMENTATION-AUDIT.md`: Completed Task 3 audit of the paper parameters, available implementations, licenses, test-vector status, and reuse boundary.
 - `/docs/adr` (planned): Architecture decisions, including the MLS library, extension seam, mKyber implementation strategy, wire encoding, and measurement methodology.
 - `/Cargo.toml` and `/Cargo.lock` (planned): Stable-Rust workspace definition and exact reproducible dependency resolution.
 - `/configs` (planned): Default, update-only, removal-heavy, and other experiment configurations. CLI values override TOML values through one validated configuration model.
@@ -52,8 +53,8 @@
 |---|------|--------|-------|
 | 1 | Capture the complete thesis requirements, audit the greenfield directory, and initialize governed documentation | ✅ Done | No implementation artifacts exist; documentation status must not imply otherwise. |
 | 2 | Compare maintained Rust MLS candidates and identify the least invasive UpdatePath, extension, serialization, and instrumentation seams | ✅ Done | Both require an experimental fork for UpdatePath changes; OpenMLS is the preliminary recommendation for Task 4. See `docs/research/MLS-CANDIDATE-COMPARISON.md`. |
-| 3 | Audit the mKyber paper, parameter set, available implementations, licenses, test vectors, and reuse options | 🔄 Current | Confirm whether any compatible audited Rust implementation exists; never silently substitute ordinary ML-KEM. |
-| 4 | Write ADRs for the selected MLS base, mKyber strategy, ciphersuite/KDF/AEAD choices, wire encoding, extension authentication, and fork/module boundary | ⬜ Todo | Pin exact versions only after the decisions are evidence-backed. |
+| 3 | Audit the mKyber paper, parameter set, available implementations, licenses, test vectors, and reuse options | ✅ Done | No compatible maintained Rust backend was found. The relevant public C WIP is parameter-incompatible and lacks an explicit repository license for its modifications; see `docs/research/MKYBER-IMPLEMENTATION-AUDIT.md`. |
+| 4 | Write ADRs for the selected MLS base, mKyber strategy, ciphersuite/KDF/AEAD choices, wire encoding, extension authentication, and fork/module boundary | 🔄 Current | Pin exact versions only after the decisions are evidence-backed. |
 | 5 | Specify every non-standard protocol change, threat, interoperability limitation, and unresolved thesis assumption in `SECURITY.md` | ⬜ Todo | Prominently document PQ-ciphertext KDF exclusion and the X-Wing proof limitation. |
 | 6 | Resolve measurement semantics and ambiguities before scaffolding | ⬜ Todo | Define window length, Delta precedence, pre-transition cost measurement, effective commits, target-set aggregation, leaf mapping, TreeCover construction, warmups, repetitions, and standard-deviation convention. |
 | 7 | Lock the toolchain and approved dependencies, then run the Phase 1 documentation and compatibility gate | ⬜ Todo | Record exact commands, results, changed files, and remaining limitations. |
@@ -158,6 +159,6 @@
 
 ---
 
-**Current:** Part 1, Task 3 — Audit mKyber implementations, parameters, licenses, test vectors, and reuse options.
+**Current:** Part 1, Task 4 — Write evidence-backed ADRs for the selected MLS base and experimental boundaries.
 
-**Next:** Part 1, Task 4 — Write evidence-backed ADRs for the selected MLS base and experimental boundaries.
+**Next:** Part 1, Task 5 — Specify all non-standard protocol changes, threat limitations, and unresolved assumptions in `SECURITY.md`.
