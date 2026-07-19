@@ -1,6 +1,6 @@
 # ADR 0004: Use a Versioned Hybrid UpdatePath Encoding Inside Experimental Commits
 
-**Status:** Accepted on 2026-07-18
+**Status:** Accepted; Task 19 wire boundary implemented on 2026-07-19
 **Decision scope:** Experimental wire encoding and serialization
 
 ## Context

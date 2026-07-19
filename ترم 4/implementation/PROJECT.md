@@ -16,7 +16,7 @@
 
 ## Architecture
 
-- Current state: stable-Rust workspace with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, a validated public configuration schema, a paper-based educational mKyber512 reference backend, and a standalone reference timing smoke benchmark. Hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
+- Current state: stable-Rust workspace with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, a validated public configuration schema, a paper-based educational mKyber512 reference backend, a standalone reference timing smoke benchmark, and a canonical hybrid-path wire boundary. Hybrid AEAD/KDF delivery, MLS fork integration, adaptive transition, experiment runner, and generated results remain unimplemented.
 - `/agent.md`: Human-agent operating protocol and documentation rules.
 - `/PROJECT.md`: Single source of truth for scope, architecture, dependency lock, and progress.
 - `/SESSION-LOG.md`: Append-only audit trail for actions, commands, results, decisions, and limitations.
@@ -34,7 +34,7 @@
 - `/crates/mls-adapter`: Upstream OpenMLS 0.8.1 baseline adapter for group creation/join, standard Add/remove/self-update commits, validated inbound messages, and application messages; no experimental behavior is present.
 - `/crates/mkyber`: Reference-only `mkyber512-thesis-v1` backend plus typed artifact/error boundary; it has no author-compatible interoperability claim or ML-KEM fallback.
 - `/crates/mkyber/src/bin/mkyber_benchmark.rs`: Release-mode standalone timing smoke benchmark for the educational backend; prints only public component byte costs and environment-dependent timing aggregates.
-- `/crates/hybrid-path-secret`: Empty boundary for the experimental authenticated path-secret wrapper.
+- `/crates/hybrid-path-secret`: Canonical, validated Task 19 `HybridPathCiphertext` wire boundary with no KDF, AEAD, or OpenMLS-fork integration yet.
 - `/crates/adaptive-tree`: Empty boundary for binary/quaternary topology and delivery-only TreeCover state.
 - `/crates/transition-policy`: Empty boundary for ADR 0006 formulas and retirement policy.
 - `/crates/metrics`: Empty typed measurement-record boundary.
@@ -107,8 +107,8 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 19 | Define and authenticate `HybridPathCiphertext` with classical, PQ common, PQ recipient, encrypted-secret, and node-index fields | 🔄 Current | PQ ciphertext is present on the wire. |
-| 20 | Implement canonical domain-separation context encoding and the hybrid KDF input builder | ⬜ Todo | Bind all mandatory MLS/tree fields and reject ambiguous encodings. |
+| 19 | Define and authenticate `HybridPathCiphertext` with classical, PQ common, PQ recipient, encrypted-secret, and node-index fields | ✅ Done | Canonical TLS codec has version, path node, domain, one 704-byte common component, ordered recipient records with 32-byte classical encapsulation, 48-byte mKyber recipient component, and 48-byte encrypted path-secret field. It exposes bytes that a future experimental commit must authenticate; KDF/AEAD/fork integration remain deferred. |
+| 20 | Implement canonical domain-separation context encoding and the hybrid KDF input builder | 🔄 Current | Bind all mandatory MLS/tree fields and reject ambiguous encodings. |
 | 21 | Integrate classical HPKE and one mKyber shared secret per co-path resolution into each experimental UpdatePath level | ⬜ Todo | Baseline mode bypasses this module. |
 | 22 | Prove by focused tests/instrumentation that PQ ciphertext is excluded from KDF input while still serialized and authenticated | ⬜ Todo | Never expose the underlying secrets in logs or fixtures. |
 | 23 | Add recipient/non-recipient, tamper, and cross-group/epoch/tree-version/node replay tests | ⬜ Todo | Classical, PQ common, PQ recipient, and AEAD changes must fail safely. |
@@ -182,6 +182,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 4, Task 19 — Define and authenticate `HybridPathCiphertext` with classical, PQ common, PQ recipient, encrypted-secret, and node-index fields.
+**Current:** Part 4, Task 20 — Implement canonical domain-separation context encoding and the hybrid KDF input builder.
 
-**Next:** Part 4, Task 20 — Implement canonical domain-separation context encoding and the hybrid KDF input builder.
+**Next:** Part 4, Task 21 — Integrate classical HPKE and one mKyber shared secret per co-path resolution into each experimental UpdatePath level.

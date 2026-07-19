@@ -2,7 +2,7 @@
 
 ## Status and Scope
 
-This repository is a thesis research prototype. It contains an upstream-only baseline MLS adapter and the thesis-local `mkyber512-thesis-v1` educational reference backend, but no experimental MLS integration, generated experiment result, author-compatible profile, or official vector corpus. This document defines the security claims that future work must not exceed.
+This repository is a thesis research prototype. It contains an upstream-only baseline MLS adapter, the thesis-local `mkyber512-thesis-v1` educational reference backend, and a canonical hybrid-path wire boundary. It has no hybrid KDF/AEAD or experimental MLS integration, generated experiment result, author-compatible profile, or official vector corpus. This document defines the security claims that future work must not exceed.
 
 `BaselineBinaryMls` is intended to exercise unmodified OpenMLS 0.8.1 with RFC 9420 ciphersuite `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`. It can only be described as an RFC 9420 baseline after the upstream dependency is pinned, the baseline code is implemented without a fork, and the required regression tests pass. It is not a security certification of this repository or OpenMLS.
 
