@@ -60,7 +60,7 @@ fn main() -> ExitCode {
         Ok((mut clients, result)) => match verify_bootstrap_128(&mut clients) {
             Ok(verification) => {
                 let snapshot = public_bootstrap_snapshot(&options, &result, &verification);
-                let summary = bootstrap_summary(&options, &result, &verification);
+                let summary = bootstrap_summary(&options, &result, &verification, &cli.output);
                 drop(clients);
                 match (snapshot, summary) {
                     (Ok(snapshot), Ok(summary)) => {

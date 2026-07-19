@@ -205,10 +205,43 @@ pub struct BootstrapSummary {
     pub configuration: PublicSnapshotConfiguration,
     /// Public schedule-only reproducibility information.
     pub reproducibility: PublicSnapshotReproducibility,
+    /// Public build and invocation provenance for reproducibility review.
+    pub provenance: PublicBootstrapProvenance,
     /// Verified public MLS state needed to identify the run.
     pub group: BootstrapSummaryGroup,
     /// Aggregate public delivery and byte observations.
     pub delivery: BootstrapSummaryDelivery,
+}
+
+/// Stable public provenance that identifies this build without recording
+/// secrets, private filesystem state, or arbitrary environment variables.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PublicBootstrapProvenance {
+    /// Exact public command represented by the emitted artifact set.
+    pub command: String,
+    /// Rust compiler version used to build this executable.
+    pub rustc_version: String,
+    /// Root package version embedded by Cargo.
+    pub package_version: String,
+    /// Pinned direct dependency versions relevant to the baseline artifact.
+    pub direct_dependency_versions: PublicDirectDependencyVersions,
+}
+
+/// Pinned direct dependency versions represented in public provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PublicDirectDependencyVersions {
+    /// Maintained RFC 9420 implementation used by the baseline adapter.
+    pub openmls: String,
+    /// OpenMLS RustCrypto provider used by the baseline adapter.
+    pub openmls_rust_crypto: String,
+    /// Local adapter package version.
+    pub mls_adapter: String,
+    /// CSV writer used for the public commit artifact.
+    pub csv: String,
+    /// Serialization framework used for public JSON artifacts.
+    pub serde: String,
+    /// JSON encoder used for public artifacts.
+    pub serde_json: String,
 }
 
 /// Canonical public artifact filenames.
@@ -514,8 +547,10 @@ pub fn bootstrap_summary(
     options: &BootstrapOptions,
     result: &BootstrapResult,
     verification: &BootstrapVerification,
+    output_directory: &Path,
 ) -> Result<BootstrapSummary, SnapshotError> {
     validate_public_bootstrap_result(result, verification)?;
+    validate_snapshot_output_directory(output_directory)?;
     let total_commit_wire_bytes = result
         .commit_records
         .iter()
@@ -556,6 +591,19 @@ pub fn bootstrap_summary(
             key_generation_entropy_policy:
                 "operating-system RNG; not persisted and not reconstructible from this summary"
                     .to_owned(),
+        },
+        provenance: PublicBootstrapProvenance {
+            command: bootstrap_command(options, output_directory),
+            rustc_version: env!("BOOTSTRAP_RUSTC_VERSION").to_owned(),
+            package_version: env!("CARGO_PKG_VERSION").to_owned(),
+            direct_dependency_versions: PublicDirectDependencyVersions {
+                openmls: "0.8.1".to_owned(),
+                openmls_rust_crypto: "0.5.1".to_owned(),
+                mls_adapter: "0.1.0".to_owned(),
+                csv: "1.4.0".to_owned(),
+                serde: "1.0.228".to_owned(),
+                serde_json: "1.0.150".to_owned(),
+            },
         },
         group: BootstrapSummaryGroup {
             group_id_hex: hex::encode(&verification.group_id),
@@ -722,6 +770,12 @@ fn bootstrap_report_markdown(summary: &BootstrapSummary) -> String {
          - Tree arity: `{}`\n\
          - Members: `{}`\n\
          - Public committer-schedule seed: `{}`\n\n\
+         ## Reproducibility provenance\n\n\
+         - Command: `{}`\n\
+         - Compiler: `{}`\n\
+         - Package version: `{}`\n\
+         - OpenMLS: `{}`; RustCrypto provider: `{}`\n\
+         - CSV: `{}`; Serde: `{}`; serde_json: `{}`\n\n\
          ## Verified state\n\n\
          - Epoch: `{}`\n\
          - Tree height: `{}`\n\
@@ -742,6 +796,14 @@ fn bootstrap_report_markdown(summary: &BootstrapSummary) -> String {
         summary.configuration.tree_arity,
         summary.configuration.member_count,
         summary.reproducibility.schedule_seed,
+        summary.provenance.command,
+        summary.provenance.rustc_version,
+        summary.provenance.package_version,
+        summary.provenance.direct_dependency_versions.openmls,
+        summary.provenance.direct_dependency_versions.openmls_rust_crypto,
+        summary.provenance.direct_dependency_versions.csv,
+        summary.provenance.direct_dependency_versions.serde,
+        summary.provenance.direct_dependency_versions.serde_json,
         summary.group.epoch,
         summary.group.tree_height,
         summary.delivery.add_commit_count,
@@ -753,6 +815,13 @@ fn bootstrap_report_markdown(summary: &BootstrapSummary) -> String {
         summary.artifacts.summary,
         summary.artifacts.commits,
         summary.artifacts.report,
+    )
+}
+
+fn bootstrap_command(options: &BootstrapOptions, output_directory: &Path) -> String {
+    format!(
+        "cargo +stable run --bin bootstrap_128 --release --locked --offline -- --members {} --seed {} --output {:?}",
+        options.members, options.schedule_seed, output_directory
     )
 }
 
@@ -867,8 +936,13 @@ mod tests {
 
         let snapshot = public_bootstrap_snapshot(&options, &result, &verification)
             .expect("public snapshot must be complete");
-        let summary = bootstrap_summary(&options, &result, &verification)
-            .expect("public summary must be complete");
+        let summary = bootstrap_summary(
+            &options,
+            &result,
+            &verification,
+            Path::new("output/release-acceptance"),
+        )
+        .expect("public summary must be complete");
         let snapshot_json = serde_json::to_string(&snapshot).expect("snapshot must serialize");
         assert_eq!(snapshot.added_member_key_packages.len(), 127);
         assert_eq!(snapshot.added_member_key_packages[0].member_index, 1);
@@ -886,6 +960,8 @@ mod tests {
         assert_eq!(summary.artifacts.commits, BOOTSTRAP_COMMITS_FILE_NAME);
         assert!(summary.delivery.total_commit_wire_bytes > 0);
         assert!(summary.delivery.total_welcome_wire_bytes > 0);
+        assert!(summary.provenance.rustc_version.starts_with("rustc "));
+        assert!(summary.provenance.command.contains("--seed 42"));
         drop(clients);
     }
 }
