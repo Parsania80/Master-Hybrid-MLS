@@ -5,6 +5,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+adaptive-tree = { path = "../adaptive-tree" }
 hybrid-path-secret = { path = "../hybrid-path-secret" }
 serde.workspace = true
 thiserror.workspace = true
