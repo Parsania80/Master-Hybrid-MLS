@@ -98,6 +98,8 @@ Defaults are `target_group_size=128`, `stable_epoch_count=5`, and `q_min=5`. A f
 
 At transition start, form a canonical list of currently occupied members ordered by the bytewise canonical `MemberId` encoding. Map list position `j` to the quaternary leaf at breadth-first, left-to-right position `j`. Serialize the complete mapping once in the transition message, hash it in `ArityState`, and use that hash in the hybrid context.
 
+Task 30 implements this rule as project-local mapping version `1`: `AHLM || u16(version) || u32(count) || repeated(u16(member_id_length) || member_id || u32(binary_leaf_index) || u32(quaternary_leaf_ordinal))`. The mapping is canonical only after validation; it is not yet an MLS extension, authenticated state, a live transition, or an interoperability format.
+
 The new quaternary tree is the only active secret-producing tree after the transition commit. The TreeCover is a frozen, delivery-only binary routing overlay derived from the pre-transition binary tree. It contains no second active root and cannot derive an epoch secret. Removals mark the corresponding cover member ineligible; additions receive a deterministic lowest available quaternary leaf and no retroactive TreeCover membership. `TreeCover_node_count` counts only cover routing nodes with at least one currently eligible member.
 
 ### 7. Transition-end target sets and aggregation

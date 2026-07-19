@@ -35,7 +35,7 @@
 - `/crates/mkyber`: Reference-only `mkyber512-thesis-v1` backend plus typed artifact/error boundary; it has no author-compatible interoperability claim or ML-KEM fallback.
 - `/crates/mkyber/src/bin/mkyber_benchmark.rs`: Release-mode standalone timing smoke benchmark for the educational backend; prints only public component byte costs and environment-dependent timing aggregates.
 - `/crates/hybrid-path-secret`: Canonical, validated hybrid wire/context boundary plus the Task 21 sender/receiver engine and Task 22 KDF-exclusion instrumentation. It performs one mKyber encapsulation per level, a context-bound 32-byte HPKE exporter-secret derivation per recipient, canonical hybrid KDF input/expansion, and AES-128-GCM path-secret wrapping. Its value-free provenance records actual serialized common/recipient ciphertext lengths and their zero KDF contribution. It is ready for a future experimental fork injection; baseline code does not import it.
-- `/crates/adaptive-tree`: Empty boundary for binary/quaternary topology and delivery-only TreeCover state.
+- `/crates/adaptive-tree`: Canonical version-1 binary-to-quaternary mapping and immutable public shadow topology; replay, cost estimation, and TreeCover remain deferred.
 - `/crates/transition-policy`: Empty boundary for ADR 0006 formulas and retirement policy.
 - `/crates/metrics`: Empty typed measurement-record boundary.
 - `/crates/simulation`: Empty deterministic workload and convergence-simulation boundary.
@@ -128,8 +128,8 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 30 | Implement deterministic binary-to-quaternary leaf mapping and a non-mutating shadow tree | ⬜ Todo | Mapping/version metadata must be canonical and later authenticated. |
-| 31 | Replay each logical operation against the shadow tree without changing real MLS state or consuming mismatched randomness | ⬜ Todo | Define reproducible counterfactual methodology in an ADR. |
+| 30 | Implement deterministic binary-to-quaternary leaf mapping and a non-mutating shadow tree | ✅ Done | Version-1 mapping follows ADR 0006: bytewise-sort canonical `MemberId`, assign left-to-right quaternary ordinals, and encode complete canonical bytes. The immutable shadow tree has public topology only; 128 members yield arity 4, height 4, capacity 256, and 128 occupied leaves. Authentication and live transition are deferred. |
+| 31 | Replay each logical operation against the shadow tree without changing real MLS state or consuming mismatched randomness | 🔄 Current | Define reproducible counterfactual methodology in an ADR. |
 | 32 | Measure real `B_i(2)` and candidate `B_hat_i(4)` with component-level serialized byte provenance | ⬜ Todo | Label every measurement versus estimate. |
 | 33 | Track tree heights, direct paths, resolutions, blanks, populated nodes, recipient counts, and crypto operation/timing metrics | ⬜ Todo | Use typed per-commit records. |
 | 34 | Pass the Phase 6 determinism, measurement-consistency, formatting, lint, and test gate | ⬜ Todo | Re-run baseline and hybrid regression suites. |
@@ -182,6 +182,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 6, Task 30 — Implement deterministic binary-to-quaternary leaf mapping and a non-mutating shadow tree.
+**Current:** Part 6, Task 31 — Replay each logical operation against the shadow tree without changing real MLS state or consuming mismatched randomness.
 
-**Next:** Part 6, Task 31 — Replay each logical operation against the shadow tree without changing real MLS state or consuming mismatched randomness.
+**Next:** Part 6, Task 32 — Measure real `B_i(2)` and candidate `B_hat_i(4)` with component-level serialized byte provenance.
