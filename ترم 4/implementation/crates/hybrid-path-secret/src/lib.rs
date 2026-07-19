@@ -10,13 +10,25 @@
 
 use core::fmt;
 
-use mkyber::{MkyberCommonCiphertext, MkyberDomain, MkyberRecipientCiphertext, MkyberSharedSecret};
+use aes_gcm::{
+    aead::{Aead, KeyInit, Payload},
+    Aes128Gcm, Nonce,
+};
+use hkdf::Hkdf;
+use mkyber::{
+    MkyberCiphertextSet, MkyberCommonCiphertext, MkyberDecapsulationKey, MkyberDomain,
+    MkyberEncapsulationKey, MkyberRecipientCiphertext, MkyberSharedSecret, MultiRecipientKem,
+    RecipientCiphertext, RecipientId, RecipientPublicKey, RecipientSet,
+};
+use openmls::prelude::{Ciphersuite, OpenMlsCrypto, OpenMlsProvider, OpenMlsRand};
+use openmls_rust_crypto::OpenMlsRustCrypto;
+use sha2::Sha256;
 use thiserror::Error;
 use tls_codec::{
     Deserialize as TlsDeserializeTrait, Serialize as TlsSerializeTrait, TlsByteVecU16,
     TlsByteVecU8, TlsDeserialize, TlsSerialize, TlsSize, TlsVecU16,
 };
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Version of the thesis-local hybrid UpdatePath wire value.
 pub const HYBRID_PATH_CIPHERTEXT_VERSION: u16 = 1;
@@ -658,9 +670,621 @@ struct WireHybridKdfContext {
     group_context_hash: [u8; 32],
 }
 
+/// Exact MLS path-secret size delivered by the experimental wrapper.
+pub const MLS_PATH_SECRET_BYTES: usize = 32;
+
+const CLASSICAL_HPKE_INFO_SUFFIX: &[u8] = b"/classical-hpke-export";
+const AEAD_KEY_INFO_SUFFIX: &[u8] = b"/aead-key";
+const AEAD_NONCE_INFO_SUFFIX: &[u8] = b"/aead-nonce";
+
+/// Public DHKEM(X25519) recipient key for the fixed MLS ciphersuite.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ClassicalHpkePublicKey([u8; CLASSICAL_ENCAPSULATION_BYTES]);
+
+impl ClassicalHpkePublicKey {
+    /// Parses a fixed-size X25519 HPKE public key.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, HybridPathLevelError> {
+        let bytes = bytes
+            .try_into()
+            .map_err(|_| HybridPathLevelError::InvalidClassicalPublicKeyLength(bytes.len()))?;
+        Ok(Self(bytes))
+    }
+
+    /// Returns public HPKE key bytes only to the HPKE setup operation.
+    pub const fn as_bytes(&self) -> &[u8; CLASSICAL_ENCAPSULATION_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ClassicalHpkePublicKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("ClassicalHpkePublicKey")
+            .field(&CLASSICAL_ENCAPSULATION_BYTES)
+            .finish()
+    }
+}
+
+/// Secret DHKEM(X25519) recipient key for the fixed MLS ciphersuite.
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct ClassicalHpkePrivateKey([u8; CLASSICAL_ENCAPSULATION_BYTES]);
+
+impl ClassicalHpkePrivateKey {
+    /// Parses a fixed-size X25519 HPKE private key.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, HybridPathLevelError> {
+        let bytes = bytes
+            .try_into()
+            .map_err(|_| HybridPathLevelError::InvalidClassicalPrivateKeyLength(bytes.len()))?;
+        Ok(Self(bytes))
+    }
+
+    /// Returns private HPKE key bytes only to the HPKE receive operation.
+    pub fn as_bytes(&self) -> &[u8; CLASSICAL_ENCAPSULATION_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ClassicalHpkePrivateKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("ClassicalHpkePrivateKey")
+            .field(&"<redacted>")
+            .finish()
+    }
+}
+
+/// Matching classical HPKE material for one experimental recipient node.
+pub struct ClassicalHpkeKeyPair {
+    public_key: ClassicalHpkePublicKey,
+    private_key: ClassicalHpkePrivateKey,
+}
+
+impl ClassicalHpkeKeyPair {
+    /// Generates a DHKEM(X25519) pair from operating-system-backed provider randomness.
+    pub fn generate_with_os_rng() -> Result<Self, HybridPathLevelError> {
+        let provider = OpenMlsRustCrypto::default();
+        let ikm = Zeroizing::new(
+            provider
+                .rand()
+                .random_array::<CLASSICAL_SHARED_SECRET_BYTES>()
+                .map_err(|_| HybridPathLevelError::ClassicalHpke)?,
+        );
+        let key_pair = provider
+            .crypto()
+            .derive_hpke_keypair(hybrid_hpke_config(), &ikm[..])
+            .map_err(|_| HybridPathLevelError::ClassicalHpke)?;
+        Ok(Self {
+            public_key: ClassicalHpkePublicKey::from_bytes(&key_pair.public)?,
+            private_key: ClassicalHpkePrivateKey::from_bytes(&key_pair.private)?,
+        })
+    }
+
+    /// Consumes the pair without cloning private key material.
+    pub fn into_parts(self) -> (ClassicalHpkePublicKey, ClassicalHpkePrivateKey) {
+        (self.public_key, self.private_key)
+    }
+}
+
+impl fmt::Debug for ClassicalHpkeKeyPair {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClassicalHpkeKeyPair")
+            .field("public_key", &self.public_key)
+            .field("private_key", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Zeroized MLS path secret delivered at one experimental path level.
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct HybridPathSecret([u8; MLS_PATH_SECRET_BYTES]);
+
+impl HybridPathSecret {
+    /// Parses an exact-size MLS path secret.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, HybridPathLevelError> {
+        let bytes = bytes
+            .try_into()
+            .map_err(|_| HybridPathLevelError::InvalidPathSecretLength(bytes.len()))?;
+        Ok(Self(bytes))
+    }
+
+    /// Returns secret bytes only to hybrid delivery operations.
+    pub fn as_bytes(&self) -> &[u8; MLS_PATH_SECRET_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for HybridPathSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("HybridPathSecret")
+            .field(&"<redacted>")
+            .finish()
+    }
+}
+
+/// Public values shared by all recipients at one experimental UpdatePath level.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HybridPathLevelContext {
+    group_id: Vec<u8>,
+    epoch: u64,
+    tree_version: u32,
+    current_arity: TreeArity,
+    path_node_index: PathNodeIndex,
+    mkyber_domain: MkyberDomain,
+    group_context_hash: [u8; 32],
+}
+
+impl HybridPathLevelContext {
+    /// Creates context shared by all recipient records for one path node.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        group_id: Vec<u8>,
+        epoch: u64,
+        tree_version: u32,
+        current_arity: TreeArity,
+        path_node_index: PathNodeIndex,
+        mkyber_domain: MkyberDomain,
+        group_context_hash: [u8; 32],
+    ) -> Self {
+        Self {
+            group_id,
+            epoch,
+            tree_version,
+            current_arity,
+            path_node_index,
+            mkyber_domain,
+            group_context_hash,
+        }
+    }
+
+    /// Builds the recipient-specific canonical KDF context.
+    pub fn kdf_context(&self, recipient_node_index: RecipientNodeIndex) -> HybridKdfContext {
+        HybridKdfContext::new(
+            self.group_id.clone(),
+            self.epoch,
+            self.tree_version,
+            self.current_arity,
+            self.path_node_index,
+            recipient_node_index,
+            self.mkyber_domain,
+            self.group_context_hash,
+        )
+    }
+
+    /// Returns the public path-node binding.
+    pub const fn path_node_index(&self) -> PathNodeIndex {
+        self.path_node_index
+    }
+
+    /// Returns the public mKyber domain.
+    pub const fn mkyber_domain(&self) -> MkyberDomain {
+        self.mkyber_domain
+    }
+}
+
+impl fmt::Debug for HybridPathLevelContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HybridPathLevelContext")
+            .field("group_id_bytes", &self.group_id.len())
+            .field("epoch", &self.epoch)
+            .field("tree_version", &self.tree_version)
+            .field("current_arity", &self.current_arity)
+            .field("path_node_index", &self.path_node_index)
+            .field("mkyber_domain", &self.mkyber_domain)
+            .field("group_context_hash_bytes", &self.group_context_hash.len())
+            .finish()
+    }
+}
+
+/// Public hybrid delivery key material for one co-path resolution node.
+#[derive(Clone)]
+pub struct HybridPathRecipientPublic {
+    recipient_node_index: RecipientNodeIndex,
+    mkyber_public_key: MkyberEncapsulationKey,
+    classical_public_key: ClassicalHpkePublicKey,
+}
+
+impl HybridPathRecipientPublic {
+    /// Creates one public recipient binding.
+    pub fn new(
+        recipient_node_index: RecipientNodeIndex,
+        mkyber_public_key: MkyberEncapsulationKey,
+        classical_public_key: ClassicalHpkePublicKey,
+    ) -> Self {
+        Self {
+            recipient_node_index,
+            mkyber_public_key,
+            classical_public_key,
+        }
+    }
+
+    /// Returns the public node index used by the wire record and mKyber recipient ID.
+    pub const fn recipient_node_index(&self) -> RecipientNodeIndex {
+        self.recipient_node_index
+    }
+}
+
+impl fmt::Debug for HybridPathRecipientPublic {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HybridPathRecipientPublic")
+            .field("recipient_node_index", &self.recipient_node_index)
+            .field("mkyber_public_key", &self.mkyber_public_key)
+            .field("classical_public_key", &self.classical_public_key)
+            .finish()
+    }
+}
+
+/// Private hybrid delivery key material for one recipient resolution node.
+pub struct HybridPathRecipientPrivate {
+    recipient_node_index: RecipientNodeIndex,
+    mkyber_private_key: MkyberDecapsulationKey,
+    classical_private_key: ClassicalHpkePrivateKey,
+}
+
+impl HybridPathRecipientPrivate {
+    /// Creates one private recipient binding.
+    pub fn new(
+        recipient_node_index: RecipientNodeIndex,
+        mkyber_private_key: MkyberDecapsulationKey,
+        classical_private_key: ClassicalHpkePrivateKey,
+    ) -> Self {
+        Self {
+            recipient_node_index,
+            mkyber_private_key,
+            classical_private_key,
+        }
+    }
+
+    /// Returns the public node index associated with this private material.
+    pub const fn recipient_node_index(&self) -> RecipientNodeIndex {
+        self.recipient_node_index
+    }
+}
+
+impl fmt::Debug for HybridPathRecipientPrivate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HybridPathRecipientPrivate")
+            .field("recipient_node_index", &self.recipient_node_index)
+            .field("mkyber_private_key", &"<redacted>")
+            .field("classical_private_key", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Builds one complete hybrid ciphertext set for an experimental UpdatePath level.
+///
+/// The caller supplies precisely the co-path resolution nodes. The mKyber
+/// backend encapsulates once for that set, while HPKE derives one classical
+/// exporter secret and one encrypted path-secret record per recipient node.
+pub fn seal_hybrid_path_level(
+    backend: &impl MultiRecipientKem,
+    randomness: &mut dyn mkyber::MkyberRandom,
+    context: &HybridPathLevelContext,
+    path_secret: &HybridPathSecret,
+    recipients: &[HybridPathRecipientPublic],
+) -> Result<HybridPathCiphertext, HybridPathLevelError> {
+    validate_recipient_public_keys(context, recipients)?;
+    let recipient_set = RecipientSet::new(
+        context.mkyber_domain(),
+        recipients
+            .iter()
+            .map(|recipient| RecipientPublicKey {
+                recipient: RecipientId::new(recipient.recipient_node_index().as_u32()),
+                key: recipient.mkyber_public_key.clone(),
+            })
+            .collect(),
+    )
+    .map_err(|_| HybridPathLevelError::Mkyber)?;
+    let encapsulation = backend
+        .encapsulate(&recipient_set, randomness)
+        .map_err(|_| HybridPathLevelError::Mkyber)?;
+    let mut records = Vec::with_capacity(recipients.len());
+
+    for recipient in recipients {
+        let recipient_context = context.kdf_context(recipient.recipient_node_index());
+        let classical_shared_secret =
+            classical_sender_secret(&recipient.classical_public_key, &recipient_context)?;
+        let input = build_hybrid_kdf_input(
+            &classical_shared_secret.shared_secret,
+            &encapsulation.shared_secret,
+            &recipient_context,
+        )
+        .map_err(|_| HybridPathLevelError::Kdf)?;
+        let encrypted_path_secret = encrypt_path_secret(path_secret, &input, &recipient_context)?;
+        let mkyber_recipient = encapsulation
+            .ciphertext
+            .recipient_component(RecipientId::new(recipient.recipient_node_index().as_u32()))
+            .map_err(|_| HybridPathLevelError::Mkyber)?
+            .clone();
+        records.push(HybridRecipientCiphertext::new(
+            recipient.recipient_node_index(),
+            classical_shared_secret.encapsulation,
+            mkyber_recipient,
+            encrypted_path_secret,
+        ));
+    }
+
+    HybridPathCiphertext::new(
+        context.path_node_index(),
+        context.mkyber_domain(),
+        encapsulation.ciphertext.common().clone(),
+        records,
+    )
+    .map_err(|_| HybridPathLevelError::InvalidCiphertext)
+}
+
+/// Opens one recipient record from a complete experimental UpdatePath level.
+pub fn open_hybrid_path_level(
+    backend: &impl MultiRecipientKem,
+    context: &HybridPathLevelContext,
+    ciphertext: &HybridPathCiphertext,
+    recipient: &HybridPathRecipientPrivate,
+) -> Result<HybridPathSecret, HybridPathLevelError> {
+    if ciphertext.path_node_index() != context.path_node_index()
+        || ciphertext.mkyber_domain() != context.mkyber_domain()
+        || recipient.mkyber_private_key.domain() != context.mkyber_domain()
+    {
+        return Err(HybridPathLevelError::ContextMismatch);
+    }
+    let record = ciphertext
+        .recipients()
+        .iter()
+        .find(|record| record.recipient_node_index() == recipient.recipient_node_index())
+        .ok_or(HybridPathLevelError::RecipientNotFound)?;
+    let recipient_id = RecipientId::new(recipient.recipient_node_index().as_u32());
+    let mkyber_ciphertext = MkyberCiphertextSet::new(
+        ciphertext.mkyber_domain(),
+        ciphertext.mkyber_common().clone(),
+        vec![RecipientCiphertext {
+            recipient: recipient_id,
+            component: record.mkyber_recipient().clone(),
+        }],
+    )
+    .map_err(|_| HybridPathLevelError::Mkyber)?;
+    let pq_shared_secret = backend
+        .decapsulate(
+            &recipient.mkyber_private_key,
+            &mkyber_ciphertext,
+            recipient_id,
+        )
+        .map_err(|_| HybridPathLevelError::Mkyber)?;
+    let recipient_context = context.kdf_context(recipient.recipient_node_index());
+    let classical_shared_secret = classical_receiver_secret(
+        record.classical_encapsulation(),
+        &recipient.classical_private_key,
+        &recipient_context,
+    )?;
+    let input = build_hybrid_kdf_input(
+        &classical_shared_secret,
+        &pq_shared_secret,
+        &recipient_context,
+    )
+    .map_err(|_| HybridPathLevelError::Kdf)?;
+    decrypt_path_secret(record.encrypted_path_secret(), &input, &recipient_context)
+}
+
+struct ClassicalHpkeSenderSecret {
+    encapsulation: [u8; CLASSICAL_ENCAPSULATION_BYTES],
+    shared_secret: ClassicalSharedSecret,
+}
+
+fn classical_sender_secret(
+    public_key: &ClassicalHpkePublicKey,
+    context: &HybridKdfContext,
+) -> Result<ClassicalHpkeSenderSecret, HybridPathLevelError> {
+    let provider = OpenMlsRustCrypto::default();
+    let context_bytes = context
+        .canonical_bytes()
+        .map_err(|_| HybridPathLevelError::Kdf)?;
+    let info = hybrid_info(CLASSICAL_HPKE_INFO_SUFFIX, &context_bytes);
+    let (encapsulation, shared_secret) = provider
+        .crypto()
+        .hpke_setup_sender_and_export(
+            hybrid_hpke_config(),
+            public_key.as_bytes(),
+            &info,
+            &context_bytes,
+            CLASSICAL_SHARED_SECRET_BYTES,
+        )
+        .map_err(|_| HybridPathLevelError::ClassicalHpke)?;
+    let encapsulation = encapsulation.as_slice().try_into().map_err(|_| {
+        HybridPathLevelError::InvalidClassicalEncapsulationLength(encapsulation.len())
+    })?;
+    Ok(ClassicalHpkeSenderSecret {
+        encapsulation,
+        shared_secret: ClassicalSharedSecret::from_bytes(&shared_secret)
+            .map_err(|_| HybridPathLevelError::Kdf)?,
+    })
+}
+
+fn classical_receiver_secret(
+    encapsulation: &[u8; CLASSICAL_ENCAPSULATION_BYTES],
+    private_key: &ClassicalHpkePrivateKey,
+    context: &HybridKdfContext,
+) -> Result<ClassicalSharedSecret, HybridPathLevelError> {
+    let provider = OpenMlsRustCrypto::default();
+    let context_bytes = context
+        .canonical_bytes()
+        .map_err(|_| HybridPathLevelError::Kdf)?;
+    let info = hybrid_info(CLASSICAL_HPKE_INFO_SUFFIX, &context_bytes);
+    let shared_secret = provider
+        .crypto()
+        .hpke_setup_receiver_and_export(
+            hybrid_hpke_config(),
+            encapsulation,
+            private_key.as_bytes(),
+            &info,
+            &context_bytes,
+            CLASSICAL_SHARED_SECRET_BYTES,
+        )
+        .map_err(|_| HybridPathLevelError::ClassicalHpke)?;
+    ClassicalSharedSecret::from_bytes(&shared_secret).map_err(|_| HybridPathLevelError::Kdf)
+}
+
+fn encrypt_path_secret(
+    path_secret: &HybridPathSecret,
+    input: &HybridKdfInput,
+    context: &HybridKdfContext,
+) -> Result<[u8; ENCRYPTED_PATH_SECRET_BYTES], HybridPathLevelError> {
+    let aead = derive_aead_material(input, context)?;
+    let associated_data = context
+        .aead_associated_data(HYBRID_PATH_CIPHERTEXT_VERSION)
+        .map_err(|_| HybridPathLevelError::Kdf)?;
+    let cipher =
+        Aes128Gcm::new_from_slice(&aead.key[..]).map_err(|_| HybridPathLevelError::Aead)?;
+    let ciphertext = cipher
+        .encrypt(
+            Nonce::from_slice(&aead.nonce[..]),
+            Payload {
+                msg: path_secret.as_bytes(),
+                aad: &associated_data,
+            },
+        )
+        .map_err(|_| HybridPathLevelError::Aead)?;
+    ciphertext
+        .as_slice()
+        .try_into()
+        .map_err(|_| HybridPathLevelError::Aead)
+}
+
+fn decrypt_path_secret(
+    encrypted_path_secret: &[u8; ENCRYPTED_PATH_SECRET_BYTES],
+    input: &HybridKdfInput,
+    context: &HybridKdfContext,
+) -> Result<HybridPathSecret, HybridPathLevelError> {
+    let aead = derive_aead_material(input, context)?;
+    let associated_data = context
+        .aead_associated_data(HYBRID_PATH_CIPHERTEXT_VERSION)
+        .map_err(|_| HybridPathLevelError::Kdf)?;
+    let cipher =
+        Aes128Gcm::new_from_slice(&aead.key[..]).map_err(|_| HybridPathLevelError::Aead)?;
+    let path_secret = cipher
+        .decrypt(
+            Nonce::from_slice(&aead.nonce[..]),
+            Payload {
+                msg: encrypted_path_secret,
+                aad: &associated_data,
+            },
+        )
+        .map_err(|_| HybridPathLevelError::Aead)?;
+    HybridPathSecret::from_bytes(&path_secret).map_err(|_| HybridPathLevelError::Aead)
+}
+
+struct HybridAeadMaterial {
+    key: Zeroizing<[u8; 16]>,
+    nonce: Zeroizing<[u8; 12]>,
+}
+
+fn derive_aead_material(
+    input: &HybridKdfInput,
+    context: &HybridKdfContext,
+) -> Result<HybridAeadMaterial, HybridPathLevelError> {
+    let context_bytes = context
+        .canonical_bytes()
+        .map_err(|_| HybridPathLevelError::Kdf)?;
+    let hkdf = Hkdf::<Sha256>::new(Some(&[0_u8; 32]), input.as_bytes());
+    let mut key = Zeroizing::new([0_u8; 16]);
+    let mut nonce = Zeroizing::new([0_u8; 12]);
+    hkdf.expand(
+        &hybrid_info(AEAD_KEY_INFO_SUFFIX, &context_bytes),
+        &mut key[..],
+    )
+    .map_err(|_| HybridPathLevelError::Kdf)?;
+    hkdf.expand(
+        &hybrid_info(AEAD_NONCE_INFO_SUFFIX, &context_bytes),
+        &mut nonce[..],
+    )
+    .map_err(|_| HybridPathLevelError::Kdf)?;
+    Ok(HybridAeadMaterial { key, nonce })
+}
+
+fn hybrid_info(suffix: &[u8], context_bytes: &[u8]) -> Vec<u8> {
+    let mut info = Vec::with_capacity(HYBRID_KDF_LABEL.len() + suffix.len() + context_bytes.len());
+    info.extend_from_slice(HYBRID_KDF_LABEL);
+    info.extend_from_slice(suffix);
+    info.extend_from_slice(context_bytes);
+    info
+}
+
+fn hybrid_hpke_config() -> openmls::prelude::HpkeConfig {
+    Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.hpke_config()
+}
+
+fn validate_recipient_public_keys(
+    context: &HybridPathLevelContext,
+    recipients: &[HybridPathRecipientPublic],
+) -> Result<(), HybridPathLevelError> {
+    if recipients.is_empty() {
+        return Err(HybridPathLevelError::EmptyRecipientSet);
+    }
+    if recipients.windows(2).any(|pair| {
+        pair[0].recipient_node_index().as_u32() >= pair[1].recipient_node_index().as_u32()
+    }) {
+        return Err(HybridPathLevelError::NonCanonicalRecipientOrder);
+    }
+    if recipients
+        .iter()
+        .any(|recipient| recipient.mkyber_public_key.domain() != context.mkyber_domain())
+    {
+        return Err(HybridPathLevelError::ContextMismatch);
+    }
+    Ok(())
+}
+
+/// Redacted failures from the experimental path-level delivery boundary.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum HybridPathLevelError {
+    /// One UpdatePath level requires at least one co-path resolution recipient.
+    #[error("hybrid path level requires at least one recipient")]
+    EmptyRecipientSet,
+    /// Public recipient node indexes must have canonical increasing order.
+    #[error("hybrid path recipients are not in canonical order")]
+    NonCanonicalRecipientOrder,
+    /// A classical HPKE public key has an invalid public length.
+    #[error("invalid classical HPKE public-key length")]
+    InvalidClassicalPublicKeyLength(usize),
+    /// A classical HPKE private key has an invalid secret length.
+    #[error("invalid classical HPKE private-key length")]
+    InvalidClassicalPrivateKeyLength(usize),
+    /// The provider returned a classical encapsulation outside the fixed profile.
+    #[error("invalid classical HPKE encapsulation length")]
+    InvalidClassicalEncapsulationLength(usize),
+    /// MLS path secrets must be exactly 32 bytes.
+    #[error("invalid MLS path-secret length")]
+    InvalidPathSecretLength(usize),
+    /// Public path, domain, or recipient bindings disagree.
+    #[error("hybrid path-level context mismatch")]
+    ContextMismatch,
+    /// The selected recipient does not have a canonical delivery record.
+    #[error("hybrid path-level recipient not found")]
+    RecipientNotFound,
+    /// The mKyber backend rejected public or private material.
+    #[error("mKyber path-level operation failed")]
+    Mkyber,
+    /// The approved classical HPKE provider rejected the operation.
+    #[error("classical HPKE path-level operation failed")]
+    ClassicalHpke,
+    /// The canonical hybrid KDF input or expansion failed.
+    #[error("hybrid path-level key derivation failed")]
+    Kdf,
+    /// AES-GCM encryption, decryption, or ciphertext sizing failed.
+    #[error("hybrid path-level AEAD operation failed")]
+    Aead,
+    /// The constructed public wire value was non-canonical.
+    #[error("invalid hybrid path-level ciphertext")]
+    InvalidCiphertext,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mkyber::EducationalMkyber512Reference;
+    use rand_chacha::ChaCha20Rng;
+    use rand_core::SeedableRng;
 
     const DOMAIN: MkyberDomain = MkyberDomain::new([7; 32]);
 
@@ -1034,6 +1658,117 @@ mod tests {
         assert_eq!(
             HybridKdfContext::from_canonical_bytes(&bytes),
             Err(HybridKdfError::UnsupportedTreeArity(3))
+        );
+    }
+
+    fn path_level_context(domain: MkyberDomain) -> HybridPathLevelContext {
+        HybridPathLevelContext::new(
+            b"task-twenty-one-group".to_vec(),
+            23,
+            6,
+            TreeArity::Binary,
+            PathNodeIndex::new(11),
+            domain,
+            [12; 32],
+        )
+    }
+
+    fn hybrid_recipient(
+        backend: &EducationalMkyber512Reference,
+        randomness: &mut ChaCha20Rng,
+        domain: MkyberDomain,
+        node_index: u32,
+    ) -> (HybridPathRecipientPublic, HybridPathRecipientPrivate) {
+        let mkyber_pair = backend
+            .keygen(domain, randomness)
+            .expect("test mKyber key generation must succeed");
+        let (mkyber_public_key, mkyber_private_key) = mkyber_pair.into_parts();
+        let classical_pair = ClassicalHpkeKeyPair::generate_with_os_rng()
+            .expect("test HPKE key generation must succeed");
+        let (classical_public_key, classical_private_key) = classical_pair.into_parts();
+        let recipient_node_index = RecipientNodeIndex::new(node_index);
+        (
+            HybridPathRecipientPublic::new(
+                recipient_node_index,
+                mkyber_public_key,
+                classical_public_key,
+            ),
+            HybridPathRecipientPrivate::new(
+                recipient_node_index,
+                mkyber_private_key,
+                classical_private_key,
+            ),
+        )
+    }
+
+    #[test]
+    fn hybrid_path_level_delivers_one_mkyber_shared_secret_to_every_recipient() {
+        let backend = EducationalMkyber512Reference;
+        let domain = MkyberDomain::new([13; 32]);
+        let mut randomness = ChaCha20Rng::from_seed([14; 32]);
+        let (bob_public, bob_private) = hybrid_recipient(&backend, &mut randomness, domain, 4);
+        let (charlie_public, charlie_private) =
+            hybrid_recipient(&backend, &mut randomness, domain, 9);
+        let context = path_level_context(domain);
+        let path_secret = HybridPathSecret::from_bytes(&[15; MLS_PATH_SECRET_BYTES])
+            .expect("exact-size test path secret must construct");
+
+        let ciphertext = seal_hybrid_path_level(
+            &backend,
+            &mut randomness,
+            &context,
+            &path_secret,
+            &[bob_public, charlie_public],
+        )
+        .expect("valid co-path recipients must seal");
+        let bob_path_secret = open_hybrid_path_level(&backend, &context, &ciphertext, &bob_private)
+            .expect("Bob must open the path secret");
+        let charlie_path_secret =
+            open_hybrid_path_level(&backend, &context, &ciphertext, &charlie_private)
+                .expect("Charlie must open the path secret");
+
+        assert_eq!(ciphertext.recipients().len(), 2);
+        assert_eq!(
+            ciphertext.mkyber_common().as_bytes().len(),
+            mkyber::COMMON_CIPHERTEXT_BYTES
+        );
+        assert!(bob_path_secret.as_bytes() == path_secret.as_bytes());
+        assert!(charlie_path_secret.as_bytes() == path_secret.as_bytes());
+    }
+
+    #[test]
+    fn hybrid_path_level_rejects_unsorted_or_cross_domain_recipient_material() {
+        let backend = EducationalMkyber512Reference;
+        let domain = MkyberDomain::new([16; 32]);
+        let mut randomness = ChaCha20Rng::from_seed([17; 32]);
+        let (late_public, _) = hybrid_recipient(&backend, &mut randomness, domain, 9);
+        let (early_public, _) = hybrid_recipient(&backend, &mut randomness, domain, 4);
+        let path_secret = HybridPathSecret::from_bytes(&[18; MLS_PATH_SECRET_BYTES])
+            .expect("exact-size test path secret must construct");
+
+        assert_eq!(
+            seal_hybrid_path_level(
+                &backend,
+                &mut randomness,
+                &path_level_context(domain),
+                &path_secret,
+                &[late_public, early_public],
+            ),
+            Err(HybridPathLevelError::NonCanonicalRecipientOrder)
+        );
+
+        let other_domain = MkyberDomain::new([19; 32]);
+        let (cross_domain_public, _) =
+            hybrid_recipient(&backend, &mut randomness, other_domain, 12);
+        assert_eq!(
+            seal_hybrid_path_level(
+                &backend,
+                &mut randomness,
+                &path_level_context(domain),
+                &path_secret,
+                &[cross_domain_public],
+            ),
+            Err(HybridPathLevelError::ContextMismatch)
         );
     }
 }

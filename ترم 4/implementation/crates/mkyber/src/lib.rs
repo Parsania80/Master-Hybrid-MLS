@@ -177,6 +177,15 @@ impl MkyberKeyPair {
     pub fn private_key(&self) -> &MkyberDecapsulationKey {
         &self.private_key
     }
+
+    /// Consumes the pair into its public and private components.
+    ///
+    /// This is for protocol composition code that must retain a public
+    /// encapsulation key at the sender and private decapsulation material at
+    /// the recipient without cloning secret bytes.
+    pub fn into_parts(self) -> (MkyberEncapsulationKey, MkyberDecapsulationKey) {
+        (self.public_key, self.private_key)
+    }
 }
 
 impl fmt::Debug for MkyberKeyPair {

@@ -14,8 +14,8 @@ The thesis requires `ss_classical || ss_pq || domain_separation_context` as the 
 1. Support only ciphersuite `0x0001`, `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`, in the first research implementation. The baseline MLS key schedule remains OpenMLS's normal ciphersuite behavior.
 2. The experimental hybrid path-secret wrapper uses HKDF-SHA256 and AES-128-GCM. It does not alter the RFC 9420 MLS key schedule; it only protects the experimental per-recipient path-secret delivery.
 3. Encode a versioned `HybridKdfContext` canonically with the same TLS codec used for the experimental wire format. It contains: protocol version, ASCII label `Adaptive-Hybrid-TreeKEM-PathSecret-v1`, ciphersuite ID, group ID, epoch, tree version, current arity, path-node index, recipient-node index, mKyber domain ID, and the 32-byte authenticated GroupContext hash.
-4. After both recipient-specific secrets are obtained, form exactly `IKM = ss_classical || ss_pq || TLSEncode(HybridKdfContext)`. Both shared-secret lengths must be fixed by their selected algorithms and validated before concatenation.
-5. Set `PRK = HKDF-Extract(zeros(32), IKM)`. Derive a 16-byte AEAD key and a 12-byte nonce with independent ASCII suffixes `.../aead-key` and `.../aead-nonce`, each followed by the same canonical context in the HKDF-Expand `info` input. Encrypt the MLS path secret with AES-128-GCM.
+4. After both recipient-specific secrets are obtained, form exactly `IKM = ss_classical || ss_pq || TLSEncode(HybridKdfContext)`. Both shared-secret lengths must be fixed by their selected algorithms and validated before concatenation. The Task 21 implementation defines `ss_classical` as the 32-byte HPKE exporter output from the fixed DHKEM(X25519) suite, using `info = "Adaptive-Hybrid-TreeKEM-PathSecret-v1/classical-hpke-export" || TLSEncode(HybridKdfContext)` and exporter context `TLSEncode(HybridKdfContext)`. It does not claim access to or serialization of HPKE's raw internal DHKEM intermediate.
+5. Set `PRK = HKDF-Extract(zeros(32), IKM)`. Derive a 16-byte AEAD key and a 12-byte nonce with distinct exact `info` values: `"Adaptive-Hybrid-TreeKEM-PathSecret-v1/aead-key" || TLSEncode(HybridKdfContext)` and `"Adaptive-Hybrid-TreeKEM-PathSecret-v1/aead-nonce" || TLSEncode(HybridKdfContext)`. Encrypt the MLS path secret with AES-128-GCM.
 6. Use `TLSEncode(HybridKdfContext || wire_version)` as AES-GCM associated data. Never use ciphertext bytes, raw secret values, or a reproducible experiment seed as context fields.
 7. The mKyber common `u`, recipient `v_i`, and classical encapsulation bytes are wire data and AEAD/commit authenticated, but their raw bytes and hashes are excluded from `IKM` and HKDF `info`; only the already-listed stable identifiers in the canonical context are used.
 
@@ -29,7 +29,7 @@ HKDF Extract and Expand are used as specified in [RFC 5869](https://www.rfc-edit
 
 ## Implementation Status
 
-Task 20 implements the canonical TLS `HybridKdfContext`, exact 32-byte classical/PQ shared-secret validation, and the redacted/zeroized IKM builder in `hybrid-path-secret`. It also exposes `TLSEncode(HybridKdfContext || wire_version)` for a later AEAD boundary. It intentionally does not yet perform HKDF extract/expand, AES-GCM encryption/decryption, HPKE processing, or OpenMLS fork integration.
+Task 20 implements the canonical TLS `HybridKdfContext`, exact 32-byte classical/PQ shared-secret validation, and the redacted/zeroized IKM builder in `hybrid-path-secret`. Task 21 adds one mKyber encapsulation per path level, per-recipient context-bound HPKE exporter derivation, HKDF extract/expand, AES-128-GCM seal/open, and `TLSEncode(HybridKdfContext || wire_version)` associated data. It remains an isolated boundary for a later experimental OpenMLS fork; the upstream baseline has no dependency on this code.
 
 ## Rejected Alternatives
 
