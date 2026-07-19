@@ -16,7 +16,7 @@
 
 ## Architecture
 
-- Current state: stable-Rust workspace with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, a validated public configuration schema, and a paper-based educational mKyber512 reference backend. Hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
+- Current state: stable-Rust workspace with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, a validated public configuration schema, a paper-based educational mKyber512 reference backend, and a standalone reference timing smoke benchmark. Hybrid delivery, adaptive transition, experiment runner, and generated results remain unimplemented.
 - `/agent.md`: Human-agent operating protocol and documentation rules.
 - `/PROJECT.md`: Single source of truth for scope, architecture, dependency lock, and progress.
 - `/SESSION-LOG.md`: Append-only audit trail for actions, commands, results, decisions, and limitations.
@@ -33,6 +33,7 @@
 - `/crates/experiment-config`: Validated public configuration schema with no implicit Delta and safe relative output paths.
 - `/crates/mls-adapter`: Upstream OpenMLS 0.8.1 baseline adapter for group creation/join, standard Add/remove/self-update commits, validated inbound messages, and application messages; no experimental behavior is present.
 - `/crates/mkyber`: Reference-only `mkyber512-thesis-v1` backend plus typed artifact/error boundary; it has no author-compatible interoperability claim or ML-KEM fallback.
+- `/crates/mkyber/src/bin/mkyber_benchmark.rs`: Release-mode standalone timing smoke benchmark for the educational backend; prints only public component byte costs and environment-dependent timing aggregates.
 - `/crates/hybrid-path-secret`: Empty boundary for the experimental authenticated path-secret wrapper.
 - `/crates/adaptive-tree`: Empty boundary for binary/quaternary topology and delivery-only TreeCover state.
 - `/crates/transition-policy`: Empty boundary for ADR 0006 formulas and retirement policy.
@@ -85,7 +86,7 @@
 | 15 | Separate common and per-recipient ciphertext components and instrument their real serialized byte costs | ✅ Done | `MkyberMeasuredComponentCosts` records ADR 0006 provenance (`measured_bytes`, no estimate, and method) from emitted canonical arrays: 704-byte common, 48 bytes per recipient, and their component-only total. Domain/recipient identifiers and future hybrid/MLS framing are deliberately excluded until their serializers exist. |
 | 16 | Implement deterministic test mode, OS-RNG production path, secret redaction, and zeroization where applicable | ✅ Done | Deterministic RNG is private to unit tests; normal reference callers use explicit `OsRng` entry points. Durable secret wrappers use `ZeroizeOnDrop`; scoped guards clear temporary entropy, seeds, decoded messages, noise, and packed secret-key bytes. No stronger memory-erasure or side-channel claim is made. |
 | 17 | Add known-answer/unit/property tests for recipient agreement, non-recipient failure, malformed ciphertexts, and deterministic reproducibility | ✅ Done | Added deterministic end-to-end public-artifact reproducibility, a project-owned public regression digest, common and per-recipient tamper/fallback checks, malformed public/private inputs, and exhaustive 768-case recipient-component bit-flip coverage. These are not official KATs. |
-| 18 | Pass the Phase 3 formatting, strict lint, test, and standalone benchmark gate | 🔄 Current | Report exact mKyber implementation status honestly. |
+| 18 | Pass the Phase 3 formatting, strict lint, test, and standalone benchmark gate | ✅ Done | Locked offline format/check/strict Clippy/workspace tests/metadata passed. The release standalone benchmark identifies `EducationalMkyber512Reference`, paper parameters, actual 704/48-byte components, and environment-dependent timing aggregates without secret output. |
 
 #### Task 14 paper-based reference checklist
 
@@ -106,7 +107,7 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 19 | Define and authenticate `HybridPathCiphertext` with classical, PQ common, PQ recipient, encrypted-secret, and node-index fields | ⬜ Todo | PQ ciphertext is present on the wire. |
+| 19 | Define and authenticate `HybridPathCiphertext` with classical, PQ common, PQ recipient, encrypted-secret, and node-index fields | 🔄 Current | PQ ciphertext is present on the wire. |
 | 20 | Implement canonical domain-separation context encoding and the hybrid KDF input builder | ⬜ Todo | Bind all mandatory MLS/tree fields and reject ambiguous encodings. |
 | 21 | Integrate classical HPKE and one mKyber shared secret per co-path resolution into each experimental UpdatePath level | ⬜ Todo | Baseline mode bypasses this module. |
 | 22 | Prove by focused tests/instrumentation that PQ ciphertext is excluded from KDF input while still serialized and authenticated | ⬜ Todo | Never expose the underlying secrets in logs or fixtures. |
@@ -181,6 +182,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 3, Task 18 — Pass the Phase 3 formatting, strict lint, test, and standalone benchmark gate.
+**Current:** Part 4, Task 19 — Define and authenticate `HybridPathCiphertext` with classical, PQ common, PQ recipient, encrypted-secret, and node-index fields.
 
-**Next:** Part 4, Task 19 — Define and authenticate `HybridPathCiphertext` with classical, PQ common, PQ recipient, encrypted-secret, and node-index fields.
+**Next:** Part 4, Task 20 — Implement canonical domain-separation context encoding and the hybrid KDF input builder.
