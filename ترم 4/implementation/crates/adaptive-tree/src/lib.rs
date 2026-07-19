@@ -2,10 +2,10 @@
 
 //! Deterministic, non-mutating topology for the experimental 2-to-4 analysis.
 //!
-//! This crate does not implement an MLS transition, TreeCover, path-secret
-//! derivation, or state mutation. It maps already occupied binary leaves to a
-//! shadow quaternary topology exactly as ADR 0006 requires: sort canonical
-//! member identifiers bytewise and assign positions left to right.
+//! This crate does not implement an MLS transition, TreeCover, or path-secret
+//! derivation. It maps already occupied binary leaves to a shadow quaternary
+//! topology and replays only public logical operations by returning a new
+//! topology, never by mutating an MLS group or consuming randomness.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -48,8 +48,59 @@ pub struct BinaryToQuaternaryLeafMapping {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ShadowQuaternaryTree {
     mapping: BinaryToQuaternaryLeafMapping,
+    occupants: Vec<ShadowOccupant>,
     height: u8,
     leaf_capacity: u32,
+}
+
+/// A public member occupying one candidate quaternary leaf.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ShadowOccupant {
+    /// Canonical public member identifier.
+    pub member_id: Vec<u8>,
+    /// Candidate leaf ordinal currently assigned to this member.
+    pub quaternary_leaf_ordinal: u32,
+    /// Source binary leaf at the frozen transition mapping, if any.
+    pub binary_leaf_index: Option<u32>,
+}
+
+/// A public logical operation replayed only against a shadow topology.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub enum ShadowOperation {
+    /// A normal UpdatePath operation: membership and topology do not change.
+    Update {
+        /// Canonical public member identifier of the committer.
+        member_id: Vec<u8>,
+    },
+    /// A membership addition: assign the lowest vacant candidate leaf.
+    Add {
+        /// Canonical public member identifier of the new member.
+        member_id: Vec<u8>,
+    },
+    /// A membership removal: vacate the member's leaf without renumbering.
+    Remove {
+        /// Canonical public member identifier of the removed member.
+        member_id: Vec<u8>,
+    },
+}
+
+/// Public outcome of a non-mutating logical-operation replay.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ShadowReplay {
+    /// The operation replayed against the source shadow tree.
+    pub operation: ShadowOperation,
+    /// Population before replay.
+    pub population_before: usize,
+    /// Population after replay.
+    pub population_after: usize,
+    /// Whether candidate occupancy or capacity changed.
+    pub topology_changed: bool,
+    /// Candidate leaf assigned by an Add operation, if any.
+    pub assigned_leaf_ordinal: Option<u32>,
+    /// Candidate leaf vacated by a Remove operation, if any.
+    pub vacated_leaf_ordinal: Option<u32>,
+    /// Immutable counterfactual topology after the replay.
+    pub tree: ShadowQuaternaryTree,
 }
 
 /// A public node address in a quaternary tree.
@@ -95,6 +146,9 @@ pub enum AdaptiveTreeError {
     /// A requested member is absent from the shadow mapping.
     #[error("the member is absent from the shadow tree")]
     MemberNotFound,
+    /// An Add replay named a member already in the shadow tree.
+    #[error("the member is already present in the shadow tree")]
+    MemberAlreadyPresent,
 }
 
 impl BinaryToQuaternaryLeafMapping {
@@ -211,8 +265,18 @@ impl ShadowQuaternaryTree {
         mapping.validate()?;
         let height = quaternary_height(mapping.assignments.len())?;
         let leaf_capacity = quaternary_capacity(height)?;
+        let occupants = mapping
+            .assignments
+            .iter()
+            .map(|assignment| ShadowOccupant {
+                member_id: assignment.member_id.clone(),
+                quaternary_leaf_ordinal: assignment.quaternary_leaf_ordinal,
+                binary_leaf_index: Some(assignment.binary_leaf_index),
+            })
+            .collect();
         Ok(Self {
             mapping,
+            occupants,
             height,
             leaf_capacity,
         })
@@ -235,7 +299,7 @@ impl ShadowQuaternaryTree {
 
     /// Returns the number of occupied candidate leaves.
     pub fn occupied_leaf_count(&self) -> usize {
-        self.mapping.assignments.len()
+        self.occupants.len()
     }
 
     /// Returns the validated canonical mapping without exposing mutable state.
@@ -245,13 +309,12 @@ impl ShadowQuaternaryTree {
 
     /// Returns the root-to-leaf base-four path for one mapped member.
     pub fn leaf_path_for_member(&self, member_id: &[u8]) -> Result<Vec<u8>, AdaptiveTreeError> {
-        let assignment = self
-            .mapping
-            .assignments
+        let occupant = self
+            .occupants
             .iter()
-            .find(|assignment| assignment.member_id == member_id)
+            .find(|occupant| occupant.member_id == member_id)
             .ok_or(AdaptiveTreeError::MemberNotFound)?;
-        leaf_path(assignment.quaternary_leaf_ordinal, self.height)
+        leaf_path(occupant.quaternary_leaf_ordinal, self.height)
     }
 
     /// Returns the public root-to-leaf node addresses for one mapped member.
@@ -275,6 +338,125 @@ impl ShadowQuaternaryTree {
         }
         Ok(nodes)
     }
+
+    /// Returns candidate leaf ordinals in ascending public order.
+    pub fn occupied_leaf_ordinals(&self) -> Vec<u32> {
+        let mut ordinals = self
+            .occupants
+            .iter()
+            .map(|occupant| occupant.quaternary_leaf_ordinal)
+            .collect::<Vec<_>>();
+        ordinals.sort_unstable();
+        ordinals
+    }
+
+    /// Replays a public logical operation by returning a separate immutable
+    /// candidate topology. It never mutates `self`, reads MLS state, or uses
+    /// random input.
+    pub fn replay(&self, operation: ShadowOperation) -> Result<ShadowReplay, AdaptiveTreeError> {
+        match &operation {
+            ShadowOperation::Update { member_id } => {
+                self.require_present(member_id)?;
+                Ok(ShadowReplay {
+                    operation,
+                    population_before: self.occupied_leaf_count(),
+                    population_after: self.occupied_leaf_count(),
+                    topology_changed: false,
+                    assigned_leaf_ordinal: None,
+                    vacated_leaf_ordinal: None,
+                    tree: self.clone(),
+                })
+            }
+            ShadowOperation::Add { member_id } => {
+                validate_member_id(member_id)?;
+                if self.find_occupant(member_id).is_some() {
+                    return Err(AdaptiveTreeError::MemberAlreadyPresent);
+                }
+                let (height, leaf_capacity) = self.capacity_for_add()?;
+                let assigned_leaf_ordinal = self.lowest_vacant_leaf(leaf_capacity)?;
+                let mut occupants = self.occupants.clone();
+                occupants.push(ShadowOccupant {
+                    member_id: member_id.clone(),
+                    quaternary_leaf_ordinal: assigned_leaf_ordinal,
+                    binary_leaf_index: None,
+                });
+                let tree = self.with_occupants(occupants, height, leaf_capacity)?;
+                Ok(ShadowReplay {
+                    operation,
+                    population_before: self.occupied_leaf_count(),
+                    population_after: tree.occupied_leaf_count(),
+                    topology_changed: true,
+                    assigned_leaf_ordinal: Some(assigned_leaf_ordinal),
+                    vacated_leaf_ordinal: None,
+                    tree,
+                })
+            }
+            ShadowOperation::Remove { member_id } => {
+                let removed = self.require_present(member_id)?;
+                let occupants = self
+                    .occupants
+                    .iter()
+                    .filter(|occupant| occupant.member_id.as_slice() != member_id.as_slice())
+                    .cloned()
+                    .collect();
+                let tree = self.with_occupants(occupants, self.height, self.leaf_capacity)?;
+                Ok(ShadowReplay {
+                    operation,
+                    population_before: self.occupied_leaf_count(),
+                    population_after: tree.occupied_leaf_count(),
+                    topology_changed: true,
+                    assigned_leaf_ordinal: None,
+                    vacated_leaf_ordinal: Some(removed.quaternary_leaf_ordinal),
+                    tree,
+                })
+            }
+        }
+    }
+
+    fn find_occupant(&self, member_id: &[u8]) -> Option<&ShadowOccupant> {
+        self.occupants
+            .iter()
+            .find(|occupant| occupant.member_id == member_id)
+    }
+
+    fn require_present(&self, member_id: &[u8]) -> Result<&ShadowOccupant, AdaptiveTreeError> {
+        validate_member_id(member_id)?;
+        self.find_occupant(member_id)
+            .ok_or(AdaptiveTreeError::MemberNotFound)
+    }
+
+    fn capacity_for_add(&self) -> Result<(u8, u32), AdaptiveTreeError> {
+        if self.occupied_leaf_count() < self.leaf_capacity as usize {
+            return Ok((self.height, self.leaf_capacity));
+        }
+        let height = self
+            .height
+            .checked_add(1)
+            .ok_or(AdaptiveTreeError::CapacityOverflow)?;
+        Ok((height, quaternary_capacity(height)?))
+    }
+
+    fn lowest_vacant_leaf(&self, capacity: u32) -> Result<u32, AdaptiveTreeError> {
+        let occupied = self.occupied_leaf_ordinals();
+        (0..capacity)
+            .find(|candidate| occupied.binary_search(candidate).is_err())
+            .ok_or(AdaptiveTreeError::CapacityOverflow)
+    }
+
+    fn with_occupants(
+        &self,
+        occupants: Vec<ShadowOccupant>,
+        height: u8,
+        leaf_capacity: u32,
+    ) -> Result<Self, AdaptiveTreeError> {
+        validate_occupants(&occupants, leaf_capacity)?;
+        Ok(Self {
+            mapping: self.mapping.clone(),
+            occupants,
+            height,
+            leaf_capacity,
+        })
+    }
 }
 
 fn validate_members(members: &[BinaryLeafMember]) -> Result<(), AdaptiveTreeError> {
@@ -282,9 +464,7 @@ fn validate_members(members: &[BinaryLeafMember]) -> Result<(), AdaptiveTreeErro
         return Err(AdaptiveTreeError::EmptyPopulation);
     }
     for member in members {
-        if member.member_id.is_empty() {
-            return Err(AdaptiveTreeError::EmptyMemberId);
-        }
+        validate_member_id(&member.member_id)?;
     }
     let mut member_ids = members
         .iter()
@@ -301,6 +481,41 @@ fn validate_members(members: &[BinaryLeafMember]) -> Result<(), AdaptiveTreeErro
     leaf_indexes.sort_unstable();
     if leaf_indexes.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err(AdaptiveTreeError::DuplicateBinaryLeaf);
+    }
+    Ok(())
+}
+
+fn validate_member_id(member_id: &[u8]) -> Result<(), AdaptiveTreeError> {
+    if member_id.is_empty() {
+        return Err(AdaptiveTreeError::EmptyMemberId);
+    }
+    Ok(())
+}
+
+fn validate_occupants(
+    occupants: &[ShadowOccupant],
+    leaf_capacity: u32,
+) -> Result<(), AdaptiveTreeError> {
+    if occupants.is_empty() {
+        return Err(AdaptiveTreeError::EmptyPopulation);
+    }
+    let mut member_ids = Vec::with_capacity(occupants.len());
+    let mut leaf_ordinals = Vec::with_capacity(occupants.len());
+    for occupant in occupants {
+        validate_member_id(&occupant.member_id)?;
+        if occupant.quaternary_leaf_ordinal >= leaf_capacity {
+            return Err(AdaptiveTreeError::CapacityOverflow);
+        }
+        member_ids.push(occupant.member_id.as_slice());
+        leaf_ordinals.push(occupant.quaternary_leaf_ordinal);
+    }
+    member_ids.sort_unstable();
+    if member_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(AdaptiveTreeError::DuplicateMemberId);
+    }
+    leaf_ordinals.sort_unstable();
+    if leaf_ordinals.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(AdaptiveTreeError::NonCanonicalMapping);
     }
     Ok(())
 }
@@ -515,5 +730,65 @@ mod tests {
             ]
         );
         assert_eq!(shadow, before);
+    }
+
+    #[test]
+    fn replay_returns_a_new_tree_without_renumbering_existing_members() {
+        let mapping = BinaryToQuaternaryLeafMapping::from_binary_members(vec![
+            member(b"alice", 2),
+            member(b"bob", 9),
+        ])
+        .expect("valid mapping");
+        let shadow = ShadowQuaternaryTree::from_mapping(mapping).expect("shadow tree");
+        let before = shadow.clone();
+
+        let update = shadow
+            .replay(ShadowOperation::Update {
+                member_id: b"alice".to_vec(),
+            })
+            .expect("update replay");
+        assert!(!update.topology_changed);
+        assert_eq!(update.tree, shadow);
+
+        let removal = shadow
+            .replay(ShadowOperation::Remove {
+                member_id: b"bob".to_vec(),
+            })
+            .expect("remove replay");
+        assert_eq!(removal.vacated_leaf_ordinal, Some(1));
+        assert_eq!(removal.tree.occupied_leaf_ordinals(), vec![0]);
+
+        let addition = removal
+            .tree
+            .replay(ShadowOperation::Add {
+                member_id: b"charlie".to_vec(),
+            })
+            .expect("add replay");
+        assert_eq!(addition.assigned_leaf_ordinal, Some(1));
+        assert_eq!(addition.tree.occupied_leaf_ordinals(), vec![0, 1]);
+        assert_eq!(shadow, before);
+    }
+
+    #[test]
+    fn replay_expands_only_when_the_candidate_tree_is_full() {
+        let members = (0..4)
+            .map(|index| member(format!("member-{index}").as_bytes(), index))
+            .collect();
+        let shadow = ShadowQuaternaryTree::from_mapping(
+            BinaryToQuaternaryLeafMapping::from_binary_members(members).expect("valid mapping"),
+        )
+        .expect("shadow tree");
+        assert_eq!(shadow.height(), 1);
+        assert_eq!(shadow.leaf_capacity(), 4);
+
+        let addition = shadow
+            .replay(ShadowOperation::Add {
+                member_id: b"new-member".to_vec(),
+            })
+            .expect("add replay");
+        assert_eq!(addition.assigned_leaf_ordinal, Some(4));
+        assert_eq!(addition.tree.height(), 2);
+        assert_eq!(addition.tree.leaf_capacity(), 16);
+        assert_eq!(shadow.leaf_capacity(), 4);
     }
 }

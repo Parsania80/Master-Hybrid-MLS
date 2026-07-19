@@ -129,8 +129,8 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | 30 | Implement deterministic binary-to-quaternary leaf mapping and a non-mutating shadow tree | ✅ Done | Version-1 mapping follows ADR 0006: bytewise-sort canonical `MemberId`, assign left-to-right quaternary ordinals, and encode complete canonical bytes. The immutable shadow tree has public topology only; 128 members yield arity 4, height 4, capacity 256, and 128 occupied leaves. Authentication and live transition are deferred. |
-| 31 | Replay each logical operation against the shadow tree without changing real MLS state or consuming mismatched randomness | 🔄 Current | Define reproducible counterfactual methodology in an ADR. |
-| 32 | Measure real `B_i(2)` and candidate `B_hat_i(4)` with component-level serialized byte provenance | ⬜ Todo | Label every measurement versus estimate. |
+| 31 | Replay each logical operation against the shadow tree without changing real MLS state or consuming mismatched randomness | ✅ Done | ADR 0008 defines immutable public `Update`/`Add`/`Remove` replay. Updates preserve topology, removals leave holes, and additions use the lowest vacant leaf; growth occurs only when capacity is full. Replays take no RNG, live MLS state, or secret input. |
+| 32 | Measure real `B_i(2)` and candidate `B_hat_i(4)` with component-level serialized byte provenance | 🔄 Current | Label every measurement versus estimate. |
 | 33 | Track tree heights, direct paths, resolutions, blanks, populated nodes, recipient counts, and crypto operation/timing metrics | ⬜ Todo | Use typed per-commit records. |
 | 34 | Pass the Phase 6 determinism, measurement-consistency, formatting, lint, and test gate | ⬜ Todo | Re-run baseline and hybrid regression suites. |
 
@@ -182,6 +182,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 6, Task 31 — Replay each logical operation against the shadow tree without changing real MLS state or consuming mismatched randomness.
+**Current:** Part 6, Task 32 — Measure real `B_i(2)` and candidate `B_hat_i(4)` with component-level serialized byte provenance.
 
-**Next:** Part 6, Task 32 — Measure real `B_i(2)` and candidate `B_hat_i(4)` with component-level serialized byte provenance.
+**Next:** Part 6, Task 33 — Track tree heights, direct paths, resolutions, blanks, populated nodes, recipient counts, and crypto operation/timing metrics.
