@@ -16,7 +16,7 @@
 
 ## Architecture
 
-- Current state: stable-Rust workspace with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, a validated public configuration schema, a paper-based educational mKyber512 reference backend, a standalone reference timing smoke benchmark, and an experimental hybrid path-level delivery boundary. It creates a single mKyber encapsulation per co-path set, derives per-recipient classical HPKE exporter secrets, builds the canonical hybrid input, and AES-GCM wraps the path secret. OpenMLS-fork injection, adaptive transition, experiment runner, and generated results remain unimplemented.
+- Current state: stable-Rust workspace with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, a validated public configuration schema, a paper-based educational mKyber512 reference backend, a standalone reference timing smoke benchmark, and an experimental hybrid path-level delivery boundary. It creates a single mKyber encapsulation per co-path set, derives per-recipient classical HPKE exporter secrets, builds the canonical hybrid input, AES-GCM wraps the path secret, and emits public KDF-exclusion provenance from real canonical wire fields. OpenMLS-fork injection, adaptive transition, experiment runner, and generated results remain unimplemented.
 - `/agent.md`: Human-agent operating protocol and documentation rules.
 - `/PROJECT.md`: Single source of truth for scope, architecture, dependency lock, and progress.
 - `/SESSION-LOG.md`: Append-only audit trail for actions, commands, results, decisions, and limitations.
@@ -34,7 +34,7 @@
 - `/crates/mls-adapter`: Upstream OpenMLS 0.8.1 baseline adapter for group creation/join, standard Add/remove/self-update commits, validated inbound messages, and application messages; no experimental behavior is present.
 - `/crates/mkyber`: Reference-only `mkyber512-thesis-v1` backend plus typed artifact/error boundary; it has no author-compatible interoperability claim or ML-KEM fallback.
 - `/crates/mkyber/src/bin/mkyber_benchmark.rs`: Release-mode standalone timing smoke benchmark for the educational backend; prints only public component byte costs and environment-dependent timing aggregates.
-- `/crates/hybrid-path-secret`: Canonical, validated hybrid wire/context boundary plus the Task 21 sender/receiver engine. It performs one mKyber encapsulation per level, a context-bound 32-byte HPKE exporter-secret derivation per recipient, canonical hybrid KDF input/expansion, and AES-128-GCM path-secret wrapping. It is ready for a future experimental fork injection; baseline code does not import it.
+- `/crates/hybrid-path-secret`: Canonical, validated hybrid wire/context boundary plus the Task 21 sender/receiver engine and Task 22 KDF-exclusion instrumentation. It performs one mKyber encapsulation per level, a context-bound 32-byte HPKE exporter-secret derivation per recipient, canonical hybrid KDF input/expansion, and AES-128-GCM path-secret wrapping. Its value-free provenance records actual serialized common/recipient ciphertext lengths and their zero KDF contribution. It is ready for a future experimental fork injection; baseline code does not import it.
 - `/crates/adaptive-tree`: Empty boundary for binary/quaternary topology and delivery-only TreeCover state.
 - `/crates/transition-policy`: Empty boundary for ADR 0006 formulas and retirement policy.
 - `/crates/metrics`: Empty typed measurement-record boundary.
@@ -110,8 +110,8 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 | 19 | Define and authenticate `HybridPathCiphertext` with classical, PQ common, PQ recipient, encrypted-secret, and node-index fields | ✅ Done | Canonical TLS codec has version, path node, domain, one 704-byte common component, ordered recipient records with 32-byte classical encapsulation, 48-byte mKyber recipient component, and 48-byte encrypted path-secret field. It exposes bytes that a future experimental commit must authenticate; KDF/AEAD/fork integration remain deferred. |
 | 20 | Implement canonical domain-separation context encoding and the hybrid KDF input builder | ✅ Done | `HybridKdfContext` canonically TLS-encodes/validates the fixed version, label, ciphersuite, group/epoch/tree bindings, node indexes, mKyber domain, and GroupContext hash. The redacted, zeroized builder forms only `ss_classical || ss_pq || TLSEncode(context)` after exact 32-byte validation; it excludes ciphertext APIs and does not implement HKDF/AES-GCM. |
 | 21 | Integrate classical HPKE and one mKyber shared secret per co-path resolution into each experimental UpdatePath level | ✅ Done | `hybrid-path-secret` now emits/opens complete experimental path-level payloads: one mKyber encapsulation/common component per co-path set, one 32-byte context-bound HPKE exporter secret and encapsulation per recipient, exact hybrid KDF input, and AES-128-GCM path-secret wrapping. It is an isolated fork-input boundary; no OpenMLS fork has been injected and baseline mode bypasses it. |
-| 22 | Prove by focused tests/instrumentation that PQ ciphertext is excluded from KDF input while still serialized and authenticated | 🔄 Current | Never expose the underlying secrets in logs or fixtures. |
-| 23 | Add recipient/non-recipient, tamper, and cross-group/epoch/tree-version/node replay tests | ⬜ Todo | Classical, PQ common, PQ recipient, and AEAD changes must fail safely. |
+| 22 | Prove by focused tests/instrumentation that PQ ciphertext is excluded from KDF input while still serialized and authenticated | ✅ Done | Value-free instrumentation measures actual canonical common (704-byte) and recipient (48-byte) mKyber wire fields while recording zero KDF contribution. Focused tests mutate each component, show commit-authenticated bytes change, and show KDF input remains exactly unchanged for fixed secrets/context. This is code-level regression evidence, not a cryptographic proof. |
+| 23 | Add recipient/non-recipient, tamper, and cross-group/epoch/tree-version/node replay tests | 🔄 Current | Classical, PQ common, PQ recipient, and AEAD changes must fail safely. |
 | 24 | Pass the Phase 4 formatting, strict lint, integration, property, and regression gate | ⬜ Todo | Re-run unchanged baseline tests. |
 
 ### Part 5: Reproducible 128-Member Bootstrap
@@ -182,6 +182,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 4, Task 22 — Prove by focused tests/instrumentation that PQ ciphertext is excluded from KDF input while still serialized and authenticated.
+**Current:** Part 4, Task 23 — Add recipient/non-recipient, tamper, and cross-group/epoch/tree-version/node replay tests.
 
-**Next:** Part 4, Task 23 — Add recipient/non-recipient, tamper, and cross-group/epoch/tree-version/node replay tests.
+**Next:** Part 4, Task 24 — Pass the Phase 4 formatting, strict lint, integration, property, and regression gate.

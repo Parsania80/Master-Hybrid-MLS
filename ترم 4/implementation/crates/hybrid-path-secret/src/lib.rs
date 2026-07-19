@@ -626,6 +626,138 @@ pub fn build_hybrid_kdf_input(
     Ok(HybridKdfInput(input))
 }
 
+/// Builds the exact KDF input and records public exclusion provenance.
+///
+/// `ciphertext` is accepted only to measure its already-serialized public
+/// fields. Its bytes are never passed to [`build_hybrid_kdf_input`], HKDF, or
+/// an HKDF `info` value. This separate API makes that exclusion observable in
+/// tests and future byte-cost instrumentation without exposing secret values.
+pub fn build_hybrid_kdf_input_with_instrumentation(
+    ciphertext: &HybridPathCiphertext,
+    classical_shared_secret: &ClassicalSharedSecret,
+    pq_shared_secret: &MkyberSharedSecret,
+    context: &HybridKdfContext,
+) -> Result<(HybridKdfInput, HybridKdfInputInstrumentation), HybridKdfError> {
+    if ciphertext.path_node_index() != context.path_node_index()
+        || ciphertext.mkyber_domain() != context.mkyber_domain()
+    {
+        return Err(HybridKdfError::CiphertextContextMismatch);
+    }
+    let recipient = ciphertext
+        .recipients()
+        .iter()
+        .find(|recipient| recipient.recipient_node_index() == context.recipient_node_index())
+        .ok_or(HybridKdfError::CiphertextRecipientNotFound)?;
+    let context_bytes = context.canonical_bytes()?;
+    let commit_authenticated_bytes = ciphertext
+        .commit_authenticated_bytes()
+        .map_err(|_| HybridKdfError::Codec)?;
+    let input = build_hybrid_kdf_input(classical_shared_secret, pq_shared_secret, context)?;
+
+    Ok((
+        input,
+        HybridKdfInputInstrumentation {
+            kdf_input_bytes: CLASSICAL_SHARED_SECRET_BYTES
+                + PQ_SHARED_SECRET_BYTES
+                + context_bytes.len(),
+            classical_shared_secret_bytes: CLASSICAL_SHARED_SECRET_BYTES,
+            pq_shared_secret_bytes: PQ_SHARED_SECRET_BYTES,
+            context_bytes: context_bytes.len(),
+            serialized_commit_authenticated_bytes: commit_authenticated_bytes.len(),
+            serialized_classical_encapsulation_bytes: recipient.classical_encapsulation().len(),
+            serialized_mkyber_common_bytes: ciphertext.mkyber_common().as_bytes().len(),
+            serialized_mkyber_recipient_bytes: recipient.mkyber_recipient().as_bytes().len(),
+            serialized_encrypted_path_secret_bytes: recipient.encrypted_path_secret().len(),
+        },
+    ))
+}
+
+/// Public byte provenance for one instrumented hybrid KDF input.
+///
+/// Only the two secret lengths and canonical context contribute to `IKM`.
+/// Wire-field lengths are measured from the supplied canonical ciphertext so
+/// reports can prove that the mKyber common/recipient components are present
+/// on wire yet absent from the KDF boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HybridKdfInputInstrumentation {
+    kdf_input_bytes: usize,
+    classical_shared_secret_bytes: usize,
+    pq_shared_secret_bytes: usize,
+    context_bytes: usize,
+    serialized_commit_authenticated_bytes: usize,
+    serialized_classical_encapsulation_bytes: usize,
+    serialized_mkyber_common_bytes: usize,
+    serialized_mkyber_recipient_bytes: usize,
+    serialized_encrypted_path_secret_bytes: usize,
+}
+
+impl HybridKdfInputInstrumentation {
+    /// Returns the exact number of secret/context bytes entering `IKM`.
+    pub const fn kdf_input_bytes(self) -> usize {
+        self.kdf_input_bytes
+    }
+
+    /// Returns the fixed classical shared-secret contribution to `IKM`.
+    pub const fn classical_shared_secret_bytes(self) -> usize {
+        self.classical_shared_secret_bytes
+    }
+
+    /// Returns the fixed mKyber shared-secret contribution to `IKM`.
+    pub const fn pq_shared_secret_bytes(self) -> usize {
+        self.pq_shared_secret_bytes
+    }
+
+    /// Returns the canonical context contribution to `IKM`.
+    pub const fn context_bytes(self) -> usize {
+        self.context_bytes
+    }
+
+    /// Returns complete canonical hybrid wire bytes authenticated by a future commit.
+    pub const fn serialized_commit_authenticated_bytes(self) -> usize {
+        self.serialized_commit_authenticated_bytes
+    }
+
+    /// Returns the serialized classical encapsulation bytes, excluded from `IKM`.
+    pub const fn serialized_classical_encapsulation_bytes(self) -> usize {
+        self.serialized_classical_encapsulation_bytes
+    }
+
+    /// Returns serialized common mKyber ciphertext bytes, excluded from `IKM`.
+    pub const fn serialized_mkyber_common_bytes(self) -> usize {
+        self.serialized_mkyber_common_bytes
+    }
+
+    /// Returns serialized recipient mKyber ciphertext bytes, excluded from `IKM`.
+    pub const fn serialized_mkyber_recipient_bytes(self) -> usize {
+        self.serialized_mkyber_recipient_bytes
+    }
+
+    /// Returns serialized AEAD ciphertext bytes, excluded from `IKM`.
+    pub const fn serialized_encrypted_path_secret_bytes(self) -> usize {
+        self.serialized_encrypted_path_secret_bytes
+    }
+
+    /// Returns zero: no classical encapsulation bytes enter `IKM`.
+    pub const fn classical_encapsulation_bytes_in_kdf(self) -> usize {
+        0
+    }
+
+    /// Returns zero: no common mKyber ciphertext bytes enter `IKM`.
+    pub const fn mkyber_common_bytes_in_kdf(self) -> usize {
+        0
+    }
+
+    /// Returns zero: no recipient mKyber ciphertext bytes enter `IKM`.
+    pub const fn mkyber_recipient_bytes_in_kdf(self) -> usize {
+        0
+    }
+
+    /// Returns zero: no encrypted path-secret bytes enter `IKM`.
+    pub const fn encrypted_path_secret_bytes_in_kdf(self) -> usize {
+        0
+    }
+}
+
 /// Redacted errors for canonical context and hybrid-KDF input validation.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum HybridKdfError {
@@ -650,6 +782,12 @@ pub enum HybridKdfError {
     /// The mKyber thesis-profile shared secret must be exactly 32 bytes.
     #[error("invalid mKyber shared-secret length")]
     InvalidPqSharedSecretLength(usize),
+    /// The public ciphertext is bound to a different path node or mKyber domain.
+    #[error("hybrid ciphertext does not match the KDF context")]
+    CiphertextContextMismatch,
+    /// The public ciphertext does not contain the context's recipient node.
+    #[error("hybrid ciphertext does not contain the KDF recipient")]
+    CiphertextRecipientNotFound,
     /// TLS encoding or decoding failed without exposing context bytes.
     #[error("invalid hybrid KDF context encoding")]
     Codec,
@@ -1770,5 +1908,155 @@ mod tests {
             ),
             Err(HybridPathLevelError::ContextMismatch)
         );
+    }
+
+    fn instrumentation_context() -> HybridKdfContext {
+        HybridKdfContext::new(
+            b"instrumented-group".to_vec(),
+            29,
+            7,
+            TreeArity::Binary,
+            PathNodeIndex::new(3),
+            RecipientNodeIndex::new(4),
+            DOMAIN,
+            [20; 32],
+        )
+    }
+
+    fn instrumented_ciphertext(
+        common_fill: u8,
+        first_recipient_mkyber_fill: u8,
+    ) -> HybridPathCiphertext {
+        HybridPathCiphertext::new(
+            PathNodeIndex::new(3),
+            DOMAIN,
+            common(common_fill),
+            vec![
+                HybridRecipientCiphertext::new(
+                    RecipientNodeIndex::new(4),
+                    [2; CLASSICAL_ENCAPSULATION_BYTES],
+                    MkyberRecipientCiphertext::from_bytes(
+                        &[first_recipient_mkyber_fill; mkyber::RECIPIENT_CIPHERTEXT_BYTES],
+                    )
+                    .expect("exact-size mKyber recipient component"),
+                    [2; ENCRYPTED_PATH_SECRET_BYTES],
+                ),
+                recipient(9, 3),
+            ],
+        )
+        .expect("instrumented recipients must be canonical")
+    }
+
+    #[test]
+    fn instrumentation_proves_pq_ciphertext_is_authenticated_but_excluded_from_kdf_input() {
+        let classical = ClassicalSharedSecret::from_bytes(&[0x21; CLASSICAL_SHARED_SECRET_BYTES])
+            .expect("exact-size classical secret must construct");
+        let pq = MkyberSharedSecret::from_bytes(vec![0x22; PQ_SHARED_SECRET_BYTES])
+            .expect("exact-size PQ secret must construct");
+        let context = instrumentation_context();
+        let original = instrumented_ciphertext(1, 2);
+        let changed_common = instrumented_ciphertext(3, 2);
+        let changed_recipient = instrumented_ciphertext(1, 4);
+
+        let (original_input, original_measurement) =
+            build_hybrid_kdf_input_with_instrumentation(&original, &classical, &pq, &context)
+                .expect("matching ciphertext must instrument");
+        let (common_input, common_measurement) =
+            build_hybrid_kdf_input_with_instrumentation(&changed_common, &classical, &pq, &context)
+                .expect("changed common component remains syntactically valid");
+        let (recipient_input, recipient_measurement) = build_hybrid_kdf_input_with_instrumentation(
+            &changed_recipient,
+            &classical,
+            &pq,
+            &context,
+        )
+        .expect("changed recipient component remains syntactically valid");
+
+        assert!(original_input.as_bytes() == common_input.as_bytes());
+        assert!(original_input.as_bytes() == recipient_input.as_bytes());
+        assert!(
+            original
+                .commit_authenticated_bytes()
+                .expect("canonical wire encoding must succeed")
+                != changed_common
+                    .commit_authenticated_bytes()
+                    .expect("canonical wire encoding must succeed")
+        );
+        assert!(
+            original
+                .commit_authenticated_bytes()
+                .expect("canonical wire encoding must succeed")
+                != changed_recipient
+                    .commit_authenticated_bytes()
+                    .expect("canonical wire encoding must succeed")
+        );
+
+        assert_eq!(
+            original_measurement.kdf_input_bytes(),
+            CLASSICAL_SHARED_SECRET_BYTES
+                + PQ_SHARED_SECRET_BYTES
+                + original_measurement.context_bytes()
+        );
+        assert_eq!(
+            original_measurement.serialized_mkyber_common_bytes(),
+            mkyber::COMMON_CIPHERTEXT_BYTES
+        );
+        assert_eq!(
+            original_measurement.serialized_mkyber_recipient_bytes(),
+            mkyber::RECIPIENT_CIPHERTEXT_BYTES
+        );
+        assert!(original_measurement.serialized_commit_authenticated_bytes() > 0);
+        assert_eq!(
+            original_measurement.classical_encapsulation_bytes_in_kdf(),
+            0
+        );
+        assert_eq!(original_measurement.mkyber_common_bytes_in_kdf(), 0);
+        assert_eq!(original_measurement.mkyber_recipient_bytes_in_kdf(), 0);
+        assert_eq!(original_measurement.encrypted_path_secret_bytes_in_kdf(), 0);
+        assert_eq!(original_measurement, common_measurement);
+        assert_eq!(original_measurement, recipient_measurement);
+    }
+
+    #[test]
+    fn instrumentation_rejects_ciphertext_context_and_recipient_mismatches() {
+        let classical = ClassicalSharedSecret::from_bytes(&[0x23; CLASSICAL_SHARED_SECRET_BYTES])
+            .expect("exact-size classical secret must construct");
+        let pq = MkyberSharedSecret::from_bytes(vec![0x24; PQ_SHARED_SECRET_BYTES])
+            .expect("exact-size PQ secret must construct");
+        let ciphertext = instrumented_ciphertext(1, 2);
+        let wrong_path = HybridKdfContext::new(
+            b"instrumented-group".to_vec(),
+            29,
+            7,
+            TreeArity::Binary,
+            PathNodeIndex::new(5),
+            RecipientNodeIndex::new(4),
+            DOMAIN,
+            [20; 32],
+        );
+        let wrong_recipient = HybridKdfContext::new(
+            b"instrumented-group".to_vec(),
+            29,
+            7,
+            TreeArity::Binary,
+            PathNodeIndex::new(3),
+            RecipientNodeIndex::new(5),
+            DOMAIN,
+            [20; 32],
+        );
+
+        assert!(matches!(
+            build_hybrid_kdf_input_with_instrumentation(&ciphertext, &classical, &pq, &wrong_path),
+            Err(HybridKdfError::CiphertextContextMismatch)
+        ));
+        assert!(matches!(
+            build_hybrid_kdf_input_with_instrumentation(
+                &ciphertext,
+                &classical,
+                &pq,
+                &wrong_recipient
+            ),
+            Err(HybridKdfError::CiphertextRecipientNotFound)
+        ));
     }
 }
