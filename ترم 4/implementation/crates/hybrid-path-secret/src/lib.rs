@@ -2059,4 +2059,194 @@ mod tests {
             Err(HybridKdfError::CiphertextRecipientNotFound)
         ));
     }
+
+    fn sealed_path_level_fixture() -> (
+        EducationalMkyber512Reference,
+        HybridPathLevelContext,
+        HybridPathCiphertext,
+        HybridPathRecipientPrivate,
+        HybridPathRecipientPrivate,
+    ) {
+        let backend = EducationalMkyber512Reference;
+        let domain = MkyberDomain::new([25; 32]);
+        let mut randomness = ChaCha20Rng::from_seed([26; 32]);
+        let (bob_public, bob_private) = hybrid_recipient(&backend, &mut randomness, domain, 4);
+        let (charlie_public, charlie_private) =
+            hybrid_recipient(&backend, &mut randomness, domain, 9);
+        let context = HybridPathLevelContext::new(
+            b"task-twenty-three-group".to_vec(),
+            31,
+            8,
+            TreeArity::Quaternary,
+            PathNodeIndex::new(12),
+            domain,
+            [27; 32],
+        );
+        let path_secret = HybridPathSecret::from_bytes(&[28; MLS_PATH_SECRET_BYTES])
+            .expect("exact-size test path secret must construct");
+        let ciphertext = seal_hybrid_path_level(
+            &backend,
+            &mut randomness,
+            &context,
+            &path_secret,
+            &[bob_public, charlie_public],
+        )
+        .expect("valid co-path recipients must seal");
+        (backend, context, ciphertext, bob_private, charlie_private)
+    }
+
+    fn replace_first_recipient(
+        ciphertext: &HybridPathCiphertext,
+        replacement: HybridRecipientCiphertext,
+    ) -> HybridPathCiphertext {
+        let mut recipients = ciphertext.recipients().to_vec();
+        recipients[0] = replacement;
+        HybridPathCiphertext::new(
+            ciphertext.path_node_index(),
+            ciphertext.mkyber_domain(),
+            ciphertext.mkyber_common().clone(),
+            recipients,
+        )
+        .expect("replacement must preserve canonical recipient order")
+    }
+
+    #[test]
+    fn every_serialized_delivery_component_tamper_fails_without_path_secret_output() {
+        let (backend, context, ciphertext, bob_private, _) = sealed_path_level_fixture();
+        let first = &ciphertext.recipients()[0];
+
+        let mut changed_classical = *first.classical_encapsulation();
+        changed_classical[0] ^= 1;
+        let classical_tamper = replace_first_recipient(
+            &ciphertext,
+            HybridRecipientCiphertext::new(
+                first.recipient_node_index(),
+                changed_classical,
+                first.mkyber_recipient().clone(),
+                *first.encrypted_path_secret(),
+            ),
+        );
+
+        let mut changed_common = *ciphertext.mkyber_common().as_bytes();
+        changed_common[0] ^= 1;
+        let common_tamper = HybridPathCiphertext::new(
+            ciphertext.path_node_index(),
+            ciphertext.mkyber_domain(),
+            MkyberCommonCiphertext::from_bytes(&changed_common)
+                .expect("exact-size common component must construct"),
+            ciphertext.recipients().to_vec(),
+        )
+        .expect("common-component replacement must remain canonical");
+
+        let mut changed_recipient = *first.mkyber_recipient().as_bytes();
+        changed_recipient[0] ^= 1;
+        let recipient_tamper = replace_first_recipient(
+            &ciphertext,
+            HybridRecipientCiphertext::new(
+                first.recipient_node_index(),
+                *first.classical_encapsulation(),
+                MkyberRecipientCiphertext::from_bytes(&changed_recipient)
+                    .expect("exact-size recipient component must construct"),
+                *first.encrypted_path_secret(),
+            ),
+        );
+
+        let mut changed_aead = *first.encrypted_path_secret();
+        changed_aead[0] ^= 1;
+        let aead_tamper = replace_first_recipient(
+            &ciphertext,
+            HybridRecipientCiphertext::new(
+                first.recipient_node_index(),
+                *first.classical_encapsulation(),
+                first.mkyber_recipient().clone(),
+                changed_aead,
+            ),
+        );
+
+        for tampered in [
+            classical_tamper,
+            common_tamper,
+            recipient_tamper,
+            aead_tamper,
+        ] {
+            assert!(
+                open_hybrid_path_level(&backend, &context, &tampered, &bob_private).is_err(),
+                "every altered delivery field must fail before returning a path secret"
+            );
+        }
+    }
+
+    #[test]
+    fn only_intended_recipients_can_open_a_hybrid_path_level() {
+        let (backend, context, ciphertext, bob_private, charlie_private) =
+            sealed_path_level_fixture();
+        let domain = context.mkyber_domain();
+        let mut randomness = ChaCha20Rng::from_seed([29; 32]);
+        let (_, non_recipient_private) = hybrid_recipient(&backend, &mut randomness, domain, 15);
+
+        assert!(
+            open_hybrid_path_level(&backend, &context, &ciphertext, &bob_private).is_ok(),
+            "intended Bob recipient must open"
+        );
+        assert!(
+            open_hybrid_path_level(&backend, &context, &ciphertext, &charlie_private).is_ok(),
+            "intended Charlie recipient must open"
+        );
+        assert!(matches!(
+            open_hybrid_path_level(&backend, &context, &ciphertext, &non_recipient_private),
+            Err(HybridPathLevelError::RecipientNotFound)
+        ));
+    }
+
+    #[test]
+    fn group_epoch_tree_and_node_replays_fail_before_path_secret_output() {
+        let (backend, context, ciphertext, bob_private, _) = sealed_path_level_fixture();
+        let domain = context.mkyber_domain();
+        let changed_contexts = [
+            HybridPathLevelContext::new(
+                b"another-group".to_vec(),
+                31,
+                8,
+                TreeArity::Quaternary,
+                PathNodeIndex::new(12),
+                domain,
+                [27; 32],
+            ),
+            HybridPathLevelContext::new(
+                b"task-twenty-three-group".to_vec(),
+                32,
+                8,
+                TreeArity::Quaternary,
+                PathNodeIndex::new(12),
+                domain,
+                [27; 32],
+            ),
+            HybridPathLevelContext::new(
+                b"task-twenty-three-group".to_vec(),
+                31,
+                9,
+                TreeArity::Quaternary,
+                PathNodeIndex::new(12),
+                domain,
+                [27; 32],
+            ),
+            HybridPathLevelContext::new(
+                b"task-twenty-three-group".to_vec(),
+                31,
+                8,
+                TreeArity::Quaternary,
+                PathNodeIndex::new(13),
+                domain,
+                [27; 32],
+            ),
+        ];
+
+        for replay_context in changed_contexts {
+            assert!(
+                open_hybrid_path_level(&backend, &replay_context, &ciphertext, &bob_private)
+                    .is_err(),
+                "a group, epoch, tree-version, or path-node replay must fail"
+            );
+        }
+    }
 }
