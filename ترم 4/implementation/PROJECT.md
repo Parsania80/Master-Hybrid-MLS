@@ -112,7 +112,7 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 | 21 | Integrate classical HPKE and one mKyber shared secret per co-path resolution into each experimental UpdatePath level | ✅ Done | `hybrid-path-secret` now emits/opens complete experimental path-level payloads: one mKyber encapsulation/common component per co-path set, one 32-byte context-bound HPKE exporter secret and encapsulation per recipient, exact hybrid KDF input, and AES-128-GCM path-secret wrapping. It is an isolated fork-input boundary; no OpenMLS fork has been injected and baseline mode bypasses it. |
 | 22 | Prove by focused tests/instrumentation that PQ ciphertext is excluded from KDF input while still serialized and authenticated | ✅ Done | Value-free instrumentation measures actual canonical common (704-byte) and recipient (48-byte) mKyber wire fields while recording zero KDF contribution. Focused tests mutate each component, show commit-authenticated bytes change, and show KDF input remains exactly unchanged for fixed secrets/context. This is code-level regression evidence, not a cryptographic proof. |
 | 23 | Add recipient/non-recipient, tamper, and cross-group/epoch/tree-version/node replay tests | ✅ Done | Tests verify intended recipient delivery and non-recipient rejection; alterations to classical encapsulation, mKyber common/recipient components, or AES-GCM ciphertext fail without path-secret output; changed group, epoch, tree version, or path node replays also fail. These are code-level tests of the isolated boundary, not a proof. |
-| 24 | Pass the Phase 4 formatting, strict lint, integration, property, and regression gate | 🔄 Current | Re-run unchanged baseline tests. |
+| 24 | Pass the Phase 4 formatting, strict lint, integration, property, and regression gate | ✅ Done | Rust 1.93.1 locked-offline format/check/strict Clippy/all-target tests/doc tests/release build/metadata passed. Two bounded public-byte properties supplement hybrid regression tests; the unchanged baseline regressions passed. OpenMLS feature audit shows only `openmls_rust_crypto`, with no prohibited OpenMLS debug/test/libcrux/SQLite/JavaScript feature. |
 
 ### Part 5: Reproducible 128-Member Bootstrap
 
@@ -182,6 +182,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 4, Task 24 — Pass the Phase 4 formatting, strict lint, integration, property, and regression gate.
+**Current:** Part 5, Task 25 — Implement `bootstrap_128.rs` using valid Add proposals/commits and full commit delivery.
 
-**Next:** Part 5, Task 25 — Implement `bootstrap_128.rs` using valid Add proposals/commits and full commit delivery.
+**Next:** Part 5, Task 26 — Verify 128 members, binary arity, height 7, occupied leaves, common epoch/context/tree hash, application messages, and secret cleanup.

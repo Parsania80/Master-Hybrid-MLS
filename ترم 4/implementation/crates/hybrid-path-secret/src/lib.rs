@@ -1421,6 +1421,7 @@ pub enum HybridPathLevelError {
 mod tests {
     use super::*;
     use mkyber::EducationalMkyber512Reference;
+    use proptest::prelude::*;
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
 
@@ -2246,6 +2247,99 @@ mod tests {
                 open_hybrid_path_level(&backend, &replay_context, &ciphertext, &bob_private)
                     .is_err(),
                 "a group, epoch, tree-version, or path-node replay must fail"
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_common_component_mutation_changes_authenticated_wire_but_not_fixed_input(
+            byte_index in 0usize..mkyber::COMMON_CIPHERTEXT_BYTES,
+            mask in 1u8..=u8::MAX,
+        ) {
+            let classical = ClassicalSharedSecret::from_bytes(&[0x31; CLASSICAL_SHARED_SECRET_BYTES])
+                .expect("exact-size classical secret must construct");
+            let pq = MkyberSharedSecret::from_bytes(vec![0x32; PQ_SHARED_SECRET_BYTES])
+                .expect("exact-size PQ secret must construct");
+            let context = instrumentation_context();
+            let original = instrumented_ciphertext(1, 2);
+            let mut changed_common = *original.mkyber_common().as_bytes();
+            changed_common[byte_index] ^= mask;
+            let changed = HybridPathCiphertext::new(
+                original.path_node_index(),
+                original.mkyber_domain(),
+                MkyberCommonCiphertext::from_bytes(&changed_common)
+                    .expect("exact-size common component must construct"),
+                original.recipients().to_vec(),
+            )
+            .expect("changed common component must preserve canonical wire form");
+
+            let (original_input, _) = build_hybrid_kdf_input_with_instrumentation(
+                &original,
+                &classical,
+                &pq,
+                &context,
+            )
+            .expect("original ciphertext must instrument");
+            let (changed_input, _) = build_hybrid_kdf_input_with_instrumentation(
+                &changed,
+                &classical,
+                &pq,
+                &context,
+            )
+            .expect("changed ciphertext must instrument");
+
+            prop_assert!(original_input.as_bytes() == changed_input.as_bytes());
+            prop_assert!(
+                original.commit_authenticated_bytes().expect("original wire must encode")
+                    != changed.commit_authenticated_bytes().expect("changed wire must encode")
+            );
+        }
+
+        #[test]
+        fn arbitrary_recipient_component_mutation_changes_authenticated_wire_but_not_fixed_input(
+            byte_index in 0usize..mkyber::RECIPIENT_CIPHERTEXT_BYTES,
+            mask in 1u8..=u8::MAX,
+        ) {
+            let classical = ClassicalSharedSecret::from_bytes(&[0x33; CLASSICAL_SHARED_SECRET_BYTES])
+                .expect("exact-size classical secret must construct");
+            let pq = MkyberSharedSecret::from_bytes(vec![0x34; PQ_SHARED_SECRET_BYTES])
+                .expect("exact-size PQ secret must construct");
+            let context = instrumentation_context();
+            let original = instrumented_ciphertext(1, 2);
+            let first = &original.recipients()[0];
+            let mut changed_recipient = *first.mkyber_recipient().as_bytes();
+            changed_recipient[byte_index] ^= mask;
+            let changed = replace_first_recipient(
+                &original,
+                HybridRecipientCiphertext::new(
+                    first.recipient_node_index(),
+                    *first.classical_encapsulation(),
+                    MkyberRecipientCiphertext::from_bytes(&changed_recipient)
+                        .expect("exact-size recipient component must construct"),
+                    *first.encrypted_path_secret(),
+                ),
+            );
+
+            let (original_input, _) = build_hybrid_kdf_input_with_instrumentation(
+                &original,
+                &classical,
+                &pq,
+                &context,
+            )
+            .expect("original ciphertext must instrument");
+            let (changed_input, _) = build_hybrid_kdf_input_with_instrumentation(
+                &changed,
+                &classical,
+                &pq,
+                &context,
+            )
+            .expect("changed ciphertext must instrument");
+
+            prop_assert!(original_input.as_bytes() == changed_input.as_bytes());
+            prop_assert!(
+                original.commit_authenticated_bytes().expect("original wire must encode")
+                    != changed.commit_authenticated_bytes().expect("changed wire must encode")
             );
         }
     }
