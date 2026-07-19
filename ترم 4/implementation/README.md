@@ -20,6 +20,8 @@ The Rust workspace pins the approved dependencies and contains an unchanged Open
 
 The 128-member baseline constructor is available now: `cargo +stable run --bin bootstrap_128 --release --locked --offline -- --members 128 --seed 42 --output output/bootstrap-128`. The public seed selects committers only; it is not cryptographic entropy. The output directory is accepted but intentionally remains empty until Tasks 27 and 28 define safe snapshots and reports.
 
+Before the constructor reports success, it verifies 128 members at epoch 127, baseline binary arity 2 and height 7, actual occupied public leaf indexes `0..127`, common authenticated GroupContext/tree hash, and application delivery to every other member. It returns public facts only and then drops private client state; that lifecycle action is not a formal proof of upstream process-memory zeroization.
+
 Run `cargo +stable test --workspace --all-targets --locked --offline` to verify the baseline and educational mKyber reference tests. Run `cargo +stable run -p mkyber --bin mkyber_benchmark --release --locked --offline` for the standalone reference timing smoke benchmark. It prints only the reference profile/parameters, actual public 704/48-byte component costs, and environment-dependent timing averages; it is not a production benchmark, security evaluation, or thesis experiment result. There is not yet a transition-evaluation runner or generated experiment report.
 
 ## Security and interoperability warning

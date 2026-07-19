@@ -77,6 +77,8 @@ pub struct BaselineState {
     pub epoch: u64,
     /// Number of currently active group members.
     pub member_count: usize,
+    /// Public MLS leaf indexes occupied by current members, in tree order.
+    pub member_leaf_indices: Vec<u32>,
     /// TLS encoding of the authenticated public MLS GroupContext.
     pub group_context: Vec<u8>,
     /// The RFC 9420 tree hash carried by the authenticated GroupContext.
@@ -356,6 +358,7 @@ impl BaselineClient {
             group_id: group.group_id().as_slice().to_vec(),
             epoch: group.epoch().as_u64(),
             member_count: group.members().count(),
+            member_leaf_indices: group.members().map(|member| member.index.u32()).collect(),
             group_context: group_context
                 .tls_serialize_detached()
                 .map_err(|_| BaselineError::OpenMls)?,

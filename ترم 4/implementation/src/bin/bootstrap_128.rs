@@ -8,7 +8,9 @@
 
 use std::{env, path::PathBuf, process::ExitCode};
 
-use adaptive_hybrid_mls::bootstrap::{bootstrap_128, BootstrapOptions, BOOTSTRAP_MEMBER_COUNT};
+use adaptive_hybrid_mls::bootstrap::{
+    bootstrap_128, verify_bootstrap_128, BootstrapOptions, BOOTSTRAP_MEMBER_COUNT,
+};
 
 /// Parsed public command-line arguments for the bootstrap executable.
 #[derive(Debug)]
@@ -49,22 +51,33 @@ fn main() -> ExitCode {
         schedule_seed: cli.seed,
     };
     match bootstrap_128(&options) {
-        Ok((_clients, result)) => {
-            println!(
-                "Created and delivered {} Add commits for {} baseline MLS members using {} distinct committers.",
-                result.add_commit_count,
+        Ok((mut clients, result)) => {
+            let verification = verify_bootstrap_128(&mut clients);
+            drop(clients);
+            match verification {
+                Ok(verification) => {
+                    println!(
+                "Verified {} baseline MLS members after {} Add commits at epoch {} using {} distinct committers.",
                 BOOTSTRAP_MEMBER_COUNT,
+                result.add_commit_count,
+                verification.epoch,
                 result
                     .committer_indices
                     .iter()
                     .collect::<std::collections::BTreeSet<_>>()
                     .len()
             );
-            println!(
+                    println!(
                 "No artifact was written to {}: safe snapshots and reports are deferred to Tasks 27 and 28.",
                 cli.output.display()
             );
-            ExitCode::SUCCESS
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("bootstrap_128 verification failed: {error}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(error) => {
             eprintln!("bootstrap_128 failed: {error}");
