@@ -5,7 +5,12 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+hybrid-path-secret = { path = "../hybrid-path-secret" }
 serde.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+mkyber = { path = "../mkyber" }
