@@ -120,8 +120,8 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 |---|------|--------|-------|
 | 25 | Implement `bootstrap_128.rs` using valid Add proposals/commits and full commit delivery | ✅ Done | The standard-library CLI accepts `--members 128 --seed 42 --output output/bootstrap-128`; the seed selects only the public committer schedule. A release run created 127 Add commits, delivered every commit to all prior members, joined each new member from its Welcome, and used 22 valid committers. Snapshot/report files remain deferred to Tasks 27–28. |
 | 26 | Verify 128 members, binary arity, height 7, occupied leaves, common epoch/context/tree hash, application messages, and secret cleanup | ✅ Done | The fail-closed release verifier confirms epoch 127, 128 members, baseline binary arity 2, height 7, actual occupied leaf indexes `0..127`, identical GroupContext/tree hash, and one application message decrypted by every other member. It returns public facts only and the CLI drops private client state; this is lifecycle cleanup, not a proof of upstream process-memory zeroization. |
-| 27 | Design a safe reproducible snapshot that separates public scheduling seed from secret key-generation entropy | 🔄 Current | Persist public tree, metadata, public key packages, and configuration only. |
-| 28 | Generate bootstrap summary JSON, commit CSV, and Markdown report under the requested output directory | ⬜ Todo | Reconcile directory and filename conventions in the CLI contract. |
+| 27 | Design a safe reproducible snapshot that separates public scheduling seed from secret key-generation entropy | ✅ Done | `bootstrap_public_snapshot.json` is versioned and create-new under `output/<run>`. It contains only public schedule/configuration metadata, authenticated GroupContext/tree hash, TLS public RatchetTree, occupied leaves, and the 127 actual Add KeyPackages; the creator is represented by its public tree leaf. The public seed cannot reconstruct OS-generated key entropy. |
+| 28 | Generate bootstrap summary JSON, commit CSV, and Markdown report under the requested output directory | 🔄 Current | Reconcile directory and filename conventions in the CLI contract. |
 | 29 | Pass the Phase 5 tests and a release-mode 128-member acceptance run | ⬜ Todo | Archive exact configuration, compiler/dependency versions, command, and safe outputs. |
 
 ### Part 6: Shadow Quaternary Tree and Cost Measurement
@@ -182,6 +182,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 5, Task 27 — Design a safe reproducible snapshot that separates public scheduling seed from secret key-generation entropy.
+**Current:** Part 5, Task 28 — Generate bootstrap summary JSON, commit CSV, and Markdown report under the requested output directory.
 
-**Next:** Part 5, Task 28 — Generate bootstrap summary JSON, commit CSV, and Markdown report under the requested output directory.
+**Next:** Part 5, Task 29 — Pass the Phase 5 tests and a release-mode 128-member acceptance run.

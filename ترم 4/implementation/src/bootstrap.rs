@@ -3,10 +3,19 @@
 //! The public scheduling seed chooses only which existing member stages each
 //! Add commit. OpenMLS continues to use its provider's operating-system-backed
 //! entropy for credentials, KeyPackages, and MLS cryptographic operations.
-//! This module deliberately writes no snapshot or report artifacts; Tasks 27
-//! and 28 define the safe artifact boundary and output formats.
+//! Task 27 persists a versioned public snapshot only after successful group
+//! verification. Tasks 28 and later add summary, commit, and report artifacts.
 
-use mls_adapter::{BaselineClient, BaselineError, BaselineState, InboundEvent};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Component, Path, PathBuf},
+};
+
+use mls_adapter::{
+    BaselineClient, BaselineError, BaselineState, InboundEvent, BASELINE_CIPHERSUITE_ID,
+};
+use serde::Serialize;
 use thiserror::Error;
 
 /// The exact group size required by the thesis bootstrap experiment.
@@ -15,6 +24,8 @@ pub const BOOTSTRAP_MEMBER_COUNT: usize = 128;
 pub const BASELINE_TREE_ARITY: u8 = 2;
 /// A complete binary tree holding 128 leaves has seven levels above a leaf.
 pub const BOOTSTRAP_BINARY_TREE_HEIGHT: u8 = 7;
+/// Stable name of the safe public bootstrap snapshot.
+pub const PUBLIC_SNAPSHOT_FILE_NAME: &str = "bootstrap_public_snapshot.json";
 
 /// Public, non-secret options for the baseline bootstrap operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,13 +50,26 @@ impl BootstrapOptions {
 }
 
 /// Public results from a successful construction. No private MLS state,
-/// secrets, key packages, or entropy are retained here.
+/// secrets, or entropy are retained here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootstrapResult {
     /// Number of Add commits staged and delivered after group creation.
     pub add_commit_count: usize,
     /// Public indexes of the members that staged each Add commit.
     pub committer_indices: Vec<usize>,
+    /// TLS encodings of the public KeyPackages submitted for members 1..127.
+    /// The creator is represented by its public leaf in the ratchet tree, not
+    /// by an invented KeyPackage that was never used to create the group.
+    pub added_member_key_packages: Vec<PublicKeyPackage>,
+}
+
+/// One actual public KeyPackage supplied in an Add proposal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicKeyPackage {
+    /// Bootstrap index of the joining member.
+    pub member_index: usize,
+    /// Canonical TLS encoding of the public RFC 9420 KeyPackage.
+    pub tls_bytes: Vec<u8>,
 }
 
 /// Safe public facts established by a successful 128-member verification.
@@ -61,6 +85,80 @@ pub struct BootstrapVerification {
     pub group_context: Vec<u8>,
     /// Authenticated public RFC 9420 tree hash shared by all members.
     pub tree_hash: Vec<u8>,
+    /// Public group identifier shared by all members.
+    pub group_id: Vec<u8>,
+    /// Public occupied leaf indexes shared by all members.
+    pub member_leaf_indices: Vec<u32>,
+    /// Canonical TLS encoding of the public RFC 9420 ratchet tree.
+    pub ratchet_tree: Vec<u8>,
+}
+
+/// Versioned, serializable public experiment snapshot.
+///
+/// This type contains no private MLS state, private keys, shared secrets,
+/// path secrets, AEAD material, raw entropy, or a seed that reconstructs it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PublicBootstrapSnapshot {
+    /// Versioned schema identifier for non-secret snapshot readers.
+    pub format: String,
+    /// Public baseline protocol settings used by this run.
+    pub configuration: PublicSnapshotConfiguration,
+    /// Public scheduling input and explicit non-reconstructibility statement.
+    pub reproducibility: PublicSnapshotReproducibility,
+    /// Authenticated public MLS group state.
+    pub group: PublicSnapshotGroup,
+    /// KeyPackages that were actually submitted for the 127 Add operations.
+    pub added_member_key_packages: Vec<PublicSnapshotKeyPackage>,
+}
+
+/// Fixed public configuration captured by the first bootstrap executable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PublicSnapshotConfiguration {
+    /// Baseline implementation mode, not experimental hybrid behavior.
+    pub mode: String,
+    /// RFC 9420 ciphersuite identifier.
+    pub ciphersuite_id: u16,
+    /// Fixed baseline tree arity.
+    pub tree_arity: u8,
+    /// Required member count.
+    pub member_count: usize,
+}
+
+/// Reproducibility data that cannot recreate key material.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PublicSnapshotReproducibility {
+    /// Public input selecting only the committer schedule.
+    pub schedule_seed: u64,
+    /// Explicit statement that key-generation entropy is absent from the file.
+    pub key_generation_entropy_policy: String,
+}
+
+/// Authenticated public state serialized as lowercase hexadecimal TLS bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PublicSnapshotGroup {
+    /// Public group identifier.
+    pub group_id_hex: String,
+    /// Common epoch after all Add commits.
+    pub epoch: u64,
+    /// Public TLS GroupContext encoding.
+    pub group_context_tls_hex: String,
+    /// Public authenticated tree hash.
+    pub tree_hash_hex: String,
+    /// Public TLS RatchetTree encoding.
+    pub ratchet_tree_tls_hex: String,
+    /// Public member occupancy in leaf-index order.
+    pub occupied_leaf_indices: Vec<u32>,
+}
+
+/// One serialized public KeyPackage in the snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PublicSnapshotKeyPackage {
+    /// Bootstrap member index and matching public identity suffix.
+    pub member_index: usize,
+    /// Public BasicCredential identity.
+    pub identity: String,
+    /// Public TLS KeyPackage encoding.
+    pub tls_hex: String,
 }
 
 /// Failures encountered while constructing and delivering bootstrap commits.
@@ -121,6 +219,24 @@ impl From<BaselineError> for BootstrapVerificationError {
     }
 }
 
+/// Errors from constructing or persisting the public snapshot.
+#[derive(Debug, Error)]
+pub enum SnapshotError {
+    /// The public construction result is incomplete or inconsistent.
+    #[error("the public bootstrap result cannot form a complete snapshot")]
+    IncompletePublicResult,
+    /// The requested output directory is outside the approved public-output
+    /// boundary or otherwise ambiguous.
+    #[error("the snapshot output directory must be a relative output/<run> path")]
+    UnsafeOutputDirectory,
+    /// Public JSON serialization failed.
+    #[error("public snapshot serialization failed")]
+    Serialization(#[source] serde_json::Error),
+    /// The snapshot could not be written without overwriting an existing file.
+    #[error("the public snapshot could not be written")]
+    Io(#[source] std::io::Error),
+}
+
 /// Builds the fixed-size group and delivers each Add commit to every current
 /// member. The returned client vector remains private to the caller so Task 26
 /// can perform its separate convergence and cleanup verification.
@@ -137,9 +253,11 @@ pub fn bootstrap_128(
     clients[0].create_group(b"adaptive-hybrid-mls-bootstrap-128")?;
 
     let mut committer_indices = Vec::with_capacity(options.members - 1);
+    let mut added_member_key_packages = Vec::with_capacity(options.members - 1);
     for joining_index in 1..options.members {
         let committer_index = committer_for_add(options.schedule_seed, joining_index);
-        let key_package = clients[joining_index].key_package()?;
+        let (key_package, key_package_tls_bytes) =
+            clients[joining_index].key_package_with_wire_bytes()?;
         let outbound = clients[committer_index]
             .add_members(core::slice::from_ref(key_package.key_package()))?;
 
@@ -157,6 +275,10 @@ pub fn bootstrap_128(
             .ok_or(BootstrapError::MissingWelcome)?;
         clients[joining_index].join_from_welcome(welcome)?;
         committer_indices.push(committer_index);
+        added_member_key_packages.push(PublicKeyPackage {
+            member_index: joining_index,
+            tls_bytes: key_package_tls_bytes,
+        });
     }
 
     Ok((
@@ -164,6 +286,7 @@ pub fn bootstrap_128(
         BootstrapResult {
             add_commit_count: options.members - 1,
             committer_indices,
+            added_member_key_packages,
         },
     ))
 }
@@ -206,7 +329,99 @@ pub fn verify_bootstrap_128(
         tree_height: BOOTSTRAP_BINARY_TREE_HEIGHT,
         group_context: reference_state.group_context,
         tree_hash: reference_state.tree_hash,
+        group_id: reference_state.group_id,
+        member_leaf_indices: reference_state.member_leaf_indices,
+        ratchet_tree: reference_state.ratchet_tree,
     })
+}
+
+/// Builds the versioned snapshot exclusively from public bootstrap data.
+pub fn public_bootstrap_snapshot(
+    options: &BootstrapOptions,
+    result: &BootstrapResult,
+    verification: &BootstrapVerification,
+) -> Result<PublicBootstrapSnapshot, SnapshotError> {
+    if result.add_commit_count != BOOTSTRAP_MEMBER_COUNT - 1
+        || result.added_member_key_packages.len() != BOOTSTRAP_MEMBER_COUNT - 1
+        || verification.member_leaf_indices
+            != (0..BOOTSTRAP_MEMBER_COUNT as u32).collect::<Vec<_>>()
+    {
+        return Err(SnapshotError::IncompletePublicResult);
+    }
+
+    let added_member_key_packages = result
+        .added_member_key_packages
+        .iter()
+        .enumerate()
+        .map(|(offset, key_package)| {
+            if key_package.member_index != offset + 1 {
+                return Err(SnapshotError::IncompletePublicResult);
+            }
+            Ok(PublicSnapshotKeyPackage {
+                member_index: key_package.member_index,
+                identity: member_identity_string(key_package.member_index),
+                tls_hex: hex::encode(&key_package.tls_bytes),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(PublicBootstrapSnapshot {
+        format: "adaptive-hybrid-mls/bootstrap-public-snapshot-v1".to_owned(),
+        configuration: PublicSnapshotConfiguration {
+            mode: "baseline-binary-mls".to_owned(),
+            ciphersuite_id: BASELINE_CIPHERSUITE_ID,
+            tree_arity: BASELINE_TREE_ARITY,
+            member_count: BOOTSTRAP_MEMBER_COUNT,
+        },
+        reproducibility: PublicSnapshotReproducibility {
+            schedule_seed: options.schedule_seed,
+            key_generation_entropy_policy:
+                "operating-system RNG; not persisted and not reconstructible from this snapshot"
+                    .to_owned(),
+        },
+        group: PublicSnapshotGroup {
+            group_id_hex: hex::encode(&verification.group_id),
+            epoch: verification.epoch,
+            group_context_tls_hex: hex::encode(&verification.group_context),
+            tree_hash_hex: hex::encode(&verification.tree_hash),
+            ratchet_tree_tls_hex: hex::encode(&verification.ratchet_tree),
+            occupied_leaf_indices: verification.member_leaf_indices.clone(),
+        },
+        added_member_key_packages,
+    })
+}
+
+/// Ensures the CLI output target stays under `output/<run>`.
+pub fn validate_snapshot_output_directory(path: &Path) -> Result<(), SnapshotError> {
+    let components: Vec<_> = path.components().collect();
+    if components.len() < 2
+        || !matches!(components.first(), Some(Component::Normal(component)) if *component == std::ffi::OsStr::new("output"))
+        || components
+            .iter()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(SnapshotError::UnsafeOutputDirectory);
+    }
+    Ok(())
+}
+
+/// Writes a public-only snapshot once, preserving prior experiment evidence.
+pub fn write_public_bootstrap_snapshot(
+    output_directory: &Path,
+    snapshot: &PublicBootstrapSnapshot,
+) -> Result<PathBuf, SnapshotError> {
+    validate_snapshot_output_directory(output_directory)?;
+    fs::create_dir_all(output_directory).map_err(SnapshotError::Io)?;
+    let snapshot_path = output_directory.join(PUBLIC_SNAPSHOT_FILE_NAME);
+    let encoded = serde_json::to_vec_pretty(snapshot).map_err(SnapshotError::Serialization)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&snapshot_path)
+        .map_err(SnapshotError::Io)?;
+    file.write_all(&encoded).map_err(SnapshotError::Io)?;
+    file.write_all(b"\n").map_err(SnapshotError::Io)?;
+    Ok(snapshot_path)
 }
 
 fn verify_public_state(
@@ -223,7 +438,11 @@ fn verify_public_state(
 }
 
 fn member_identity(member_index: usize) -> Vec<u8> {
-    format!("bootstrap-member-{member_index:03}").into_bytes()
+    member_identity_string(member_index).into_bytes()
+}
+
+fn member_identity_string(member_index: usize) -> String {
+    format!("bootstrap-member-{member_index:03}")
 }
 
 fn committer_for_add(schedule_seed: u64, joining_index: usize) -> usize {
@@ -267,6 +486,14 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_output_must_stay_below_a_named_output_run_directory() {
+        assert!(validate_snapshot_output_directory(Path::new("output/bootstrap-128")).is_ok());
+        assert!(validate_snapshot_output_directory(Path::new("output")).is_err());
+        assert!(validate_snapshot_output_directory(Path::new("report/bootstrap-128")).is_err());
+        assert!(validate_snapshot_output_directory(Path::new("output/../report")).is_err());
+    }
+
+    #[test]
     #[ignore = "run in release mode as the 128-member bootstrap acceptance test"]
     fn bootstrap_128_converges_on_public_state_and_delivers_an_application_message() {
         let options = BootstrapOptions {
@@ -277,11 +504,28 @@ mod tests {
         let verification = verify_bootstrap_128(&mut clients).expect("verification must succeed");
 
         assert_eq!(result.add_commit_count, 127);
+        assert_eq!(result.added_member_key_packages.len(), 127);
         assert_eq!(verification.epoch, 127);
         assert_eq!(verification.tree_arity, BASELINE_TREE_ARITY);
         assert_eq!(verification.tree_height, BOOTSTRAP_BINARY_TREE_HEIGHT);
         assert!(!verification.group_context.is_empty());
         assert!(!verification.tree_hash.is_empty());
+        assert!(!verification.ratchet_tree.is_empty());
+
+        let snapshot = public_bootstrap_snapshot(&options, &result, &verification)
+            .expect("public snapshot must be complete");
+        let snapshot_json = serde_json::to_string(&snapshot).expect("snapshot must serialize");
+        assert_eq!(snapshot.added_member_key_packages.len(), 127);
+        assert_eq!(snapshot.added_member_key_packages[0].member_index, 1);
+        assert_eq!(snapshot.added_member_key_packages[126].member_index, 127);
+        assert_eq!(
+            snapshot.group.occupied_leaf_indices,
+            (0..128).collect::<Vec<_>>()
+        );
+        assert!(snapshot_json.contains("operating-system RNG"));
+        assert!(!snapshot_json.contains("private_key"));
+        assert!(!snapshot_json.contains("shared_secret"));
+        assert!(!snapshot_json.contains("path_secret"));
         drop(clients);
     }
 }

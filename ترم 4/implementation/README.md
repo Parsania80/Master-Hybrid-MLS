@@ -18,7 +18,7 @@ The Rust workspace pins the approved dependencies and contains an unchanged Open
 
 ## How to use it
 
-The 128-member baseline constructor is available now: `cargo +stable run --bin bootstrap_128 --release --locked --offline -- --members 128 --seed 42 --output output/bootstrap-128`. The public seed selects committers only; it is not cryptographic entropy. The output directory is accepted but intentionally remains empty until Tasks 27 and 28 define safe snapshots and reports.
+The 128-member baseline constructor is available now: `cargo +stable run --bin bootstrap_128 --release --locked --offline -- --members 128 --seed 42 --output output/bootstrap-128`. The public seed selects committers only; it is not cryptographic entropy. After verification, the command writes exactly `bootstrap_public_snapshot.json` using create-new semantics under the requested `output/<run>` directory. The snapshot contains public configuration/scheduling data, authenticated group metadata, the public TLS RatchetTree, occupied leaves, and the 127 actual Add KeyPackages; it does not contain private MLS state, secret material, raw entropy, or a seed that reconstructs it. Summary, CSV, and Markdown report files remain Task 28 work.
 
 Before the constructor reports success, it verifies 128 members at epoch 127, baseline binary arity 2 and height 7, actual occupied public leaf indexes `0..127`, common authenticated GroupContext/tree hash, and application delivery to every other member. It returns public facts only and then drops private client state; that lifecycle action is not a formal proof of upstream process-memory zeroization.
 

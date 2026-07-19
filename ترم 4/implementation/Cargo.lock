@@ -6,7 +6,10 @@ version = 4
 name = "adaptive-hybrid-mls"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "mls-adapter",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

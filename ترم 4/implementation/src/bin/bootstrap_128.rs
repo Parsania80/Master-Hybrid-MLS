@@ -3,13 +3,15 @@
 //! Builds the fixed-size baseline MLS group required by the thesis bootstrap.
 //!
 //! The `--seed` parameter is public scheduling input only. It never supplies
-//! cryptographic randomness. `--output` is reserved for the safe snapshot and
-//! report artifacts specified in Tasks 27 and 28, so this task writes nothing.
+//! cryptographic randomness. `--output` receives exactly one public snapshot;
+//! Tasks 28 and later add summary, commit, and report artifacts.
 
 use std::{env, path::PathBuf, process::ExitCode};
 
 use adaptive_hybrid_mls::bootstrap::{
-    bootstrap_128, verify_bootstrap_128, BootstrapOptions, BOOTSTRAP_MEMBER_COUNT,
+    bootstrap_128, public_bootstrap_snapshot, validate_snapshot_output_directory,
+    verify_bootstrap_128, write_public_bootstrap_snapshot, BootstrapOptions,
+    BOOTSTRAP_MEMBER_COUNT,
 };
 
 /// Parsed public command-line arguments for the bootstrap executable.
@@ -19,7 +21,7 @@ struct Cli {
     members: usize,
     /// Public seed for the deterministic committer schedule, not cryptographic entropy.
     seed: u64,
-    /// Reserved output location for Tasks 27 and 28; no files are written yet.
+    /// Relative `output/<run>` location for the public bootstrap snapshot.
     output: PathBuf,
 }
 
@@ -50,13 +52,19 @@ fn main() -> ExitCode {
         members: cli.members,
         schedule_seed: cli.seed,
     };
+    if let Err(error) = validate_snapshot_output_directory(&cli.output) {
+        eprintln!("bootstrap_128: {error}");
+        return ExitCode::FAILURE;
+    }
     match bootstrap_128(&options) {
-        Ok((mut clients, result)) => {
-            let verification = verify_bootstrap_128(&mut clients);
-            drop(clients);
-            match verification {
-                Ok(verification) => {
-                    println!(
+        Ok((mut clients, result)) => match verify_bootstrap_128(&mut clients) {
+            Ok(verification) => {
+                let snapshot = public_bootstrap_snapshot(&options, &result, &verification);
+                drop(clients);
+                match snapshot {
+                    Ok(snapshot) => match write_public_bootstrap_snapshot(&cli.output, &snapshot) {
+                        Ok(snapshot_path) => {
+                            println!(
                 "Verified {} baseline MLS members after {} Add commits at epoch {} using {} distinct committers.",
                 BOOTSTRAP_MEMBER_COUNT,
                 result.add_commit_count,
@@ -67,18 +75,29 @@ fn main() -> ExitCode {
                     .collect::<std::collections::BTreeSet<_>>()
                     .len()
             );
-                    println!(
-                "No artifact was written to {}: safe snapshots and reports are deferred to Tasks 27 and 28.",
-                cli.output.display()
+                            println!(
+                "Wrote the public-only snapshot to {}. Summary, commit, and report artifacts remain deferred to Task 28.",
+                snapshot_path.display()
             );
-                    ExitCode::SUCCESS
-                }
-                Err(error) => {
-                    eprintln!("bootstrap_128 verification failed: {error}");
-                    ExitCode::FAILURE
+                            ExitCode::SUCCESS
+                        }
+                        Err(error) => {
+                            eprintln!("bootstrap_128 snapshot failed: {error}");
+                            ExitCode::FAILURE
+                        }
+                    },
+                    Err(error) => {
+                        eprintln!("bootstrap_128 snapshot failed: {error}");
+                        ExitCode::FAILURE
+                    }
                 }
             }
-        }
+            Err(error) => {
+                drop(clients);
+                eprintln!("bootstrap_128 verification failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Err(error) => {
             eprintln!("bootstrap_128 failed: {error}");
             ExitCode::FAILURE
@@ -139,6 +158,6 @@ fn print_usage() {
          \n\
          Creates and fully delivers baseline MLS Add commits for exactly 128 members.\n\
          The seed controls public committer scheduling only; it is not cryptographic entropy.\n\
-         Output artifacts are deferred to Tasks 27 and 28."
+         Writes one public-only snapshot under output/<run>; other artifacts are deferred to Task 28."
     );
 }
