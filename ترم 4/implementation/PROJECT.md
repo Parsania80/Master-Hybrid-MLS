@@ -132,7 +132,7 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 | 31 | Replay each logical operation against the shadow tree without changing real MLS state or consuming mismatched randomness | ✅ Done | ADR 0008 defines immutable public `Update`/`Add`/`Remove` replay. Updates preserve topology, removals leave holes, and additions use the lowest vacant leaf; growth occurs only when capacity is full. Replays take no RNG, live MLS state, or secret input. |
 | 32 | Measure real `B_i(2)` and candidate `B_hat_i(4)` with component-level serialized byte provenance | ✅ Done | ADR 0009 records the emitted baseline Commit as measured and computes a `shadow_exact_codec` estimate from disjoint retained baseline framing plus canonical hybrid TLS payloads. A candidate MLS Commit is still not emitted. |
 | 33 | Track tree heights, direct paths, resolutions, blanks, populated nodes, recipient counts, and crypto operation/timing metrics | ✅ Done | ADR 0010 defines typed public topology/resolution records, measured or explicitly unavailable crypto timing/count records, and a `2 -> 4` logical-operation aggregate that preserves Task 32 byte provenance. |
-| 34 | Pass the Phase 6 determinism, measurement-consistency, formatting, lint, and test gate | 🔄 Current | Re-run baseline and hybrid regression suites. |
+| 34 | Pass the Phase 6 determinism, measurement-consistency, formatting, lint, and test gate | ✅ Done | Rust 1.93.1 locked-offline format/check/strict Clippy, focused baseline (3), hybrid (18), adaptive-tree (7), and metrics (8) suites, full workspace tests (61 passed; 1 release-only ignored), doc tests, and diff validation passed. |
 
 ### Part 7: Transition-Start Policy
 
@@ -182,6 +182,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 6, Task 34 — Complete the Phase 6 determinism, measurement-consistency, formatting, lint, and test gate.
+**Current:** Part 7, Task 35 — Implement configurable sliding window `W_e`, `q_e`, `r_e`, and explicit `is_impactful_commit` classification.
 
-**Next:** Part 7, Task 35 — Implement configurable sliding window `W_e`, `q_e`, `r_e`, and explicit `is_impactful_commit` classification.
+**Next:** Part 7, Task 36 — Measure `B_transition` from serialized transition-only protocol data without mutating the live group during evaluation.
