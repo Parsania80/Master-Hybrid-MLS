@@ -82,8 +82,8 @@
 |---|------|--------|-------|
 | 13 | Define the replaceable `MultiRecipientKem` trait and typed errors | ✅ Done | Defines domain-bound key/ciphertext/recipient types, fixed public component sizes, zeroized redacted secret wrappers, and object-safe keygen/encapsulation/extraction/decapsulation operations. |
 | 14 | Implement the paper-based, clearly labeled mKyber512 educational reference backend | ✅ Done | `mkyber512-thesis-v1` implements the paper parameters, exact 768/704/48-byte artifacts, shared-domain validation, multi-recipient agreement, and fallback selection. It is thesis-local reference code only: no business/production, interoperability, audit, or security-proof claim. |
-| 15 | Separate common and per-recipient ciphertext components and instrument their real serialized byte costs | 🔄 Current | Instrument the already-separated 704-byte common and 48-byte per-recipient serialized artifacts. Do not report ordinary ML-KEM costs as mKyber measurements. |
-| 16 | Implement deterministic test mode, OS-RNG production path, secret redaction, and zeroization where applicable | ⬜ Todo | A published experiment seed must never reconstruct private key material. |
+| 15 | Separate common and per-recipient ciphertext components and instrument their real serialized byte costs | ✅ Done | `MkyberMeasuredComponentCosts` records ADR 0006 provenance (`measured_bytes`, no estimate, and method) from emitted canonical arrays: 704-byte common, 48 bytes per recipient, and their component-only total. Domain/recipient identifiers and future hybrid/MLS framing are deliberately excluded until their serializers exist. |
+| 16 | Implement deterministic test mode, OS-RNG production path, secret redaction, and zeroization where applicable | 🔄 Current | A published experiment seed must never reconstruct private key material. |
 | 17 | Add known-answer/unit/property tests for recipient agreement, non-recipient failure, malformed ciphertexts, and deterministic reproducibility | ⬜ Todo | Include common and per-recipient tamper cases. |
 | 18 | Pass the Phase 3 formatting, strict lint, test, and standalone benchmark gate | ⬜ Todo | Report exact mKyber implementation status honestly. |
 
@@ -181,6 +181,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 3, Task 15 — Separate mKyber wire components and instrument their sizes.
+**Current:** Part 3, Task 16 — Implement deterministic test mode, OS-RNG production path, secret redaction, and zeroization where applicable.
 
-**Next:** Part 3, Task 16 — Implement deterministic test mode, OS-RNG production path, secret redaction, and zeroization where applicable.
+**Next:** Part 3, Task 17 — Add known-answer/unit/property tests for recipient agreement, non-recipient failure, malformed ciphertexts, and deterministic reproducibility.

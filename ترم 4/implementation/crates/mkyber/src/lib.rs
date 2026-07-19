@@ -356,6 +356,155 @@ impl MkyberCiphertextSet {
             .map(|entry| &entry.component)
             .ok_or(MkyberError::RecipientNotFound)
     }
+
+    /// Measures the canonical component bytes emitted by this ciphertext set.
+    ///
+    /// The result is derived from the actual common and recipient component
+    /// byte arrays, not from paper constants or an ML-KEM estimate. It excludes
+    /// recipient identifiers, the public domain, and any future outer MLS or
+    /// hybrid-path framing because no such canonical wire format exists yet.
+    pub fn measured_component_costs(&self) -> MkyberMeasuredComponentCosts {
+        let common_component =
+            MkyberComponentByteMeasurement::canonical_component(self.common.as_bytes().len());
+        let recipient_components = self
+            .recipients
+            .iter()
+            .map(|entry| MkyberMeasuredRecipientComponentCost {
+                recipient: entry.recipient,
+                component: MkyberComponentByteMeasurement::canonical_component(
+                    entry.component.as_bytes().len(),
+                ),
+            })
+            .collect::<Vec<_>>();
+        let recipient_component_total = MkyberComponentByteMeasurement::component_sum(
+            recipient_components
+                .iter()
+                .map(|component| component.component.measured_bytes())
+                .sum(),
+        );
+        let total_component = MkyberComponentByteMeasurement::component_sum(
+            common_component.measured_bytes() + recipient_component_total.measured_bytes(),
+        );
+
+        MkyberMeasuredComponentCosts {
+            common_component,
+            recipient_components,
+            recipient_component_total,
+            total_component,
+        }
+    }
+}
+
+/// Provenance of a component-byte measurement with no byte estimate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MkyberByteEstimationMethod {
+    /// Read directly from one canonical common or recipient component array.
+    NotEstimatedCanonicalComponent,
+    /// Computed exclusively by summing measured canonical component arrays.
+    NotEstimatedComponentSum,
+}
+
+/// Byte-cost record with the provenance fields required by ADR 0006.
+///
+/// Task 15 produces only measurements, never byte estimates. Future outer
+/// serializers must create their own records at their own codec boundaries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MkyberComponentByteMeasurement {
+    measured_bytes: usize,
+    estimated_bytes: Option<usize>,
+    estimation_method: MkyberByteEstimationMethod,
+}
+
+impl MkyberComponentByteMeasurement {
+    const fn canonical_component(measured_bytes: usize) -> Self {
+        Self {
+            measured_bytes,
+            estimated_bytes: None,
+            estimation_method: MkyberByteEstimationMethod::NotEstimatedCanonicalComponent,
+        }
+    }
+
+    const fn component_sum(measured_bytes: usize) -> Self {
+        Self {
+            measured_bytes,
+            estimated_bytes: None,
+            estimation_method: MkyberByteEstimationMethod::NotEstimatedComponentSum,
+        }
+    }
+
+    /// Returns the observed bytes from canonical serialized components.
+    pub const fn measured_bytes(self) -> usize {
+        self.measured_bytes
+    }
+
+    /// Returns an estimate when one exists; Task 15 always returns `None`.
+    pub const fn estimated_bytes(self) -> Option<usize> {
+        self.estimated_bytes
+    }
+
+    /// Returns why this record has no byte estimate.
+    pub const fn estimation_method(self) -> MkyberByteEstimationMethod {
+        self.estimation_method
+    }
+}
+
+/// Actual serialized byte cost for one recipient-specific mKyber component.
+///
+/// This is component-only measurement. It deliberately excludes public
+/// recipient identifiers and outer protocol framing until their serializers
+/// exist and can be measured at their own codec boundaries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MkyberMeasuredRecipientComponentCost {
+    /// The public recipient owning this component.
+    pub recipient: RecipientId,
+    component: MkyberComponentByteMeasurement,
+}
+
+impl MkyberMeasuredRecipientComponentCost {
+    /// Returns this recipient component's measured-byte provenance record.
+    pub const fn component(&self) -> MkyberComponentByteMeasurement {
+        self.component
+    }
+}
+
+/// Actual canonical component-byte measurements for one mKyber ciphertext set.
+///
+/// All values are measured serialized component bytes. The total is exactly
+/// `common_component_bytes + recipient_component_total_bytes`; it is not an
+/// outer-wire, MLS-message, or network-byte measurement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MkyberMeasuredComponentCosts {
+    common_component: MkyberComponentByteMeasurement,
+    recipient_components: Vec<MkyberMeasuredRecipientComponentCost>,
+    recipient_component_total: MkyberComponentByteMeasurement,
+    total_component: MkyberComponentByteMeasurement,
+}
+
+impl MkyberMeasuredComponentCosts {
+    /// Returns the common component's measured-byte provenance record.
+    pub const fn common_component(&self) -> MkyberComponentByteMeasurement {
+        self.common_component
+    }
+
+    /// Returns each recipient's independently measured component-byte cost.
+    pub fn recipient_components(&self) -> &[MkyberMeasuredRecipientComponentCost] {
+        &self.recipient_components
+    }
+
+    /// Returns the number of recipient components measured.
+    pub fn recipient_count(&self) -> usize {
+        self.recipient_components.len()
+    }
+
+    /// Returns the recipient-component total's measured-byte provenance record.
+    pub const fn recipient_component_total(&self) -> MkyberComponentByteMeasurement {
+        self.recipient_component_total
+    }
+
+    /// Returns the common-plus-recipient total's measured-byte provenance record.
+    pub const fn total_component(&self) -> MkyberComponentByteMeasurement {
+        self.total_component
+    }
 }
 
 /// A backend-produced mKyber shared secret.
@@ -1214,6 +1363,77 @@ mod tests {
         assert_eq!(
             bob_secret.as_bytes(),
             encapsulation.shared_secret.as_bytes()
+        );
+    }
+
+    #[test]
+    fn component_costs_are_measured_from_actual_serialized_artifacts() {
+        let backend = EducationalMkyber512Reference;
+        let mut rng = TestRng(6);
+        let alice = backend
+            .keygen(DOMAIN, &mut rng)
+            .expect("reference key generation must succeed");
+        let bob = backend
+            .keygen(DOMAIN, &mut rng)
+            .expect("reference key generation must succeed");
+        let recipients = RecipientSet::new(
+            DOMAIN,
+            vec![
+                RecipientPublicKey {
+                    recipient: RecipientId::new(11),
+                    key: alice.public_key().clone(),
+                },
+                RecipientPublicKey {
+                    recipient: RecipientId::new(12),
+                    key: bob.public_key().clone(),
+                },
+            ],
+        )
+        .expect("same-domain recipients must construct");
+        let ciphertext = backend
+            .encapsulate(&recipients, &mut rng)
+            .expect("reference encapsulation must succeed")
+            .ciphertext;
+
+        let costs = ciphertext.measured_component_costs();
+        assert_eq!(
+            costs.common_component().measured_bytes(),
+            ciphertext.common().as_bytes().len()
+        );
+        assert_eq!(costs.common_component().estimated_bytes(), None);
+        assert_eq!(
+            costs.common_component().estimation_method(),
+            MkyberByteEstimationMethod::NotEstimatedCanonicalComponent
+        );
+        assert_eq!(costs.recipient_count(), 2);
+        assert_eq!(
+            costs.recipient_components()[0].component().measured_bytes(),
+            ciphertext
+                .recipient_component(RecipientId::new(11))
+                .expect("alice component")
+                .as_bytes()
+                .len()
+        );
+        assert_eq!(
+            costs.recipient_components()[1].component().measured_bytes(),
+            ciphertext
+                .recipient_component(RecipientId::new(12))
+                .expect("bob component")
+                .as_bytes()
+                .len()
+        );
+        assert_eq!(
+            costs.recipient_component_total().measured_bytes(),
+            RECIPIENT_CIPHERTEXT_BYTES * 2
+        );
+        assert_eq!(
+            costs.total_component().measured_bytes(),
+            COMMON_CIPHERTEXT_BYTES + RECIPIENT_CIPHERTEXT_BYTES * 2
+        );
+        assert_eq!(costs.total_component().estimated_bytes(), None);
+        assert_eq!(
+            costs.total_component().estimation_method(),
+            MkyberByteEstimationMethod::NotEstimatedComponentSum
         );
     }
 
