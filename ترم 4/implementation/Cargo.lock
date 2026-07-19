@@ -7,6 +7,7 @@ name = "adaptive-hybrid-mls"
 version = "0.1.0"
 dependencies = [
  "mls-adapter",
+ "thiserror",
 ]
 
 [[package]]

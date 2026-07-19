@@ -18,7 +18,9 @@ The Rust workspace pins the approved dependencies and contains an unchanged Open
 
 ## How to use it
 
-Run `cargo +stable test --workspace --all-targets --locked --offline` to verify the baseline and educational mKyber reference tests. Run `cargo +stable run -p mkyber --bin mkyber_benchmark --release --locked --offline` for the standalone reference timing smoke benchmark. It prints only the reference profile/parameters, actual public 704/48-byte component costs, and environment-dependent timing averages; it is not a production benchmark, security evaluation, or thesis experiment result. There is not yet a user-facing CLI, 128-member bootstrap, or experiment runner.
+The 128-member baseline constructor is available now: `cargo +stable run --bin bootstrap_128 --release --locked --offline -- --members 128 --seed 42 --output output/bootstrap-128`. The public seed selects committers only; it is not cryptographic entropy. The output directory is accepted but intentionally remains empty until Tasks 27 and 28 define safe snapshots and reports.
+
+Run `cargo +stable test --workspace --all-targets --locked --offline` to verify the baseline and educational mKyber reference tests. Run `cargo +stable run -p mkyber --bin mkyber_benchmark --release --locked --offline` for the standalone reference timing smoke benchmark. It prints only the reference profile/parameters, actual public 704/48-byte component costs, and environment-dependent timing averages; it is not a production benchmark, security evaluation, or thesis experiment result. There is not yet a transition-evaluation runner or generated experiment report.
 
 ## Security and interoperability warning
 
