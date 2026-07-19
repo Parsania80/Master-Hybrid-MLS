@@ -10,6 +10,7 @@
 
 use core::fmt;
 
+use rand::rngs::OsRng;
 use rand_core::{CryptoRng, RngCore};
 use sha3::{
     digest::{ExtendableOutput, Update, XofReader},
@@ -17,7 +18,7 @@ use sha3::{
 };
 use subtle::ConstantTimeEq;
 use thiserror::Error;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// mKyber512 encapsulation-key size in bytes.
 pub const ENCAPSULATION_KEY_BYTES: usize = 768;
@@ -28,8 +29,9 @@ pub const RECIPIENT_CIPHERTEXT_BYTES: usize = 48;
 
 /// A secure randomness source accepted by a backend implementation.
 ///
-/// Deterministic test RNGs may implement this trait only in isolated tests;
-/// production key generation and encapsulation require OS-backed randomness.
+/// Deterministic RNG implementations belong only in isolated test fixtures.
+/// Normal reference callers must use the explicit OS-RNG entry points on
+/// [`EducationalMkyber512Reference`].
 pub trait MkyberRandom: RngCore + CryptoRng {}
 
 impl<T> MkyberRandom for T where T: RngCore + CryptoRng {}
@@ -601,6 +603,27 @@ pub struct EducationalMkyber512Reference;
 impl EducationalMkyber512Reference {
     /// Stable identifier for the thesis-local reference profile.
     pub const PROFILE_LABEL: &'static str = "mkyber512-thesis-v1";
+
+    /// Generates a key pair using the operating system's cryptographic RNG.
+    ///
+    /// This is the normal reference-code entry point. The caller cannot supply
+    /// deterministic entropy through this API.
+    pub fn keygen_with_os_rng(&self, domain: MkyberDomain) -> Result<MkyberKeyPair, MkyberError> {
+        let mut randomness = OsRng;
+        self.keygen(domain, &mut randomness)
+    }
+
+    /// Encapsulates using the operating system's cryptographic RNG.
+    ///
+    /// This is the normal reference-code entry point. Deterministic entropy is
+    /// reserved for private test fixtures and must not be published or reused.
+    pub fn encapsulate_with_os_rng(
+        &self,
+        recipients: &RecipientSet,
+    ) -> Result<MkyberEncapsulation, MkyberError> {
+        let mut randomness = OsRng;
+        self.encapsulate(recipients, &mut randomness)
+    }
 }
 
 impl MultiRecipientKem for EducationalMkyber512Reference {
@@ -609,31 +632,25 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
         domain: MkyberDomain,
         randomness: &mut dyn MkyberRandom,
     ) -> Result<MkyberKeyPair, MkyberError> {
-        let mut entropy = [0_u8; 64];
-        randomness.fill_bytes(&mut entropy);
-        let secret_seed = hash32(TAG_KEYGEN_SECRET, &[&entropy]);
-        let error_seed = hash32(TAG_KEYGEN_ERROR, &[&entropy]);
-        let mut fallback = hash32(TAG_KEYGEN_FALLBACK, &[&entropy]);
-        entropy.zeroize();
+        let mut entropy = Zeroizing::new([0_u8; 64]);
+        randomness.fill_bytes(&mut entropy[..]);
+        let secret_seed = Zeroizing::new(hash32(TAG_KEYGEN_SECRET, &[&entropy[..]]));
+        let error_seed = Zeroizing::new(hash32(TAG_KEYGEN_ERROR, &[&entropy[..]]));
+        let fallback = Zeroizing::new(hash32(TAG_KEYGEN_FALLBACK, &[&entropy[..]]));
 
         let matrix = expand_matrix(domain);
-        let mut secret = sample_polyvec(&secret_seed, 0, ETA1, TAG_KEYGEN_SECRET);
-        let mut error = sample_polyvec(&error_seed, 0, ETA1, TAG_KEYGEN_ERROR);
-        let mut public = add_polyvec(&matrix_times_vec(&matrix, &secret), &error);
+        let secret = Zeroizing::new(sample_polyvec(&secret_seed, 0, ETA1, TAG_KEYGEN_SECRET));
+        let error = Zeroizing::new(sample_polyvec(&error_seed, 0, ETA1, TAG_KEYGEN_ERROR));
+        let public = add_polyvec(&matrix_times_vec(&matrix, &secret), &error);
         let public_bytes = pack_polyvec_12(&public);
         let public_key = MkyberEncapsulationKey::from_bytes(domain, &public_bytes)?;
 
-        let secret_bytes = pack_polyvec_12(&secret);
+        let secret_bytes = Zeroizing::new(pack_polyvec_12(&secret));
         let mut private_bytes = Vec::with_capacity(REFERENCE_SECRET_KEY_BYTES);
-        private_bytes.extend_from_slice(&secret_bytes);
+        private_bytes.extend_from_slice(&secret_bytes[..]);
         private_bytes.extend_from_slice(&public_bytes);
-        private_bytes.extend_from_slice(&fallback);
+        private_bytes.extend_from_slice(&fallback[..]);
         debug_assert_eq!(private_bytes.len(), REFERENCE_SECRET_KEY_BYTES);
-
-        secret.zeroize();
-        error.zeroize();
-        public.zeroize();
-        fallback.zeroize();
 
         let private_key = MkyberDecapsulationKey::from_bytes(domain, private_bytes)?;
         MkyberKeyPair::new(public_key, private_key)
@@ -645,20 +662,18 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
         randomness: &mut dyn MkyberRandom,
     ) -> Result<MkyberEncapsulation, MkyberError> {
         let domain = recipients.domain();
-        let mut entropy = [0_u8; 32];
-        randomness.fill_bytes(&mut entropy);
-        let mut message_hash = hash32(TAG_MESSAGE, &[&entropy]);
-        entropy.zeroize();
-        let mut message = [0_u8; MESSAGE_BYTES];
+        let mut entropy = Zeroizing::new([0_u8; 32]);
+        randomness.fill_bytes(&mut entropy[..]);
+        let message_hash = Zeroizing::new(hash32(TAG_MESSAGE, &[&entropy[..]]));
+        let mut message = Zeroizing::new([0_u8; MESSAGE_BYTES]);
         message.copy_from_slice(&message_hash[..MESSAGE_BYTES]);
-        message_hash.zeroize();
 
-        let key_prime = hash32(TAG_KEY_PRIME, &[&message]);
-        let g1_seed = hash32(TAG_G1, &[domain.as_bytes(), &message]);
+        let key_prime = Zeroizing::new(hash32(TAG_KEY_PRIME, &[&message[..]]));
+        let g1_seed = Zeroizing::new(hash32(TAG_G1, &[domain.as_bytes(), &message[..]]));
         let matrix = expand_matrix(domain);
-        let mut randomness_vector = sample_polyvec(&g1_seed, 0, ETA1, TAG_PRF1);
-        let mut common_error = sample_polyvec(&g1_seed, K as u8, ETA2, TAG_PRF1);
-        let mut common = add_polyvec(
+        let randomness_vector = Zeroizing::new(sample_polyvec(&g1_seed, 0, ETA1, TAG_PRF1));
+        let common_error = Zeroizing::new(sample_polyvec(&g1_seed, K as u8, ETA2, TAG_PRF1));
+        let common = add_polyvec(
             &row_times_matrix(&randomness_vector, &matrix),
             &common_error,
         );
@@ -666,27 +681,25 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
 
         let mut recipient_components = Vec::with_capacity(recipients.recipients().len());
         for recipient in recipients.recipients() {
-            let mut recipient_public = unpack_polyvec_12(recipient.key.as_bytes())?;
-            let g2_seed = hash32(
+            let recipient_public = Zeroizing::new(unpack_polyvec_12(recipient.key.as_bytes())?);
+            let g2_seed = Zeroizing::new(hash32(
                 TAG_G2,
-                &[domain.as_bytes(), recipient.key.as_bytes(), &message],
-            );
-            let mut recipient_error = sample_poly(&g2_seed, 0, ETA2, TAG_PRF2);
-            let mut value = add_poly(
+                &[domain.as_bytes(), recipient.key.as_bytes(), &message[..]],
+            ));
+            let recipient_error = Zeroizing::new(sample_poly(&g2_seed, 0, ETA2, TAG_PRF2));
+            let message_polynomial = Zeroizing::new(encode_message(&message));
+            let value = add_poly(
                 &add_poly(
                     &inner_product(&randomness_vector, &recipient_public),
                     &recipient_error,
                 ),
-                &encode_message(&message),
+                &message_polynomial,
             );
             let component = pack_recipient(&value)?;
             recipient_components.push(RecipientCiphertext {
                 recipient: recipient.recipient,
                 component,
             });
-            recipient_public.zeroize();
-            recipient_error.zeroize();
-            value.zeroize();
         }
 
         let ciphertext = MkyberCiphertextSet::new(domain, common_component, recipient_components)?;
@@ -695,11 +708,6 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
             domain,
             ciphertext.common(),
         ))?;
-
-        message.zeroize();
-        randomness_vector.zeroize();
-        common_error.zeroize();
-        common.zeroize();
 
         Ok(MkyberEncapsulation {
             ciphertext,
@@ -726,36 +734,46 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
         }
 
         let component = ciphertext.recipient_component(recipient)?;
-        let (mut secret, mut public, mut fallback) = parse_reference_private_key(private_key)?;
-        let mut common = unpack_common(ciphertext.common())?;
-        let mut recipient_value = unpack_recipient(component)?;
-        let mut message_poly = subtract_poly(&recipient_value, &inner_product(&common, &secret));
-        let mut message = decode_message(&message_poly);
-        let key_prime = hash32(TAG_KEY_PRIME, &[&message]);
-        let g1_seed = hash32(TAG_G1, &[ciphertext.domain().as_bytes(), &message]);
+        let (secret, public, fallback) = parse_reference_private_key(private_key)?;
+        let secret = Zeroizing::new(secret);
+        let public = Zeroizing::new(public);
+        let fallback = Zeroizing::new(fallback);
+        let common = Zeroizing::new(unpack_common(ciphertext.common())?);
+        let recipient_value = Zeroizing::new(unpack_recipient(component)?);
+        let message_poly = Zeroizing::new(subtract_poly(
+            &recipient_value,
+            &inner_product(&common, &secret),
+        ));
+        let message = Zeroizing::new(decode_message(&message_poly));
+        let key_prime = Zeroizing::new(hash32(TAG_KEY_PRIME, &[&message[..]]));
+        let g1_seed = Zeroizing::new(hash32(
+            TAG_G1,
+            &[ciphertext.domain().as_bytes(), &message[..]],
+        ));
         let matrix = expand_matrix(ciphertext.domain());
-        let mut randomness_vector = sample_polyvec(&g1_seed, 0, ETA1, TAG_PRF1);
-        let mut common_error = sample_polyvec(&g1_seed, K as u8, ETA2, TAG_PRF1);
-        let mut expected_common = add_polyvec(
+        let randomness_vector = Zeroizing::new(sample_polyvec(&g1_seed, 0, ETA1, TAG_PRF1));
+        let common_error = Zeroizing::new(sample_polyvec(&g1_seed, K as u8, ETA2, TAG_PRF1));
+        let expected_common = add_polyvec(
             &row_times_matrix(&randomness_vector, &matrix),
             &common_error,
         );
         let expected_common_component = pack_common(&expected_common)?;
-        let g2_seed = hash32(
+        let g2_seed = Zeroizing::new(hash32(
             TAG_G2,
             &[
                 ciphertext.domain().as_bytes(),
                 &pack_polyvec_12(&public),
-                &message,
+                &message[..],
             ],
-        );
-        let mut recipient_error = sample_poly(&g2_seed, 0, ETA2, TAG_PRF2);
-        let mut expected_value = add_poly(
+        ));
+        let recipient_error = Zeroizing::new(sample_poly(&g2_seed, 0, ETA2, TAG_PRF2));
+        let message_polynomial = Zeroizing::new(encode_message(&message));
+        let expected_value = add_poly(
             &add_poly(
                 &inner_product(&randomness_vector, &public),
                 &recipient_error,
             ),
-            &encode_message(&message),
+            &message_polynomial,
         );
         let expected_component = pack_recipient(&expected_value)?;
 
@@ -774,19 +792,6 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
                 component,
             )
         };
-
-        secret.zeroize();
-        public.zeroize();
-        fallback.zeroize();
-        common.zeroize();
-        recipient_value.zeroize();
-        message_poly.zeroize();
-        message.zeroize();
-        randomness_vector.zeroize();
-        common_error.zeroize();
-        expected_common.zeroize();
-        recipient_error.zeroize();
-        expected_value.zeroize();
 
         MkyberSharedSecret::from_bytes(output)
     }
@@ -1492,6 +1497,45 @@ mod tests {
             first.public_key().as_bytes(),
             second.public_key().as_bytes()
         );
+    }
+
+    #[test]
+    fn educational_reference_backend_os_rng_entry_points_agree() {
+        let backend = EducationalMkyber512Reference;
+        let alice = backend
+            .keygen_with_os_rng(DOMAIN)
+            .expect("OS-backed reference key generation must succeed");
+        let recipients = RecipientSet::new(
+            DOMAIN,
+            vec![RecipientPublicKey {
+                recipient: RecipientId::new(13),
+                key: alice.public_key().clone(),
+            }],
+        )
+        .expect("recipient set must construct");
+        let encapsulation = backend
+            .encapsulate_with_os_rng(&recipients)
+            .expect("OS-backed reference encapsulation must succeed");
+        let decapsulated = backend
+            .decapsulate(
+                alice.private_key(),
+                &encapsulation.ciphertext,
+                RecipientId::new(13),
+            )
+            .expect("OS-backed reference ciphertext must decapsulate");
+
+        assert_eq!(
+            decapsulated.as_bytes(),
+            encapsulation.shared_secret.as_bytes()
+        );
+    }
+
+    #[test]
+    fn durable_secret_wrappers_zeroize_on_drop() {
+        fn requires_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+
+        requires_zeroize_on_drop::<MkyberDecapsulationKey>();
+        requires_zeroize_on_drop::<MkyberSharedSecret>();
     }
 
     #[test]

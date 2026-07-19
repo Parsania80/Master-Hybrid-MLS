@@ -106,6 +106,8 @@ Never place the following in source control, logs, test snapshots, CSV, JSON, Ma
 
 Public experiment configuration may include a non-secret reproducibility identifier only when it cannot reconstruct a private key. Tests may use deterministic private test material only in isolated fixtures that are clearly non-production and never reused for a live group. Error types should expose only category and public field metadata.
 
+The educational reference backend exposes dedicated operating-system RNG entry points for normal key generation and encapsulation. Its deterministic RNG exists only inside its test module. Long-lived private keys and shared secrets use `ZeroizeOnDrop`; temporary entropy, seeds, decoded messages, noise polynomials, and packed secret-key bytes use scoped zeroization guards. This is best-effort memory hygiene only: it does not establish side-channel resistance, compiler-level memory-erasure guarantees, or security of hash/XOF implementation internals.
+
 ## Unresolved Thesis Assumptions and Closure Criteria
 
 | ID | Unresolved assumption | Risk if false | Required closure before a stronger claim |
