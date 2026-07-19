@@ -2,7 +2,7 @@
 
 ## Status and Scope
 
-This repository is a thesis research prototype. It contains an upstream-only baseline MLS adapter, the thesis-local `mkyber512-thesis-v1` educational reference backend, and a canonical hybrid-path wire boundary. It has no hybrid KDF/AEAD or experimental MLS integration, generated experiment result, author-compatible profile, or official vector corpus. This document defines the security claims that future work must not exceed.
+This repository is a thesis research prototype. It contains an upstream-only baseline MLS adapter, the thesis-local `mkyber512-thesis-v1` educational reference backend, a canonical hybrid-path wire boundary, and a canonical hybrid-KDF context/input builder. It does not yet perform HKDF or AES-GCM, integrate experimental MLS, generate experiment results, provide an author-compatible profile, or provide an official vector corpus. This document defines the security claims that future work must not exceed.
 
 `BaselineBinaryMls` is intended to exercise unmodified OpenMLS 0.8.1 with RFC 9420 ciphersuite `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`. It can only be described as an RFC 9420 baseline after the upstream dependency is pinned, the baseline code is implemented without a fork, and the required regression tests pass. It is not a security certification of this repository or OpenMLS.
 
@@ -68,6 +68,8 @@ IKM = ss_classical || ss_pq || TLSEncode(HybridKdfContext)
 ```
 
 The serialized classical encapsulation, mKyber common `u`, and recipient `v_i` are transmitted and authenticated, but their bytes and hashes are excluded from `IKM` and the HKDF `info` input. This is a thesis requirement, not a generic hybrid-KEM recommendation.
+
+Task 20 implements only the typed, canonical context and input boundary: version `1`, fixed label, ciphersuite `0x0001`, group ID, epoch, tree version, arity, both node indexes, mKyber domain, and authenticated GroupContext hash. The public API accepts exact-size classical/PQ shared-secret wrappers and has no ciphertext parameter. It also constructs the future AEAD associated data as canonical context bytes followed by the supported hybrid-wire version. These controls reduce encoding ambiguity; they do not implement HKDF/AES-GCM, authenticate a commit by themselves, or prove security.
 
 It is incorrect to claim automatic coverage by X-Wing's C2PRI result. X-Wing analyzes a different construction based on X25519, ML-KEM-768, and SHA3-256. The relevant hybrid-KEM guidance states that omitting a component KEM encapsulation key and ciphertext from a combiner KDF requires a C2PRI property. This project uses mKyber512, not ML-KEM-768, and has no cited C2PRI proof for mKyber or a proof for this MLS-specific composition. The X-Wing proof therefore does not transfer automatically. See the [X-Wing paper](https://eprint.iacr.org/2024/039.pdf) and the [CFRG hybrid-KEM draft](https://www.ietf.org/archive/id/draft-irtf-cfrg-hybrid-kems-04.html).
 

@@ -27,6 +27,10 @@ HKDF Extract and Expand are used as specified in [RFC 5869](https://www.rfc-edit
 - The hybrid wrapper has unambiguous inputs, distinct key/nonce derivations, replay binding to MLS and tree state, and no dependence on the serialized ciphertext bytes.
 - This construction is experimental. Neither the KDF composition nor the ciphertext exclusion inherits an X-Wing proof or RFC 9420 interoperability claim.
 
+## Implementation Status
+
+Task 20 implements the canonical TLS `HybridKdfContext`, exact 32-byte classical/PQ shared-secret validation, and the redacted/zeroized IKM builder in `hybrid-path-secret`. It also exposes `TLSEncode(HybridKdfContext || wire_version)` for a later AEAD boundary. It intentionally does not yet perform HKDF extract/expand, AES-GCM encryption/decryption, HPKE processing, or OpenMLS fork integration.
+
 ## Rejected Alternatives
 
 | Alternative | Reason rejected |
