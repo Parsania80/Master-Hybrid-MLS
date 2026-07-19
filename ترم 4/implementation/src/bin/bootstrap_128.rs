@@ -3,15 +3,15 @@
 //! Builds the fixed-size baseline MLS group required by the thesis bootstrap.
 //!
 //! The `--seed` parameter is public scheduling input only. It never supplies
-//! cryptographic randomness. `--output` receives exactly one public snapshot;
-//! Tasks 28 and later add summary, commit, and report artifacts.
+//! cryptographic randomness. `--output` receives the complete public artifact
+//! set: snapshot, JSON summary, CSV commit records, and Markdown report.
 
 use std::{env, path::PathBuf, process::ExitCode};
 
 use adaptive_hybrid_mls::bootstrap::{
-    bootstrap_128, public_bootstrap_snapshot, validate_snapshot_output_directory,
-    verify_bootstrap_128, write_public_bootstrap_snapshot, BootstrapOptions,
-    BOOTSTRAP_MEMBER_COUNT,
+    bootstrap_128, bootstrap_summary, public_bootstrap_snapshot,
+    validate_snapshot_output_directory, verify_bootstrap_128, write_bootstrap_artifacts,
+    BootstrapOptions, BOOTSTRAP_MEMBER_COUNT,
 };
 
 /// Parsed public command-line arguments for the bootstrap executable.
@@ -21,7 +21,7 @@ struct Cli {
     members: usize,
     /// Public seed for the deterministic committer schedule, not cryptographic entropy.
     seed: u64,
-    /// Relative `output/<run>` location for the public bootstrap snapshot.
+    /// Relative `output/<run>` location for public bootstrap artifacts.
     output: PathBuf,
 }
 
@@ -60,11 +60,18 @@ fn main() -> ExitCode {
         Ok((mut clients, result)) => match verify_bootstrap_128(&mut clients) {
             Ok(verification) => {
                 let snapshot = public_bootstrap_snapshot(&options, &result, &verification);
+                let summary = bootstrap_summary(&options, &result, &verification);
                 drop(clients);
-                match snapshot {
-                    Ok(snapshot) => match write_public_bootstrap_snapshot(&cli.output, &snapshot) {
-                        Ok(snapshot_path) => {
-                            println!(
+                match (snapshot, summary) {
+                    (Ok(snapshot), Ok(summary)) => {
+                        match write_bootstrap_artifacts(
+                            &cli.output,
+                            &snapshot,
+                            &summary,
+                            &result.commit_records,
+                        ) {
+                            Ok(artifact_paths) => {
+                                println!(
                 "Verified {} baseline MLS members after {} Add commits at epoch {} using {} distinct committers.",
                 BOOTSTRAP_MEMBER_COUNT,
                 result.add_commit_count,
@@ -75,19 +82,27 @@ fn main() -> ExitCode {
                     .collect::<std::collections::BTreeSet<_>>()
                     .len()
             );
-                            println!(
-                "Wrote the public-only snapshot to {}. Summary, commit, and report artifacts remain deferred to Task 28.",
-                snapshot_path.display()
+                                println!(
+                "Wrote public snapshot, summary, commit CSV, and report under {}.",
+                cli.output.display()
             );
-                            ExitCode::SUCCESS
+                                println!(
+                                    "Artifacts: {}, {}, {}, {}",
+                                    artifact_paths.snapshot.display(),
+                                    artifact_paths.summary.display(),
+                                    artifact_paths.commits.display(),
+                                    artifact_paths.report.display()
+                                );
+                                ExitCode::SUCCESS
+                            }
+                            Err(error) => {
+                                eprintln!("bootstrap_128 artifact write failed: {error}");
+                                ExitCode::FAILURE
+                            }
                         }
-                        Err(error) => {
-                            eprintln!("bootstrap_128 snapshot failed: {error}");
-                            ExitCode::FAILURE
-                        }
-                    },
-                    Err(error) => {
-                        eprintln!("bootstrap_128 snapshot failed: {error}");
+                    }
+                    (Err(error), _) | (_, Err(error)) => {
+                        eprintln!("bootstrap_128 artifact construction failed: {error}");
                         ExitCode::FAILURE
                     }
                 }
@@ -158,6 +173,6 @@ fn print_usage() {
          \n\
          Creates and fully delivers baseline MLS Add commits for exactly 128 members.\n\
          The seed controls public committer scheduling only; it is not cryptographic entropy.\n\
-         Writes one public-only snapshot under output/<run>; other artifacts are deferred to Task 28."
+         Writes public snapshot, summary JSON, commit CSV, and report under output/<run>."
     );
 }

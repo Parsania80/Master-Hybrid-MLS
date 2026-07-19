@@ -3,8 +3,8 @@
 //! The public scheduling seed chooses only which existing member stages each
 //! Add commit. OpenMLS continues to use its provider's operating-system-backed
 //! entropy for credentials, KeyPackages, and MLS cryptographic operations.
-//! Task 27 persists a versioned public snapshot only after successful group
-//! verification. Tasks 28 and later add summary, commit, and report artifacts.
+//! After successful group verification, Tasks 27 and 28 persist a versioned
+//! public snapshot, summary, commit CSV, and Markdown report.
 
 use std::{
     fs::{self, OpenOptions},
@@ -26,6 +26,12 @@ pub const BASELINE_TREE_ARITY: u8 = 2;
 pub const BOOTSTRAP_BINARY_TREE_HEIGHT: u8 = 7;
 /// Stable name of the safe public bootstrap snapshot.
 pub const PUBLIC_SNAPSHOT_FILE_NAME: &str = "bootstrap_public_snapshot.json";
+/// Stable name of the public bootstrap summary.
+pub const BOOTSTRAP_SUMMARY_FILE_NAME: &str = "bootstrap_128_summary.json";
+/// Stable name of public per-commit bootstrap measurements.
+pub const BOOTSTRAP_COMMITS_FILE_NAME: &str = "bootstrap_128_commits.csv";
+/// Stable name of the human-readable public bootstrap report.
+pub const BOOTSTRAP_REPORT_FILE_NAME: &str = "bootstrap_128_report.md";
 
 /// Public, non-secret options for the baseline bootstrap operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +67,8 @@ pub struct BootstrapResult {
     /// The creator is represented by its public leaf in the ratchet tree, not
     /// by an invented KeyPackage that was never used to create the group.
     pub added_member_key_packages: Vec<PublicKeyPackage>,
+    /// Public observations for each accepted Add commit.
+    pub commit_records: Vec<BootstrapCommitRecord>,
 }
 
 /// One actual public KeyPackage supplied in an Add proposal.
@@ -70,6 +78,31 @@ pub struct PublicKeyPackage {
     pub member_index: usize,
     /// Canonical TLS encoding of the public RFC 9420 KeyPackage.
     pub tls_bytes: Vec<u8>,
+}
+
+/// Public per-commit evidence retained for the bootstrap CSV.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapCommitRecord {
+    /// One-based Add-commit sequence number.
+    pub sequence: u32,
+    /// Public epoch before the Add commit.
+    pub epoch_before: u64,
+    /// Public epoch after the Add commit.
+    pub epoch_after: u64,
+    /// Bootstrap member index of the valid committer.
+    pub committer_member_index: usize,
+    /// Public MLS leaf index of the committer at this bootstrap stage.
+    pub committer_leaf_index: u32,
+    /// Bootstrap member index added by this commit.
+    pub added_member_index: usize,
+    /// Actual serialized RFC 9420 Commit byte length.
+    pub commit_wire_bytes: usize,
+    /// Actual serialized RFC 9420 Welcome byte length.
+    pub welcome_wire_bytes: usize,
+    /// Number of prior members that processed the Commit wire message.
+    pub commit_delivery_recipient_count: usize,
+    /// Number of members that joined from the Welcome artifact.
+    pub welcome_recipient_count: usize,
 }
 
 /// Safe public facts established by a successful 128-member verification.
@@ -161,6 +194,79 @@ pub struct PublicSnapshotKeyPackage {
     pub tls_hex: String,
 }
 
+/// Versioned public summary of one successful bootstrap construction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BootstrapSummary {
+    /// Versioned summary schema identifier.
+    pub format: String,
+    /// Filenames that form the complete public artifact set for this run.
+    pub artifacts: BootstrapArtifactNames,
+    /// Public baseline protocol settings used by the run.
+    pub configuration: PublicSnapshotConfiguration,
+    /// Public schedule-only reproducibility information.
+    pub reproducibility: PublicSnapshotReproducibility,
+    /// Verified public MLS state needed to identify the run.
+    pub group: BootstrapSummaryGroup,
+    /// Aggregate public delivery and byte observations.
+    pub delivery: BootstrapSummaryDelivery,
+}
+
+/// Canonical public artifact filenames.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BootstrapArtifactNames {
+    /// Public snapshot filename.
+    pub snapshot: String,
+    /// Public JSON summary filename.
+    pub summary: String,
+    /// Public CSV filename.
+    pub commits: String,
+    /// Public Markdown filename.
+    pub report: String,
+}
+
+/// Public group identifiers included in the summary without duplicating the tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BootstrapSummaryGroup {
+    /// Public group identifier.
+    pub group_id_hex: String,
+    /// Verified common epoch.
+    pub epoch: u64,
+    /// Verified authenticated tree hash.
+    pub tree_hash_hex: String,
+    /// Verified public member count.
+    pub member_count: usize,
+    /// Verified tree height.
+    pub tree_height: u8,
+}
+
+/// Aggregate public commit-delivery measurements.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BootstrapSummaryDelivery {
+    /// Number of valid Add commits.
+    pub add_commit_count: usize,
+    /// Number of distinct members that created Add commits.
+    pub distinct_committer_count: usize,
+    /// Sum of actual serialized Commit message bytes.
+    pub total_commit_wire_bytes: u64,
+    /// Sum of actual serialized Welcome message bytes.
+    pub total_welcome_wire_bytes: u64,
+    /// Sum of Commit deliveries to pre-existing members.
+    pub total_commit_deliveries: u64,
+}
+
+/// Paths of the complete public artifact set written for a run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapArtifactPaths {
+    /// Versioned public snapshot path.
+    pub snapshot: PathBuf,
+    /// JSON summary path.
+    pub summary: PathBuf,
+    /// CSV commit-record path.
+    pub commits: PathBuf,
+    /// Markdown report path.
+    pub report: PathBuf,
+}
+
 /// Failures encountered while constructing and delivering bootstrap commits.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum BootstrapError {
@@ -232,6 +338,9 @@ pub enum SnapshotError {
     /// Public JSON serialization failed.
     #[error("public snapshot serialization failed")]
     Serialization(#[source] serde_json::Error),
+    /// Public CSV serialization failed.
+    #[error("public commit CSV serialization failed")]
+    Csv(#[source] csv::Error),
     /// The snapshot could not be written without overwriting an existing file.
     #[error("the public snapshot could not be written")]
     Io(#[source] std::io::Error),
@@ -254,6 +363,7 @@ pub fn bootstrap_128(
 
     let mut committer_indices = Vec::with_capacity(options.members - 1);
     let mut added_member_key_packages = Vec::with_capacity(options.members - 1);
+    let mut commit_records = Vec::with_capacity(options.members - 1);
     for joining_index in 1..options.members {
         let committer_index = committer_for_add(options.schedule_seed, joining_index);
         let (key_package, key_package_tls_bytes) =
@@ -273,11 +383,24 @@ pub fn bootstrap_128(
             .welcome
             .as_deref()
             .ok_or(BootstrapError::MissingWelcome)?;
+        let welcome_wire_bytes = welcome.len();
         clients[joining_index].join_from_welcome(welcome)?;
         committer_indices.push(committer_index);
         added_member_key_packages.push(PublicKeyPackage {
             member_index: joining_index,
             tls_bytes: key_package_tls_bytes,
+        });
+        commit_records.push(BootstrapCommitRecord {
+            sequence: joining_index as u32,
+            epoch_before: joining_index as u64 - 1,
+            epoch_after: joining_index as u64,
+            committer_member_index: committer_index,
+            committer_leaf_index: committer_index as u32,
+            added_member_index: joining_index,
+            commit_wire_bytes: outbound.commit.len(),
+            welcome_wire_bytes,
+            commit_delivery_recipient_count: joining_index - 1,
+            welcome_recipient_count: 1,
         });
     }
 
@@ -287,6 +410,7 @@ pub fn bootstrap_128(
             add_commit_count: options.members - 1,
             committer_indices,
             added_member_key_packages,
+            commit_records,
         },
     ))
 }
@@ -341,13 +465,7 @@ pub fn public_bootstrap_snapshot(
     result: &BootstrapResult,
     verification: &BootstrapVerification,
 ) -> Result<PublicBootstrapSnapshot, SnapshotError> {
-    if result.add_commit_count != BOOTSTRAP_MEMBER_COUNT - 1
-        || result.added_member_key_packages.len() != BOOTSTRAP_MEMBER_COUNT - 1
-        || verification.member_leaf_indices
-            != (0..BOOTSTRAP_MEMBER_COUNT as u32).collect::<Vec<_>>()
-    {
-        return Err(SnapshotError::IncompletePublicResult);
-    }
+    validate_public_bootstrap_result(result, verification)?;
 
     let added_member_key_packages = result
         .added_member_key_packages
@@ -391,6 +509,71 @@ pub fn public_bootstrap_snapshot(
     })
 }
 
+/// Builds the public JSON summary from verified construction observations.
+pub fn bootstrap_summary(
+    options: &BootstrapOptions,
+    result: &BootstrapResult,
+    verification: &BootstrapVerification,
+) -> Result<BootstrapSummary, SnapshotError> {
+    validate_public_bootstrap_result(result, verification)?;
+    let total_commit_wire_bytes = result
+        .commit_records
+        .iter()
+        .map(|record| record.commit_wire_bytes as u64)
+        .sum();
+    let total_welcome_wire_bytes = result
+        .commit_records
+        .iter()
+        .map(|record| record.welcome_wire_bytes as u64)
+        .sum();
+    let total_commit_deliveries = result
+        .commit_records
+        .iter()
+        .map(|record| record.commit_delivery_recipient_count as u64)
+        .sum();
+    let distinct_committer_count = result
+        .committer_indices
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+
+    Ok(BootstrapSummary {
+        format: "adaptive-hybrid-mls/bootstrap-summary-v1".to_owned(),
+        artifacts: BootstrapArtifactNames {
+            snapshot: PUBLIC_SNAPSHOT_FILE_NAME.to_owned(),
+            summary: BOOTSTRAP_SUMMARY_FILE_NAME.to_owned(),
+            commits: BOOTSTRAP_COMMITS_FILE_NAME.to_owned(),
+            report: BOOTSTRAP_REPORT_FILE_NAME.to_owned(),
+        },
+        configuration: PublicSnapshotConfiguration {
+            mode: "baseline-binary-mls".to_owned(),
+            ciphersuite_id: BASELINE_CIPHERSUITE_ID,
+            tree_arity: BASELINE_TREE_ARITY,
+            member_count: BOOTSTRAP_MEMBER_COUNT,
+        },
+        reproducibility: PublicSnapshotReproducibility {
+            schedule_seed: options.schedule_seed,
+            key_generation_entropy_policy:
+                "operating-system RNG; not persisted and not reconstructible from this summary"
+                    .to_owned(),
+        },
+        group: BootstrapSummaryGroup {
+            group_id_hex: hex::encode(&verification.group_id),
+            epoch: verification.epoch,
+            tree_hash_hex: hex::encode(&verification.tree_hash),
+            member_count: BOOTSTRAP_MEMBER_COUNT,
+            tree_height: BOOTSTRAP_BINARY_TREE_HEIGHT,
+        },
+        delivery: BootstrapSummaryDelivery {
+            add_commit_count: result.add_commit_count,
+            distinct_committer_count,
+            total_commit_wire_bytes,
+            total_welcome_wire_bytes,
+            total_commit_deliveries,
+        },
+    })
+}
+
 /// Ensures the CLI output target stays under `output/<run>`.
 pub fn validate_snapshot_output_directory(path: &Path) -> Result<(), SnapshotError> {
     let components: Vec<_> = path.components().collect();
@@ -422,6 +605,176 @@ pub fn write_public_bootstrap_snapshot(
     file.write_all(&encoded).map_err(SnapshotError::Io)?;
     file.write_all(b"\n").map_err(SnapshotError::Io)?;
     Ok(snapshot_path)
+}
+
+/// Writes the complete Task 28 public artifact set without overwriting files.
+pub fn write_bootstrap_artifacts(
+    output_directory: &Path,
+    snapshot: &PublicBootstrapSnapshot,
+    summary: &BootstrapSummary,
+    commit_records: &[BootstrapCommitRecord],
+) -> Result<BootstrapArtifactPaths, SnapshotError> {
+    validate_snapshot_output_directory(output_directory)?;
+    fs::create_dir_all(output_directory).map_err(SnapshotError::Io)?;
+    let snapshot_path = output_directory.join(PUBLIC_SNAPSHOT_FILE_NAME);
+    let summary_path = output_directory.join(BOOTSTRAP_SUMMARY_FILE_NAME);
+    let commits_path = output_directory.join(BOOTSTRAP_COMMITS_FILE_NAME);
+    let report_path = output_directory.join(BOOTSTRAP_REPORT_FILE_NAME);
+
+    write_json_new(&snapshot_path, snapshot)?;
+    write_json_new(&summary_path, summary)?;
+    write_commit_csv_new(&commits_path, commit_records)?;
+    write_markdown_new(&report_path, &bootstrap_report_markdown(summary))?;
+
+    Ok(BootstrapArtifactPaths {
+        snapshot: snapshot_path,
+        summary: summary_path,
+        commits: commits_path,
+        report: report_path,
+    })
+}
+
+fn validate_public_bootstrap_result(
+    result: &BootstrapResult,
+    verification: &BootstrapVerification,
+) -> Result<(), SnapshotError> {
+    if result.add_commit_count != BOOTSTRAP_MEMBER_COUNT - 1
+        || result.added_member_key_packages.len() != BOOTSTRAP_MEMBER_COUNT - 1
+        || result.commit_records.len() != BOOTSTRAP_MEMBER_COUNT - 1
+        || verification.member_leaf_indices
+            != (0..BOOTSTRAP_MEMBER_COUNT as u32).collect::<Vec<_>>()
+    {
+        return Err(SnapshotError::IncompletePublicResult);
+    }
+    for (offset, record) in result.commit_records.iter().enumerate() {
+        let joining_index = offset + 1;
+        if record.sequence != joining_index as u32
+            || record.epoch_before != joining_index as u64 - 1
+            || record.epoch_after != joining_index as u64
+            || record.added_member_index != joining_index
+            || record.committer_member_index >= joining_index
+            || record.committer_leaf_index != record.committer_member_index as u32
+            || record.commit_delivery_recipient_count != joining_index - 1
+            || record.welcome_recipient_count != 1
+        {
+            return Err(SnapshotError::IncompletePublicResult);
+        }
+    }
+    Ok(())
+}
+
+fn write_json_new(path: &Path, value: &impl Serialize) -> Result<(), SnapshotError> {
+    let encoded = serde_json::to_vec_pretty(value).map_err(SnapshotError::Serialization)?;
+    write_new(path, &encoded)?;
+    write_append(path, b"\n")
+}
+
+fn write_commit_csv_new(
+    path: &Path,
+    commit_records: &[BootstrapCommitRecord],
+) -> Result<(), SnapshotError> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(SnapshotError::Io)?;
+    let mut writer = csv::Writer::from_writer(file);
+    writer
+        .write_record([
+            "sequence",
+            "epoch_before",
+            "epoch_after",
+            "committer_member_index",
+            "committer_leaf_index",
+            "added_member_index",
+            "commit_wire_bytes",
+            "welcome_wire_bytes",
+            "commit_delivery_recipient_count",
+            "welcome_recipient_count",
+        ])
+        .map_err(SnapshotError::Csv)?;
+    for record in commit_records {
+        writer
+            .write_record([
+                record.sequence.to_string(),
+                record.epoch_before.to_string(),
+                record.epoch_after.to_string(),
+                record.committer_member_index.to_string(),
+                record.committer_leaf_index.to_string(),
+                record.added_member_index.to_string(),
+                record.commit_wire_bytes.to_string(),
+                record.welcome_wire_bytes.to_string(),
+                record.commit_delivery_recipient_count.to_string(),
+                record.welcome_recipient_count.to_string(),
+            ])
+            .map_err(SnapshotError::Csv)?;
+    }
+    writer.flush().map_err(SnapshotError::Io)
+}
+
+fn bootstrap_report_markdown(summary: &BootstrapSummary) -> String {
+    format!(
+        "# Baseline MLS 128-Member Bootstrap Report\n\n\
+         Status: verified baseline construction.\n\n\
+         ## Public configuration\n\n\
+         - Mode: `{}`\n\
+         - Ciphersuite: `0x{:04x}`\n\
+         - Tree arity: `{}`\n\
+         - Members: `{}`\n\
+         - Public committer-schedule seed: `{}`\n\n\
+         ## Verified state\n\n\
+         - Epoch: `{}`\n\
+         - Tree height: `{}`\n\
+         - Add commits: `{}`\n\
+         - Distinct committers: `{}`\n\
+         - Total Commit wire bytes: `{}`\n\
+         - Total Welcome wire bytes: `{}`\n\
+         - Total Commit deliveries: `{}`\n\n\
+         ## Artifact set\n\n\
+         - `{}`: versioned public tree, group metadata, and submitted Add KeyPackages.\n\
+         - `{}`: this public summary.\n\
+         - `{}`: one public row per Add commit; it records byte counts, not Commit bodies.\n\
+         - `{}`: this report.\n\n\
+         ## Security boundary\n\n\
+         These artifacts contain no private MLS state, private keys, shared secrets, path secrets, AEAD material, raw entropy, or a seed that reconstructs key material. The public schedule seed reproduces only committer selection. This educational thesis prototype is not production cryptography and this report is not a security proof.\n",
+        summary.configuration.mode,
+        summary.configuration.ciphersuite_id,
+        summary.configuration.tree_arity,
+        summary.configuration.member_count,
+        summary.reproducibility.schedule_seed,
+        summary.group.epoch,
+        summary.group.tree_height,
+        summary.delivery.add_commit_count,
+        summary.delivery.distinct_committer_count,
+        summary.delivery.total_commit_wire_bytes,
+        summary.delivery.total_welcome_wire_bytes,
+        summary.delivery.total_commit_deliveries,
+        summary.artifacts.snapshot,
+        summary.artifacts.summary,
+        summary.artifacts.commits,
+        summary.artifacts.report,
+    )
+}
+
+fn write_markdown_new(path: &Path, content: &str) -> Result<(), SnapshotError> {
+    write_new(path, content.as_bytes())
+}
+
+fn write_new(path: &Path, bytes: &[u8]) -> Result<(), SnapshotError> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(SnapshotError::Io)?;
+    file.write_all(bytes).map_err(SnapshotError::Io)
+}
+
+fn write_append(path: &Path, bytes: &[u8]) -> Result<(), SnapshotError> {
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(SnapshotError::Io)?;
+    file.write_all(bytes).map_err(SnapshotError::Io)
 }
 
 fn verify_public_state(
@@ -514,6 +867,8 @@ mod tests {
 
         let snapshot = public_bootstrap_snapshot(&options, &result, &verification)
             .expect("public snapshot must be complete");
+        let summary = bootstrap_summary(&options, &result, &verification)
+            .expect("public summary must be complete");
         let snapshot_json = serde_json::to_string(&snapshot).expect("snapshot must serialize");
         assert_eq!(snapshot.added_member_key_packages.len(), 127);
         assert_eq!(snapshot.added_member_key_packages[0].member_index, 1);
@@ -526,6 +881,11 @@ mod tests {
         assert!(!snapshot_json.contains("private_key"));
         assert!(!snapshot_json.contains("shared_secret"));
         assert!(!snapshot_json.contains("path_secret"));
+        assert_eq!(summary.delivery.add_commit_count, 127);
+        assert_eq!(summary.group.epoch, 127);
+        assert_eq!(summary.artifacts.commits, BOOTSTRAP_COMMITS_FILE_NAME);
+        assert!(summary.delivery.total_commit_wire_bytes > 0);
+        assert!(summary.delivery.total_welcome_wire_bytes > 0);
         drop(clients);
     }
 }

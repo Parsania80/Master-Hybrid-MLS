@@ -60,6 +60,7 @@ version.workspace = true
 workspace = true
 
 [dependencies]
+csv.workspace = true
 hex.workspace = true
 mls-adapter = { path = "crates/mls-adapter" }
 serde.workspace = true
