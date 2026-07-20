@@ -859,6 +859,341 @@ impl PreflightSavings {
     }
 }
 
+/// The transition state visible to the start-policy evaluator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum PolicyTransitionState {
+    /// Ordinary binary operation; a transition may be considered.
+    Normal,
+    /// A transition is already underway; a new start is prohibited.
+    Transitioning,
+}
+
+/// Public controls for all five ADR 0006 transition-start conditions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct TransitionStartConfig {
+    /// Active tree arity observed at the policy boundary.
+    pub current_arity: u8,
+    /// Candidate arity observed at the policy boundary.
+    pub candidate_arity: u8,
+    /// Required minimum group size.
+    pub target_group_size: u32,
+    /// Required consecutive accepted post-warmup epochs at the target size.
+    pub stable_epoch_count: u32,
+    /// Strict byte threshold from the configured Delta form.
+    pub delta_bytes: u64,
+}
+
+impl TransitionStartConfig {
+    /// Validates the controls that can be checked before a start decision.
+    ///
+    /// Arity equality is deliberately not validated here: it is an evaluated
+    /// start condition whose failure must remain reportable.
+    pub const fn new(
+        current_arity: u8,
+        candidate_arity: u8,
+        target_group_size: u32,
+        stable_epoch_count: u32,
+        delta_bytes: u64,
+    ) -> Result<Self, PolicyError> {
+        if current_arity == 0 || candidate_arity == 0 {
+            return Err(PolicyError::ZeroTreeArity);
+        }
+        if target_group_size == 0 {
+            return Err(PolicyError::ZeroTargetGroupSize);
+        }
+        if stable_epoch_count == 0 {
+            return Err(PolicyError::ZeroStableEpochCount);
+        }
+        Ok(Self {
+            current_arity,
+            candidate_arity,
+            target_group_size,
+            stable_epoch_count,
+            delta_bytes,
+        })
+    }
+}
+
+/// The ordered ADR 0006 start conditions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum TransitionStartCondition {
+    /// The authenticated transition state must be normal.
+    TransitionStateNormal,
+    /// Candidate arity must be exactly twice current arity.
+    CandidateArityDouble,
+    /// Group size must have remained at target for the required epochs.
+    GroupSizeStable,
+    /// `q_e` must meet the configured `q_min`.
+    ImpactfulCommitMinimum,
+    /// Exact preflight saving must be strictly greater than Delta.
+    PreflightSaving,
+}
+
+/// Exact reason that one transition-start condition is not satisfied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum TransitionStartBlocker {
+    /// A transition is already underway.
+    TransitionStateNotNormal {
+        /// Observed policy state.
+        state: PolicyTransitionState,
+    },
+    /// The candidate is not exactly double the active arity.
+    CandidateArityNotDouble {
+        /// Observed active arity.
+        current_arity: u8,
+        /// Observed candidate arity.
+        candidate_arity: u8,
+    },
+    /// The public group-size run is not long enough.
+    GroupSizeNotStable {
+        /// Current accepted post-commit group size.
+        group_size: u32,
+        /// Required target group size.
+        target_group_size: u32,
+        /// Current consecutive epoch count at or above target.
+        consecutive_epochs: u32,
+        /// Required consecutive epoch count.
+        required_epochs: u32,
+    },
+    /// The bounded current window has too few impactful records.
+    ImpactfulCommitMinimumNotMet {
+        /// Current `q_e`.
+        q_e: u32,
+        /// Configured `q_min`.
+        q_min: u32,
+    },
+    /// No preflight saving is available for the current impactful window.
+    PreflightSavingUnavailable,
+    /// The exact saving is not strictly greater than Delta.
+    PreflightSavingNotAboveDelta {
+        /// Exact signed preflight saving.
+        saving_bytes: i128,
+        /// Configured non-negative Delta threshold.
+        delta_bytes: u64,
+    },
+}
+
+/// One satisfied or blocked transition-start condition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct TransitionStartConditionResult {
+    condition: TransitionStartCondition,
+    blocker: Option<TransitionStartBlocker>,
+}
+
+impl TransitionStartConditionResult {
+    const fn satisfied(condition: TransitionStartCondition) -> Self {
+        Self {
+            condition,
+            blocker: None,
+        }
+    }
+
+    const fn blocked(condition: TransitionStartCondition, blocker: TransitionStartBlocker) -> Self {
+        Self {
+            condition,
+            blocker: Some(blocker),
+        }
+    }
+
+    /// Returns the condition evaluated.
+    pub const fn condition(&self) -> TransitionStartCondition {
+        self.condition
+    }
+
+    /// Returns the exact blocker, or `None` when satisfied.
+    pub const fn blocker(&self) -> Option<TransitionStartBlocker> {
+        self.blocker
+    }
+
+    /// Returns whether the condition is satisfied.
+    pub const fn is_satisfied(&self) -> bool {
+        self.blocker.is_none()
+    }
+}
+
+/// Full ordered evaluation of one accepted post-warmup record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TransitionStartEvaluation {
+    epoch_after: u64,
+    consecutive_target_epochs: u32,
+    conditions: [TransitionStartConditionResult; 5],
+}
+
+impl TransitionStartEvaluation {
+    /// Returns the accepted post-commit epoch evaluated.
+    pub const fn epoch_after(&self) -> u64 {
+        self.epoch_after
+    }
+
+    /// Returns the current consecutive at-target accepted epoch count.
+    pub const fn consecutive_target_epochs(&self) -> u32 {
+        self.consecutive_target_epochs
+    }
+
+    /// Returns all five conditions in ADR 0006 evaluation order.
+    pub const fn conditions(&self) -> &[TransitionStartConditionResult; 5] {
+        &self.conditions
+    }
+
+    /// Returns whether every condition is satisfied.
+    pub fn is_triggered(&self) -> bool {
+        self.conditions
+            .iter()
+            .all(TransitionStartConditionResult::is_satisfied)
+    }
+
+    /// Iterates all exact blockers in ADR evaluation order.
+    pub fn blockers(&self) -> impl Iterator<Item = TransitionStartBlocker> + '_ {
+        self.conditions
+            .iter()
+            .filter_map(TransitionStartConditionResult::blocker)
+    }
+}
+
+/// Stateful evaluator for group-size stability and all transition-start gates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransitionStartEvaluator {
+    config: TransitionStartConfig,
+    consecutive_target_epochs: u32,
+    last_evaluated_epoch: Option<u64>,
+}
+
+impl TransitionStartEvaluator {
+    /// Creates an evaluator with no accepted post-warmup observations yet.
+    pub const fn new(config: TransitionStartConfig) -> Self {
+        Self {
+            config,
+            consecutive_target_epochs: 0,
+            last_evaluated_epoch: None,
+        }
+    }
+
+    /// Evaluates every start condition after one accepted post-warmup commit.
+    ///
+    /// The supplied record must be post-warmup. `savings` must cover exactly
+    /// the current `q_e` when it is available; otherwise the saving condition
+    /// is explicitly blocked rather than inferred from a zero value.
+    pub fn evaluate_post_warmup(
+        &mut self,
+        record: &AcceptedCommitRecord,
+        transition_state: PolicyTransitionState,
+        group_size: u32,
+        window: &PolicyWindow,
+        savings: Option<PreflightSavings>,
+    ) -> Result<TransitionStartEvaluation, PolicyError> {
+        if record.impact_classification().is_none() {
+            return Err(PolicyError::WarmupRecordCannotBeEvaluated);
+        }
+        if self
+            .last_evaluated_epoch
+            .is_some_and(|last_epoch| record.epoch_after() <= last_epoch)
+        {
+            return Err(PolicyError::NonIncreasingEvaluationEpoch);
+        }
+        self.last_evaluated_epoch = Some(record.epoch_after());
+        if group_size >= self.config.target_group_size {
+            self.consecutive_target_epochs = self
+                .consecutive_target_epochs
+                .checked_add(1)
+                .ok_or(PolicyError::StableEpochCountOverflow)?;
+        } else {
+            self.consecutive_target_epochs = 0;
+        }
+
+        let transition_state_result = match transition_state {
+            PolicyTransitionState::Normal => TransitionStartConditionResult::satisfied(
+                TransitionStartCondition::TransitionStateNormal,
+            ),
+            state => TransitionStartConditionResult::blocked(
+                TransitionStartCondition::TransitionStateNormal,
+                TransitionStartBlocker::TransitionStateNotNormal { state },
+            ),
+        };
+        let candidate_arity_result = if self
+            .config
+            .current_arity
+            .checked_mul(2)
+            .is_some_and(|expected| expected == self.config.candidate_arity)
+        {
+            TransitionStartConditionResult::satisfied(
+                TransitionStartCondition::CandidateArityDouble,
+            )
+        } else {
+            TransitionStartConditionResult::blocked(
+                TransitionStartCondition::CandidateArityDouble,
+                TransitionStartBlocker::CandidateArityNotDouble {
+                    current_arity: self.config.current_arity,
+                    candidate_arity: self.config.candidate_arity,
+                },
+            )
+        };
+        let group_size_result = if self.consecutive_target_epochs >= self.config.stable_epoch_count
+        {
+            TransitionStartConditionResult::satisfied(TransitionStartCondition::GroupSizeStable)
+        } else {
+            TransitionStartConditionResult::blocked(
+                TransitionStartCondition::GroupSizeStable,
+                TransitionStartBlocker::GroupSizeNotStable {
+                    group_size,
+                    target_group_size: self.config.target_group_size,
+                    consecutive_epochs: self.consecutive_target_epochs,
+                    required_epochs: self.config.stable_epoch_count,
+                },
+            )
+        };
+        let q_e = window.q_e();
+        let q_min = window.config().q_min;
+        let impactful_result = if q_e >= q_min {
+            TransitionStartConditionResult::satisfied(
+                TransitionStartCondition::ImpactfulCommitMinimum,
+            )
+        } else {
+            TransitionStartConditionResult::blocked(
+                TransitionStartCondition::ImpactfulCommitMinimum,
+                TransitionStartBlocker::ImpactfulCommitMinimumNotMet { q_e, q_min },
+            )
+        };
+        let saving_result = match savings {
+            Some(savings) if savings.impactful_commit_count() != q_e => {
+                return Err(PolicyError::SavingsImpactfulCountMismatch)
+            }
+            Some(savings)
+                if savings.direct_saving_bytes() > i128::from(self.config.delta_bytes) =>
+            {
+                TransitionStartConditionResult::satisfied(TransitionStartCondition::PreflightSaving)
+            }
+            Some(savings) => TransitionStartConditionResult::blocked(
+                TransitionStartCondition::PreflightSaving,
+                TransitionStartBlocker::PreflightSavingNotAboveDelta {
+                    saving_bytes: savings.direct_saving_bytes(),
+                    delta_bytes: self.config.delta_bytes,
+                },
+            ),
+            None => TransitionStartConditionResult::blocked(
+                TransitionStartCondition::PreflightSaving,
+                TransitionStartBlocker::PreflightSavingUnavailable,
+            ),
+        };
+
+        Ok(TransitionStartEvaluation {
+            epoch_after: record.epoch_after(),
+            consecutive_target_epochs: self.consecutive_target_epochs,
+            conditions: [
+                transition_state_result,
+                candidate_arity_result,
+                group_size_result,
+                impactful_result,
+                saving_result,
+            ],
+        })
+    }
+
+    /// Returns the immutable public start-policy controls.
+    pub const fn config(&self) -> TransitionStartConfig {
+        self.config
+    }
+}
+
 /// Errors from public transition-policy recording.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PolicyError {
@@ -907,6 +1242,27 @@ pub enum PolicyError {
     /// A platform-sized Task 36 preflight byte count did not fit the policy type.
     #[error("the transition preflight byte count exceeds the supported range")]
     PreflightByteCountOverflow,
+    /// A start-policy evaluator needs a non-zero active and candidate arity.
+    #[error("the transition start arities must be positive")]
+    ZeroTreeArity,
+    /// The public group-size target must be positive.
+    #[error("the transition target group size must be positive")]
+    ZeroTargetGroupSize,
+    /// The required consecutive at-target epoch count must be positive.
+    #[error("the stable epoch count must be positive")]
+    ZeroStableEpochCount,
+    /// Warmup records are retained but cannot trigger a transition evaluation.
+    #[error("a warmup accepted record cannot be evaluated for transition start")]
+    WarmupRecordCannotBeEvaluated,
+    /// Post-warmup evaluations must be supplied in strict accepted-epoch order.
+    #[error("transition start evaluations must use strictly increasing epochs")]
+    NonIncreasingEvaluationEpoch,
+    /// The consecutive target-size epoch counter exceeded its supported range.
+    #[error("the stable target-size epoch count exceeds the supported range")]
+    StableEpochCountOverflow,
+    /// Savings records must describe exactly the current impactful window.
+    #[error("the savings impactful-commit count does not match the current window")]
+    SavingsImpactfulCountMismatch,
 }
 
 #[cfg(test)]
@@ -1210,6 +1566,196 @@ mod tests {
                 0,
             ),
             Err(PolicyError::SavingsArithmeticOverflow)
+        );
+    }
+
+    fn start_config(
+        candidate_arity: u8,
+        stable_epoch_count: u32,
+        delta_bytes: u64,
+    ) -> TransitionStartConfig {
+        TransitionStartConfig::new(2, candidate_arity, 128, stable_epoch_count, delta_bytes)
+            .expect("valid start controls")
+    }
+
+    fn impactful_record(window: &mut PolicyWindow, epoch_after: u64) -> AcceptedCommitRecord {
+        window
+            .append_accepted(
+                epoch_after,
+                CommitImpactFacts {
+                    path_delivery_changed: true,
+                    ..CommitImpactFacts::default()
+                },
+            )
+            .expect("accepted post-warmup record")
+            .record
+    }
+
+    fn saving_for_count(count: usize, preflight: u64) -> PreflightSavings {
+        let costs = (0..count)
+            .map(|_| ImpactfulCommitByteCosts::new(100, 60))
+            .collect::<Vec<_>>();
+        PreflightSavings::from_impactful_costs(&costs, preflight)
+            .expect("non-empty bounded impactful costs")
+    }
+
+    #[test]
+    fn start_evaluation_records_all_blockers_then_triggers_after_the_last_condition() {
+        let mut window =
+            PolicyWindow::new(PolicyWindowConfig::new(20, 0, 2).expect("valid window controls"));
+        let mut evaluator = TransitionStartEvaluator::new(start_config(4, 2, 10));
+        let first = impactful_record(&mut window, 1);
+        let first_evaluation = evaluator
+            .evaluate_post_warmup(
+                &first,
+                PolicyTransitionState::Normal,
+                128,
+                &window,
+                Some(saving_for_count(1, 10)),
+            )
+            .expect("first post-warmup evaluation");
+        assert!(!first_evaluation.is_triggered());
+        assert_eq!(first_evaluation.consecutive_target_epochs(), 1);
+        assert_eq!(
+            first_evaluation.blockers().collect::<Vec<_>>(),
+            vec![
+                TransitionStartBlocker::GroupSizeNotStable {
+                    group_size: 128,
+                    target_group_size: 128,
+                    consecutive_epochs: 1,
+                    required_epochs: 2,
+                },
+                TransitionStartBlocker::ImpactfulCommitMinimumNotMet { q_e: 1, q_min: 2 },
+            ]
+        );
+
+        let second = impactful_record(&mut window, 2);
+        let second_evaluation = evaluator
+            .evaluate_post_warmup(
+                &second,
+                PolicyTransitionState::Normal,
+                128,
+                &window,
+                Some(saving_for_count(2, 10)),
+            )
+            .expect("second post-warmup evaluation");
+        assert!(second_evaluation.is_triggered());
+        assert_eq!(second_evaluation.blockers().count(), 0);
+    }
+
+    #[test]
+    fn start_evaluation_reports_every_independent_blocker_and_resets_size_run() {
+        let mut window =
+            PolicyWindow::new(PolicyWindowConfig::new(20, 0, 1).expect("valid window controls"));
+        let record = window
+            .append_accepted(1, CommitImpactFacts::default())
+            .expect("accepted non-impactful record")
+            .record;
+        let mut evaluator = TransitionStartEvaluator::new(start_config(3, 2, 10));
+        let evaluation = evaluator
+            .evaluate_post_warmup(
+                &record,
+                PolicyTransitionState::Transitioning,
+                127,
+                &window,
+                None,
+            )
+            .expect("all conditions are recorded");
+
+        assert!(!evaluation.is_triggered());
+        assert_eq!(evaluation.consecutive_target_epochs(), 0);
+        assert_eq!(evaluation.blockers().count(), 5);
+        assert_eq!(
+            evaluation.conditions()[0].blocker(),
+            Some(TransitionStartBlocker::TransitionStateNotNormal {
+                state: PolicyTransitionState::Transitioning,
+            })
+        );
+        assert_eq!(
+            evaluation.conditions()[4].blocker(),
+            Some(TransitionStartBlocker::PreflightSavingUnavailable)
+        );
+    }
+
+    #[test]
+    fn saving_comparison_is_strict_and_savings_must_match_current_qe() {
+        let mut window =
+            PolicyWindow::new(PolicyWindowConfig::new(20, 0, 1).expect("valid window controls"));
+        let record = impactful_record(&mut window, 1);
+        let mut evaluator = TransitionStartEvaluator::new(start_config(4, 1, 30));
+        let exact_delta = evaluator
+            .evaluate_post_warmup(
+                &record,
+                PolicyTransitionState::Normal,
+                128,
+                &window,
+                Some(saving_for_count(1, 10)),
+            )
+            .expect("saving is available");
+        assert!(!exact_delta.is_triggered());
+        assert_eq!(
+            exact_delta.conditions()[4].blocker(),
+            Some(TransitionStartBlocker::PreflightSavingNotAboveDelta {
+                saving_bytes: 30,
+                delta_bytes: 30,
+            })
+        );
+
+        let record = impactful_record(&mut window, 2);
+        assert_eq!(
+            evaluator.evaluate_post_warmup(
+                &record,
+                PolicyTransitionState::Normal,
+                128,
+                &window,
+                Some(saving_for_count(1, 10)),
+            ),
+            Err(PolicyError::SavingsImpactfulCountMismatch)
+        );
+    }
+
+    #[test]
+    fn start_evaluation_rejects_warmup_and_non_increasing_epochs() {
+        let mut warmup_window =
+            PolicyWindow::new(PolicyWindowConfig::new(20, 1, 1).expect("valid window controls"));
+        let warmup = warmup_window
+            .append_accepted(1, CommitImpactFacts::default())
+            .expect("accepted warmup record")
+            .record;
+        let mut evaluator = TransitionStartEvaluator::new(start_config(4, 1, 0));
+        assert_eq!(
+            evaluator.evaluate_post_warmup(
+                &warmup,
+                PolicyTransitionState::Normal,
+                128,
+                &warmup_window,
+                None,
+            ),
+            Err(PolicyError::WarmupRecordCannotBeEvaluated)
+        );
+
+        let mut window =
+            PolicyWindow::new(PolicyWindowConfig::new(20, 0, 1).expect("valid window controls"));
+        let record = impactful_record(&mut window, 2);
+        let saving = saving_for_count(1, 0);
+        evaluator
+            .evaluate_post_warmup(
+                &record,
+                PolicyTransitionState::Normal,
+                128,
+                &window,
+                Some(saving),
+            )
+            .expect("first evaluation");
+        assert_eq!(
+            evaluator.evaluate_post_warmup(
+                &record,
+                PolicyTransitionState::Normal,
+                128,
+                &window,
+                Some(saving),
+            ),
+            Err(PolicyError::NonIncreasingEvaluationEpoch)
         );
     }
 
