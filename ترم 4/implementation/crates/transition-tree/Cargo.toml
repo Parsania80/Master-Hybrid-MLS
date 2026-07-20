@@ -1,0 +1,17 @@
+[package]
+name = "transition-tree"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+adaptive-tree = { path = "../adaptive-tree" }
+arity-state = { path = "../arity-state" }
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+transition-policy = { path = "../transition-policy" }

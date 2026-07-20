@@ -20,6 +20,8 @@ Transition-start Delta is now configurable as either absolute bytes or a fixed-p
 
 The prototype now also validates a canonical public `ArityState` extension value for the first `2 -> 4` transition. It records policy thresholds, evaluation facts, tree version, and mapping/TreeCover hashes, but it is not yet placed in or authenticated by an MLS GroupContext extension; that fork integration remains future work.
 
+The active quaternary topology and old binary TreeCover are now distinct public structures. Only the quaternary side is marked as the future epoch-secret authority; the TreeCover is delivery-only, excludes post-transition additions, and revokes a frozen member on removal. Neither structure derives secrets or changes a live MLS group.
+
 ## How to use it
 
 The 128-member baseline constructor is available now: `cargo +stable run --bin bootstrap_128 --release --locked --offline -- --members 128 --seed 42 --output output/bootstrap-128`. The public seed selects committers only; it is not cryptographic entropy. After verification, the command writes create-new public artifacts under the requested `output/<run>` directory: `bootstrap_public_snapshot.json`, `bootstrap_128_summary.json`, `bootstrap_128_commits.csv`, and `bootstrap_128_report.md`. The snapshot contains public configuration/scheduling data, authenticated group metadata, the public TLS RatchetTree, occupied leaves, and the 127 actual Add KeyPackages. The CSV contains only public per-commit identity, epoch, byte-count, and delivery-count observations—not Commit bodies or ciphertexts. None of these files contain private MLS state, secret material, raw entropy, or a seed that reconstructs it.
