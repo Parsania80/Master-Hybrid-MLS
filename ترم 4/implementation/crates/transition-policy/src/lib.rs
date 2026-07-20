@@ -602,6 +602,263 @@ pub enum TransitionByteDelta {
     PreflightLargerBy(usize),
 }
 
+/// Current and candidate bytes for one already-classified impactful commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ImpactfulCommitByteCosts {
+    current_bytes: u64,
+    candidate_estimated_bytes: u64,
+}
+
+impl ImpactfulCommitByteCosts {
+    /// Records real current bytes and explicitly estimated candidate bytes.
+    pub const fn new(current_bytes: u64, candidate_estimated_bytes: u64) -> Self {
+        Self {
+            current_bytes,
+            candidate_estimated_bytes,
+        }
+    }
+
+    /// Returns `B_i(2)` for this impactful commit.
+    pub const fn current_bytes(&self) -> u64 {
+        self.current_bytes
+    }
+
+    /// Returns `B_hat_i(4)` for this impactful commit.
+    pub const fn candidate_estimated_bytes(&self) -> u64 {
+        self.candidate_estimated_bytes
+    }
+}
+
+/// Explicit report-only rounding for a non-negative rational byte average.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum ByteAverageRounding {
+    /// Return an error unless the average has no fractional byte.
+    Exact,
+    /// Discard a fractional byte.
+    Floor,
+    /// Round any fractional byte up.
+    Ceiling,
+    /// Round a half or greater fractional byte up; smaller fractions down.
+    NearestHalfUp,
+}
+
+/// Exact non-negative byte average represented without floating point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct RationalByteAverage {
+    numerator: u64,
+    denominator: u32,
+}
+
+impl RationalByteAverage {
+    fn new(numerator: u64, denominator: u32) -> Result<Self, PolicyError> {
+        if denominator == 0 {
+            return Err(PolicyError::EmptyImpactfulCommitSet);
+        }
+        Ok(Self {
+            numerator,
+            denominator,
+        })
+    }
+
+    /// Returns the exact byte-sum numerator.
+    pub const fn numerator(&self) -> u64 {
+        self.numerator
+    }
+
+    /// Returns the non-zero impactful-commit denominator.
+    pub const fn denominator(&self) -> u32 {
+        self.denominator
+    }
+
+    /// Rounds only for display/reporting; policy calculations remain exact.
+    pub fn rounded_bytes(&self, rounding: ByteAverageRounding) -> Result<u64, PolicyError> {
+        let denominator = u64::from(self.denominator);
+        let quotient = self.numerator / denominator;
+        let remainder = self.numerator % denominator;
+        match rounding {
+            ByteAverageRounding::Exact if remainder != 0 => {
+                Err(PolicyError::NonIntegralByteAverage)
+            }
+            ByteAverageRounding::Exact | ByteAverageRounding::Floor => Ok(quotient),
+            ByteAverageRounding::Ceiling if remainder == 0 => Ok(quotient),
+            ByteAverageRounding::Ceiling => quotient
+                .checked_add(1)
+                .ok_or(PolicyError::SavingsArithmeticOverflow),
+            ByteAverageRounding::NearestHalfUp => {
+                if u128::from(remainder) * 2 >= u128::from(denominator) {
+                    quotient
+                        .checked_add(1)
+                        .ok_or(PolicyError::SavingsArithmeticOverflow)
+                } else {
+                    Ok(quotient)
+                }
+            }
+        }
+    }
+}
+
+/// Exact signed average difference `(sum_current - sum_candidate) / q_e`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct SignedRationalByteDifference {
+    numerator: i128,
+    denominator: u32,
+}
+
+impl SignedRationalByteDifference {
+    /// Returns the signed exact numerator.
+    pub const fn numerator(&self) -> i128 {
+        self.numerator
+    }
+
+    /// Returns the non-zero impactful-commit denominator.
+    pub const fn denominator(&self) -> u32 {
+        self.denominator
+    }
+}
+
+/// Exact preflight savings values from ADR 0006.
+///
+/// `direct_saving_bytes` implements `sum_current - sum_candidate -
+/// B_transition_preflight`. `average_form_saving_bytes` independently applies
+/// `q_e * (B_bar_current - B_hat_bar_candidate) - B_transition_preflight`
+/// using rational numerators and denominators, never rounded averages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct PreflightSavings {
+    impactful_commit_count: u32,
+    sum_current_bytes: u64,
+    sum_candidate_estimated_bytes: u64,
+    current_average: RationalByteAverage,
+    candidate_average: RationalByteAverage,
+    average_difference: SignedRationalByteDifference,
+    transition_preflight_bytes: u64,
+    direct_saving_bytes: i128,
+    average_form_saving_bytes: i128,
+}
+
+impl PreflightSavings {
+    /// Computes exact savings from all and only impactful commit byte costs.
+    pub fn from_impactful_costs(
+        costs: &[ImpactfulCommitByteCosts],
+        transition_preflight_bytes: u64,
+    ) -> Result<Self, PolicyError> {
+        let impactful_commit_count =
+            u32::try_from(costs.len()).map_err(|_| PolicyError::ImpactfulCommitCountOverflow)?;
+        if impactful_commit_count == 0 {
+            return Err(PolicyError::EmptyImpactfulCommitSet);
+        }
+
+        let (sum_current_bytes, sum_candidate_estimated_bytes) =
+            costs
+                .iter()
+                .try_fold((0_u64, 0_u64), |(current_total, candidate_total), cost| {
+                    Ok::<_, PolicyError>((
+                        current_total
+                            .checked_add(cost.current_bytes())
+                            .ok_or(PolicyError::SavingsArithmeticOverflow)?,
+                        candidate_total
+                            .checked_add(cost.candidate_estimated_bytes())
+                            .ok_or(PolicyError::SavingsArithmeticOverflow)?,
+                    ))
+                })?;
+
+        let current_average = RationalByteAverage::new(sum_current_bytes, impactful_commit_count)?;
+        let candidate_average =
+            RationalByteAverage::new(sum_candidate_estimated_bytes, impactful_commit_count)?;
+        let average_difference_numerator = i128::from(sum_current_bytes)
+            .checked_sub(i128::from(sum_candidate_estimated_bytes))
+            .ok_or(PolicyError::SavingsArithmeticOverflow)?;
+        let average_difference = SignedRationalByteDifference {
+            numerator: average_difference_numerator,
+            denominator: impactful_commit_count,
+        };
+        let direct_saving_bytes = average_difference_numerator
+            .checked_sub(i128::from(transition_preflight_bytes))
+            .ok_or(PolicyError::SavingsArithmeticOverflow)?;
+        let multiplied_average_numerator = average_difference
+            .numerator
+            .checked_mul(i128::from(impactful_commit_count))
+            .ok_or(PolicyError::SavingsArithmeticOverflow)?;
+        let average_total_difference = multiplied_average_numerator
+            .checked_div(i128::from(average_difference.denominator))
+            .ok_or(PolicyError::SavingsArithmeticOverflow)?;
+        let average_form_saving_bytes = average_total_difference
+            .checked_sub(i128::from(transition_preflight_bytes))
+            .ok_or(PolicyError::SavingsArithmeticOverflow)?;
+
+        Ok(Self {
+            impactful_commit_count,
+            sum_current_bytes,
+            sum_candidate_estimated_bytes,
+            current_average,
+            candidate_average,
+            average_difference,
+            transition_preflight_bytes,
+            direct_saving_bytes,
+            average_form_saving_bytes,
+        })
+    }
+
+    /// Computes exact savings using a Task 36 preflight measurement.
+    pub fn from_impactful_costs_and_preflight(
+        costs: &[ImpactfulCommitByteCosts],
+        preflight: TransitionPreflightMeasurement,
+    ) -> Result<Self, PolicyError> {
+        let transition_preflight_bytes = u64::try_from(preflight.estimated_bytes())
+            .map_err(|_| PolicyError::PreflightByteCountOverflow)?;
+        Self::from_impactful_costs(costs, transition_preflight_bytes)
+    }
+
+    /// Returns `q_e`, equal to the supplied impactful-cost record count.
+    pub const fn impactful_commit_count(&self) -> u32 {
+        self.impactful_commit_count
+    }
+
+    /// Returns `sum_current`.
+    pub const fn sum_current_bytes(&self) -> u64 {
+        self.sum_current_bytes
+    }
+
+    /// Returns `sum_candidate`.
+    pub const fn sum_candidate_estimated_bytes(&self) -> u64 {
+        self.sum_candidate_estimated_bytes
+    }
+
+    /// Returns exact `B_bar_current`.
+    pub const fn current_average(&self) -> RationalByteAverage {
+        self.current_average
+    }
+
+    /// Returns exact `B_hat_bar_candidate`.
+    pub const fn candidate_average(&self) -> RationalByteAverage {
+        self.candidate_average
+    }
+
+    /// Returns exact signed `(B_bar_current - B_hat_bar_candidate)`.
+    pub const fn average_difference(&self) -> SignedRationalByteDifference {
+        self.average_difference
+    }
+
+    /// Returns `B_transition_preflight`.
+    pub const fn transition_preflight_bytes(&self) -> u64 {
+        self.transition_preflight_bytes
+    }
+
+    /// Returns the direct exact preflight saving; it may be negative.
+    pub const fn direct_saving_bytes(&self) -> i128 {
+        self.direct_saving_bytes
+    }
+
+    /// Returns the independent rational-average formula result.
+    pub const fn average_form_saving_bytes(&self) -> i128 {
+        self.average_form_saving_bytes
+    }
+
+    /// Returns whether both ADR 0006 forms agree exactly.
+    pub const fn formulas_agree(&self) -> bool {
+        self.direct_saving_bytes == self.average_form_saving_bytes
+    }
+}
+
 /// Errors from public transition-policy recording.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PolicyError {
@@ -635,11 +892,27 @@ pub enum PolicyError {
     /// A component sum exceeded the supported byte-count representation.
     #[error("the transition byte count exceeds the supported range")]
     TransitionByteCountOverflow,
+    /// Savings require at least one impactful commit in the current window.
+    #[error("the impactful commit set is empty")]
+    EmptyImpactfulCommitSet,
+    /// The number of impactful commit cost records exceeded the supported range.
+    #[error("the impactful commit count exceeds the supported range")]
+    ImpactfulCommitCountOverflow,
+    /// Checked sum, rounding, or rational formula arithmetic overflowed.
+    #[error("savings arithmetic exceeds the supported range")]
+    SavingsArithmeticOverflow,
+    /// Exact report rounding was requested for a fractional byte average.
+    #[error("the byte average is not an integer")]
+    NonIntegralByteAverage,
+    /// A platform-sized Task 36 preflight byte count did not fit the policy type.
+    #[error("the transition preflight byte count exceeds the supported range")]
+    PreflightByteCountOverflow,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn config() -> PolicyWindowConfig {
         PolicyWindowConfig::new(2, 1, 2).expect("valid public controls")
@@ -851,5 +1124,114 @@ mod tests {
             smaller.delta_bytes(),
             TransitionByteDelta::PreflightLargerBy(2)
         );
+    }
+
+    #[test]
+    fn exact_savings_preserve_fractional_averages_without_policy_rounding() {
+        let savings = PreflightSavings::from_impactful_costs(
+            &[
+                ImpactfulCommitByteCosts::new(100, 60),
+                ImpactfulCommitByteCosts::new(101, 60),
+            ],
+            20,
+        )
+        .expect("non-empty impactful costs");
+
+        assert_eq!(savings.impactful_commit_count(), 2);
+        assert_eq!(savings.sum_current_bytes(), 201);
+        assert_eq!(savings.sum_candidate_estimated_bytes(), 120);
+        assert_eq!(savings.current_average().numerator(), 201);
+        assert_eq!(savings.current_average().denominator(), 2);
+        assert_eq!(savings.candidate_average().numerator(), 120);
+        assert_eq!(savings.average_difference().numerator(), 81);
+        assert_eq!(savings.average_difference().denominator(), 2);
+        assert_eq!(savings.direct_saving_bytes(), 61);
+        assert_eq!(savings.average_form_saving_bytes(), 61);
+        assert!(savings.formulas_agree());
+        assert_eq!(
+            savings
+                .current_average()
+                .rounded_bytes(ByteAverageRounding::Exact),
+            Err(PolicyError::NonIntegralByteAverage)
+        );
+        assert_eq!(
+            savings
+                .current_average()
+                .rounded_bytes(ByteAverageRounding::Floor),
+            Ok(100)
+        );
+        assert_eq!(
+            savings
+                .current_average()
+                .rounded_bytes(ByteAverageRounding::Ceiling),
+            Ok(101)
+        );
+        assert_eq!(
+            savings
+                .current_average()
+                .rounded_bytes(ByteAverageRounding::NearestHalfUp),
+            Ok(101)
+        );
+    }
+
+    #[test]
+    fn savings_accept_task_thirty_six_preflight_measurements() {
+        let preflight = TransitionPreflightMeasurement::from_serialized_outer_message(
+            &[0_u8; 3],
+            &[TransitionByteRange::new(
+                TransitionByteComponent::BaseCommit,
+                0,
+                3,
+            )],
+        )
+        .expect("valid preflight partition");
+        let savings = PreflightSavings::from_impactful_costs_and_preflight(
+            &[ImpactfulCommitByteCosts::new(10, 1)],
+            preflight,
+        )
+        .expect("valid exact saving");
+        assert_eq!(savings.transition_preflight_bytes(), 3);
+        assert_eq!(savings.direct_saving_bytes(), 6);
+        assert!(savings.formulas_agree());
+    }
+
+    #[test]
+    fn savings_reject_empty_sets_and_checked_sum_overflow() {
+        assert_eq!(
+            PreflightSavings::from_impactful_costs(&[], 0),
+            Err(PolicyError::EmptyImpactfulCommitSet)
+        );
+        assert_eq!(
+            PreflightSavings::from_impactful_costs(
+                &[
+                    ImpactfulCommitByteCosts::new(u64::MAX, 0),
+                    ImpactfulCommitByteCosts::new(1, 0),
+                ],
+                0,
+            ),
+            Err(PolicyError::SavingsArithmeticOverflow)
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn direct_and_rational_average_forms_are_exactly_equivalent(
+            costs in prop::collection::vec((0_u16..10_000, 0_u16..10_000), 1..20),
+            preflight in 0_u16..10_000,
+        ) {
+            let costs = costs
+                .into_iter()
+                .map(|(current, candidate)| {
+                    ImpactfulCommitByteCosts::new(u64::from(current), u64::from(candidate))
+                })
+                .collect::<Vec<_>>();
+            let savings = PreflightSavings::from_impactful_costs(&costs, u64::from(preflight))
+                .expect("bounded property inputs cannot overflow");
+            prop_assert_eq!(
+                savings.direct_saving_bytes(),
+                savings.average_form_saving_bytes()
+            );
+            prop_assert!(savings.formulas_agree());
+        }
     }
 }
