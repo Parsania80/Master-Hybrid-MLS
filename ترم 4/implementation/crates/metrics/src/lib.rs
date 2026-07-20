@@ -821,6 +821,22 @@ pub struct TreeCoverRetirementTriggers {
 }
 
 impl TreeCoverRetirementTriggers {
+    /// Constructs an authorized trigger set when at least one side of the OR rule held.
+    ///
+    /// This is primarily useful to consumers that deserialize or otherwise
+    /// receive a previously evaluated decision. New protocol decisions should
+    /// normally come from [`evaluate_treecover_retirement`].
+    pub const fn new(new_tree_maturity: bool, old_treecover_cost: bool) -> Option<Self> {
+        if new_tree_maturity || old_treecover_cost {
+            Some(Self {
+                new_tree_maturity,
+                old_treecover_cost,
+            })
+        } else {
+            None
+        }
+    }
+
     /// Returns whether `h_new_cost >= theta_new` was true.
     pub const fn new_tree_maturity(&self) -> bool {
         self.new_tree_maturity
@@ -850,6 +866,19 @@ pub enum TreeCoverRetirementDecision {
     Retire(TreeCoverRetirementTriggers),
     /// Retirement is not authorized at this measurement boundary.
     Keep(TreeCoverRetirementBlocker),
+}
+
+impl TreeCoverRetirementDecision {
+    /// Constructs an authorized retirement decision only when an OR trigger is present.
+    ///
+    /// Callers evaluating new data should use [`evaluate_treecover_retirement`]
+    /// so undefined inputs remain visible as blockers.
+    pub const fn retire(new_tree_maturity: bool, old_treecover_cost: bool) -> Option<Self> {
+        match TreeCoverRetirementTriggers::new(new_tree_maturity, old_treecover_cost) {
+            Some(triggers) => Some(Self::Retire(triggers)),
+            None => None,
+        }
+    }
 }
 
 /// Exact retirement-threshold facts without any state mutation.
@@ -2373,5 +2402,7 @@ mod tests {
             MaturityThreshold::new(MATURITY_THRESHOLD_SCALE + 1),
             Err(MeasurementError::MaturityThresholdOutOfRange)
         );
+        assert_eq!(TreeCoverRetirementTriggers::new(false, false), None);
+        assert_eq!(TreeCoverRetirementDecision::retire(false, false), None);
     }
 }

@@ -8,6 +8,7 @@ version.workspace = true
 adaptive-tree = { path = "../adaptive-tree" }
 arity-state = { path = "../arity-state" }
 hybrid-path-secret = { path = "../hybrid-path-secret" }
+metrics = { path = "../metrics" }
 mkyber = { path = "../mkyber" }
 serde.workspace = true
 sha2.workspace = true

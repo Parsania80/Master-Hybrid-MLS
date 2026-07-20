@@ -15,6 +15,7 @@ use hybrid_path_secret::{
     open_hybrid_path_level, HybridKdfContext, HybridPathCiphertext, HybridPathLevelContext,
     HybridPathLevelError, HybridPathRecipientPrivate, HybridPathSecret,
 };
+use metrics::{TreeCoverRetirementDecision, TreeCoverRetirementTriggers};
 use mkyber::MultiRecipientKem;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -24,6 +25,7 @@ use transition_tree::{DeliveryOnlyTreeCover, TransitionTreeError, TransitionTree
 use adaptive_tree::BinaryToQuaternaryLeafMapping;
 
 const METADATA_COMMITMENT_LABEL: &[u8] = b"Adaptive-Hybrid-MLS-Transition-Metadata-v1";
+const RETIREMENT_COMMITMENT_LABEL: &[u8] = b"Adaptive-Hybrid-MLS-TreeCover-Retirement-v1";
 
 /// Public facts extracted from an already MLS-authenticated GroupContext.
 ///
@@ -172,6 +174,7 @@ pub struct EducationalTransitionMember {
     group_id: Vec<u8>,
     pre_transition_epoch: u64,
     applied_transition: Option<AppliedTransitionState>,
+    retired_transition: Option<RetiredTransitionState>,
 }
 
 impl EducationalTransitionMember {
@@ -192,6 +195,7 @@ impl EducationalTransitionMember {
             group_id,
             pre_transition_epoch,
             applied_transition: None,
+            retired_transition: None,
         })
     }
 
@@ -203,6 +207,11 @@ impl EducationalTransitionMember {
     /// Returns the committed public transition snapshot, if this member applied one.
     pub const fn applied_transition(&self) -> Option<&AppliedTransitionState> {
         self.applied_transition.as_ref()
+    }
+
+    /// Returns the public retirement snapshot, if this member applied one.
+    pub const fn retired_transition(&self) -> Option<&RetiredTransitionState> {
+        self.retired_transition.as_ref()
     }
 
     fn stage_transition(
@@ -258,6 +267,195 @@ impl EducationalTransitionMember {
         };
         Ok((next, path_secret))
     }
+}
+
+/// Public retirement metadata supplied by a future fork after MLS authentication.
+///
+/// The caller contract matches [`AuthenticatedGroupContext`]: it must extract
+/// the exact private-use extension and the Task 48 decision from the same
+/// already authenticated GroupContext/Commit transaction. This crate hashes
+/// and cross-checks the supplied public facts, but does not parse an MLS
+/// Commit or verify an MLS signature.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TreeCoverRetirementEnvelope {
+    group_context: AuthenticatedGroupContext,
+    extension_type: u16,
+    extension_value: Vec<u8>,
+    decision: TreeCoverRetirementDecision,
+}
+
+impl TreeCoverRetirementEnvelope {
+    /// Retains the exact normal-state extension and an already authenticated Task 48 decision.
+    pub fn new(
+        group_context: AuthenticatedGroupContext,
+        extension_type: u16,
+        extension_value: Vec<u8>,
+        decision: TreeCoverRetirementDecision,
+    ) -> Self {
+        Self {
+            group_context,
+            extension_type,
+            extension_value,
+            decision,
+        }
+    }
+
+    fn stage_for_member(
+        &self,
+        member: &EducationalTransitionMember,
+    ) -> Result<RetiredTransitionState, TreeCoverRetirementError> {
+        let previous = member
+            .applied_transition()
+            .ok_or(TreeCoverRetirementError::TransitionNotApplied)?;
+        if member.retired_transition().is_some() {
+            return Err(TreeCoverRetirementError::TreeCoverAlreadyRetired);
+        }
+        if self.extension_type != ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE {
+            return Err(TreeCoverRetirementError::UnexpectedExtensionType {
+                observed: self.extension_type,
+            });
+        }
+        let state = ArityState::from_extension_value(&self.extension_value)?;
+        if state.extension_value_bytes()? != self.extension_value {
+            return Err(TreeCoverRetirementError::NonCanonicalExtensionValue);
+        }
+        if !matches!(state.lifecycle(), ArityLifecycle::Normal) {
+            return Err(TreeCoverRetirementError::StateIsNotNormal);
+        }
+        let triggers = match self.decision {
+            TreeCoverRetirementDecision::Retire(triggers) => triggers,
+            TreeCoverRetirementDecision::Keep(_) => {
+                return Err(TreeCoverRetirementError::RetirementNotAuthorized)
+            }
+        };
+        if self.group_context.group_id() != previous.group_id() {
+            return Err(TreeCoverRetirementError::MemberGroupIdMismatch);
+        }
+        let expected_epoch = previous
+            .epoch()
+            .checked_add(1)
+            .ok_or(TreeCoverRetirementError::RetirementEpochOverflow)?;
+        if self.group_context.epoch() != expected_epoch {
+            return Err(TreeCoverRetirementError::UnexpectedRetirementEpoch {
+                expected: expected_epoch,
+                observed: self.group_context.epoch(),
+            });
+        }
+        let expected_tree_version = previous
+            .tree_version()
+            .checked_add(1)
+            .ok_or(TreeCoverRetirementError::TreeVersionOverflow)?;
+        if state.tree_version() != expected_tree_version {
+            return Err(TreeCoverRetirementError::UnexpectedTreeVersion {
+                expected: expected_tree_version,
+                observed: state.tree_version(),
+            });
+        }
+        if state.active_arity() != 4 || state.candidate_arity() != 4 {
+            return Err(TreeCoverRetirementError::StateIsNotQuaternaryNormal);
+        }
+        Ok(RetiredTransitionState {
+            group_id: self.group_context.group_id().to_vec(),
+            epoch: self.group_context.epoch(),
+            tree_version: state.tree_version(),
+            active_arity: state.active_arity(),
+            group_context_hash: *self.group_context.group_context_hash(),
+            retirement_triggers: triggers,
+            previous_transition_metadata_commitment: *previous.metadata_commitment(),
+            retirement_metadata_commitment: retirement_commitment(
+                self.group_context.group_context_hash(),
+                self.extension_type,
+                &self.extension_value,
+                triggers,
+            ),
+            secret_disposition: TreeCoverSecretDisposition::NoSecretMaterialInEducationalHarness,
+        })
+    }
+}
+
+/// What the educational harness did with carry-only TreeCover secret material.
+///
+/// `DeliveryOnlyTreeCover` deliberately contains no epoch or path secrets. A
+/// future fork must replace this marker with actual, reviewed zeroization of
+/// its obsolete secret store after its authenticated state transaction commits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum TreeCoverSecretDisposition {
+    /// No old secret material exists in this public-only educational harness.
+    NoSecretMaterialInEducationalHarness,
+}
+
+/// Public state that every educational member must hold after retirement.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RetiredTransitionState {
+    group_id: Vec<u8>,
+    epoch: u64,
+    tree_version: u32,
+    active_arity: u8,
+    group_context_hash: [u8; 32],
+    retirement_triggers: TreeCoverRetirementTriggers,
+    previous_transition_metadata_commitment: [u8; 32],
+    retirement_metadata_commitment: [u8; 32],
+    secret_disposition: TreeCoverSecretDisposition,
+}
+
+impl RetiredTransitionState {
+    /// Returns the authenticated group identifier.
+    pub fn group_id(&self) -> &[u8] {
+        &self.group_id
+    }
+    /// Returns the authenticated retirement epoch.
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    /// Returns the incremented logical tree version.
+    pub const fn tree_version(&self) -> u32 {
+        self.tree_version
+    }
+    /// Returns the active quaternary arity after retirement.
+    pub const fn active_arity(&self) -> u8 {
+        self.active_arity
+    }
+    /// Returns the hash of the authenticated post-retirement GroupContext.
+    pub const fn group_context_hash(&self) -> &[u8; 32] {
+        &self.group_context_hash
+    }
+    /// Returns the exact Task 48 side or sides that authorized retirement.
+    pub const fn retirement_triggers(&self) -> TreeCoverRetirementTriggers {
+        self.retirement_triggers
+    }
+    /// Returns the prior authenticated transition metadata commitment.
+    pub const fn previous_transition_metadata_commitment(&self) -> &[u8; 32] {
+        &self.previous_transition_metadata_commitment
+    }
+    /// Returns the public commitment to normal-state extension and retirement trigger facts.
+    pub const fn retirement_metadata_commitment(&self) -> &[u8; 32] {
+        &self.retirement_metadata_commitment
+    }
+    /// Returns how this public-only harness handled old TreeCover secrets.
+    pub const fn secret_disposition(&self) -> TreeCoverSecretDisposition {
+        self.secret_disposition
+    }
+}
+
+/// Stages authenticated TreeCover retirement for every member, then installs it atomically.
+///
+/// Every extension, threshold decision, epoch, group, and version check
+/// completes before a member's public snapshot changes. This proves only
+/// in-process all-or-nothing replacement for the educational harness. It is
+/// not distributed MLS Commit atomicity and it does not retain or erase real
+/// MLS secret material.
+pub fn retire_treecover_for_members(
+    members: &mut [EducationalTransitionMember],
+    retirement: &TreeCoverRetirementEnvelope,
+) -> Result<Vec<RetiredTransitionState>, TreeCoverRetirementError> {
+    let mut staged = Vec::with_capacity(members.len());
+    for member in members.iter() {
+        staged.push(retirement.stage_for_member(member)?);
+    }
+    for (member, next) in members.iter_mut().zip(&staged) {
+        member.retired_transition = Some(next.clone());
+    }
+    Ok(staged)
 }
 
 /// Public state that every educational member must hold after the same transition.
@@ -499,6 +697,63 @@ pub enum TransitionApplicationError {
     HybridPathLevel(#[from] HybridPathLevelError),
 }
 
+/// Errors from staging or atomically installing educational TreeCover retirement.
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum TreeCoverRetirementError {
+    /// Retirement requires the member's authenticated transition snapshot.
+    #[error("the educational member has not applied a transition")]
+    TransitionNotApplied,
+    /// A member cannot retire the same TreeCover twice.
+    #[error("the educational member already retired TreeCover")]
+    TreeCoverAlreadyRetired,
+    /// The private-use extension type was not the thesis ArityState type.
+    #[error("unexpected TreeCover retirement extension type {observed:#06x}")]
+    UnexpectedExtensionType {
+        /// Observed public extension type.
+        observed: u16,
+    },
+    /// The proposed normal-state extension was invalid.
+    #[error("the TreeCover retirement ArityState extension value is invalid")]
+    ArityState(#[from] ArityStateError),
+    /// A decoded state did not round-trip to the exact supplied bytes.
+    #[error("the TreeCover retirement ArityState extension value is not canonical")]
+    NonCanonicalExtensionValue,
+    /// Retirement must install a normal state, never another transition state.
+    #[error("the TreeCover retirement ArityState is not normal")]
+    StateIsNotNormal,
+    /// Task 48 did not authorize retirement.
+    #[error("the Task 48 decision does not authorize TreeCover retirement")]
+    RetirementNotAuthorized,
+    /// A supplied authenticated context names a different group.
+    #[error("the TreeCover retirement group identifier does not match the member transition")]
+    MemberGroupIdMismatch,
+    /// The supported retirement epoch cannot be represented.
+    #[error("the TreeCover retirement epoch overflows")]
+    RetirementEpochOverflow,
+    /// The retirement context did not advance exactly one MLS epoch.
+    #[error("the TreeCover retirement epoch is not immediately after the transition epoch")]
+    UnexpectedRetirementEpoch {
+        /// Required post-retirement epoch.
+        expected: u64,
+        /// Observed context epoch.
+        observed: u64,
+    },
+    /// The next logical tree version cannot be represented.
+    #[error("the TreeCover retirement tree version overflows")]
+    TreeVersionOverflow,
+    /// Retirement must increment the logical tree version once.
+    #[error("the TreeCover retirement tree version is not the next version")]
+    UnexpectedTreeVersion {
+        /// Required next tree version.
+        expected: u32,
+        /// Observed normal-state version.
+        observed: u32,
+    },
+    /// Retirement preserves the active quaternary tree and candidate arity.
+    #[error("the TreeCover retirement state is not quaternary normal")]
+    StateIsNotQuaternaryNormal,
+}
+
 fn validate_hybrid_context(
     group_context: &AuthenticatedGroupContext,
     state: &ArityState,
@@ -532,6 +787,22 @@ fn metadata_commitment(
     hasher.update(group_context_hash);
     hasher.update(extension_type.to_be_bytes());
     hasher.update(extension_value);
+    hasher.finalize().into()
+}
+
+fn retirement_commitment(
+    group_context_hash: &[u8; 32],
+    extension_type: u16,
+    extension_value: &[u8],
+    triggers: TreeCoverRetirementTriggers,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(RETIREMENT_COMMITMENT_LABEL);
+    hasher.update(group_context_hash);
+    hasher.update(extension_type.to_be_bytes());
+    hasher.update(extension_value);
+    hasher.update([u8::from(triggers.new_tree_maturity())]);
+    hasher.update([u8::from(triggers.old_treecover_cost())]);
     hasher.finalize().into()
 }
 
@@ -1153,5 +1424,102 @@ mod tests {
         assert!(members_with_tampered_ciphertext
             .iter()
             .all(|member| member.applied_transition().is_none()));
+    }
+
+    fn retirement_envelope() -> TreeCoverRetirementEnvelope {
+        let mapping = mapping();
+        let (transitioning, _) = state_and_cover(&mapping);
+        let normal =
+            ArityState::normal(4, 4, 2, transitioning.policy(), transitioning.evaluation())
+                .expect("post-retirement normal state");
+        TreeCoverRetirementEnvelope::new(
+            AuthenticatedGroupContext::from_verified_group_context_bytes(
+                b"group".to_vec(),
+                9,
+                b"complete authenticated post-retirement GroupContext",
+            )
+            .expect("authenticated retirement context"),
+            ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE,
+            normal
+                .extension_value_bytes()
+                .expect("normal extension bytes"),
+            TreeCoverRetirementDecision::retire(true, false).expect("new-tree trigger"),
+        )
+    }
+
+    fn transitioned_members_for_retirement() -> Vec<EducationalTransitionMember> {
+        [b"alice".as_slice(), b"bob", b"charlie"]
+            .into_iter()
+            .map(|member_id| EducationalTransitionMember {
+                member_id: member_id.to_vec(),
+                group_id: b"group".to_vec(),
+                pre_transition_epoch: 7,
+                applied_transition: Some(AppliedTransitionState {
+                    group_id: b"group".to_vec(),
+                    epoch: 8,
+                    tree_version: 1,
+                    active_arity: 4,
+                    group_context_hash: [41; 32],
+                    metadata_commitment: [42; 32],
+                }),
+                retired_transition: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn authenticated_retirement_converges_atomically_to_incremented_normal_state() {
+        let mut members = transitioned_members_for_retirement();
+        let retired = retire_treecover_for_members(&mut members, &retirement_envelope())
+            .expect("authenticated retirement converges");
+
+        assert_eq!(retired.len(), 3);
+        let first = retired.first().expect("first retired state");
+        assert_eq!(first.epoch(), 9);
+        assert_eq!(first.tree_version(), 2);
+        assert_eq!(first.active_arity(), 4);
+        assert!(first.retirement_triggers().new_tree_maturity());
+        assert!(!first.retirement_triggers().old_treecover_cost());
+        assert_eq!(
+            first.secret_disposition(),
+            TreeCoverSecretDisposition::NoSecretMaterialInEducationalHarness
+        );
+        assert!(members
+            .iter()
+            .all(|member| member.retired_transition() == Some(first)));
+        assert_ne!(*first.retirement_metadata_commitment(), [0; 32]);
+    }
+
+    #[test]
+    fn retirement_rejections_leave_every_member_unchanged() {
+        let mut members = transitioned_members_for_retirement();
+        let rejected_type = TreeCoverRetirementEnvelope::new(
+            AuthenticatedGroupContext::from_verified_group_context_bytes(
+                b"group".to_vec(),
+                9,
+                b"post-retirement GroupContext",
+            )
+            .expect("context"),
+            0xF002,
+            retirement_envelope().extension_value,
+            TreeCoverRetirementDecision::retire(true, false).expect("trigger"),
+        );
+        assert!(matches!(
+            retire_treecover_for_members(&mut members, &rejected_type),
+            Err(TreeCoverRetirementError::UnexpectedExtensionType { observed: 0xF002 })
+        ));
+        assert!(members
+            .iter()
+            .all(|member| member.retired_transition().is_none()));
+
+        let mut members = transitioned_members_for_retirement();
+        members[2].applied_transition = None;
+        assert_eq!(
+            retire_treecover_for_members(&mut members, &retirement_envelope()),
+            Err(TreeCoverRetirementError::TransitionNotApplied)
+        );
+        assert!(members
+            .iter()
+            .all(|member| member.retired_transition().is_none()));
     }
 }

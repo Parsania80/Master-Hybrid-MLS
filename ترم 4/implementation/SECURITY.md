@@ -112,6 +112,8 @@ Task 47 performs checked signed-rational arithmetic only over Task 46 public byt
 
 Task 48 evaluates only the public fixed-point OR threshold. Undefined non-empty inputs block it before either threshold may authorize retirement, and its result does not alter group state or erase secrets. It cannot authenticate or perform retirement, prove TreeCover maturity, or close SEC-05, SEC-06, or SEC-10.
 
+Task 49 adds a thesis-local in-process retirement harness. It requires a Task 48 `Retire` decision and a future-fork assertion that the decision plus exact normal-state extension came from the same MLS-authenticated GroupContext/Commit transaction; it then rejects wrong extension type, noncanonical/non-normal state, non-quaternary arity, group mismatch, non-successor epoch, and non-successor tree version before replacing any public member snapshot. This is not independent MLS authentication, distributed/network atomicity, real-member convergence, or proof of correct fork integration. The public `DeliveryOnlyTreeCover` model contains no epoch/path secret bytes, so the harness records `NoSecretMaterialInEducationalHarness` rather than claiming erasure. Any actual fork must zeroize obsolete old-tree secrets after its authenticated commit transaction has succeeded and must separately specify failure/rollback behavior; SEC-05, SEC-06, SEC-07, and SEC-09 remain unresolved.
+
 The private-use extension code can collide with another private deployment. The fork and its messages are thesis-local and must not be sent to an unrelated MLS deployment. A future interoperable protocol would require an independently specified wire format, capability negotiation, registry action where applicable, and security review.
 
 ## Secret Handling and Reporting Rules

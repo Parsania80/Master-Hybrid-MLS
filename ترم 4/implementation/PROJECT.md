@@ -38,7 +38,7 @@
 - `/crates/adaptive-tree`: Canonical version-1 binary-to-quaternary mapping and immutable public shadow topology with public logical-operation replay; cost estimation and TreeCover remain deferred.
 - `/crates/arity-state`: Canonical Task 41 public metadata for private-use extension `0xF001`. It validates policy/evaluation snapshots and the `Normal`/`Transitioning` state machine, but does not yet inject or authenticate a live MLS extension.
 - `/crates/transition-tree`: Task 42 separate public active-quaternary topology and frozen delivery-only binary TreeCover. It validates Task 41 mapping/cover bindings and exposes only the active quaternary epoch-secret-authority marker; it has no secret derivation or live MLS mutation.
-- `/crates/transition-auth`: Tasks 43/44 fail-closed pre-apply transition metadata and educational batch-application harness. It consumes future-fork supplied, already MLS-authenticated GroupContext facts, stages every recipient's hybrid resolution before replacing public member snapshots, and rejects inconsistent inputs without partial harness mutation; it does not authenticate or process an MLS Commit itself.
+- `/crates/transition-auth`: Tasks 43/44/49 fail-closed transition metadata plus educational batch transition/retirement harnesses. It consumes future-fork supplied, already MLS-authenticated GroupContext facts, stages every member before public snapshot replacement, and records normal-state TreeCover retirement epoch/trigger facts without partial harness mutation. It neither authenticates/processes an MLS Commit nor retains real TreeCover secrets to erase.
 - `/crates/transition-policy`: Task 35/39 policy boundary. It retains an auditable raw accepted-commit trail, bounds post-warmup `W_e`, derives `q_e`/`r_e`, measures canonical transition preflight bytes, computes exact rational savings, resolves typed byte-or-fixed-point-percent Delta thresholds conservatively, and evaluates all start gates with explicit public blockers; transition execution remains deferred.
 - `/crates/metrics`: Typed Tasks 32/33/46/47/48 measurement boundary. It measures emitted baseline Commit bytes, derives explicitly estimated candidate path payload sizes from the canonical hybrid TLS codec, records public topology/recipient/crypto facts, measures target-set costs and maturity, and evaluates the exact non-mutating TreeCover OR threshold rule with explicit blockers, without retaining wire or secret values.
 - `/crates/simulation`: Empty deterministic workload and convergence-simulation boundary.
@@ -165,8 +165,8 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 | 46 | Measure actual `C_leaf`, `C_new`, `C_old`, and `C_ideal` for each defined recipient target set | ✅ Done | ADR 0020 adds canonical recipient target sets and exact serializer-driven route-cost records. Leaf delivery requires singleton records; every available route covers `S` exactly once, while empty and unavailable routes retain typed reasons. |
 | 47 | Implement `h_new_cost` and `h_old_cost` with checked zero/negative/empty/unavailable handling | ✅ Done | ADR 0021 adds exact signed-rational raw scores, unit-interval clamping with reasons, per-target undefined states, and conservative min/max aggregation. Empty sets are excluded; undefined non-empty sets stay visible as retirement blockers. |
 | 48 | Implement `h_new_cost >= theta_new OR h_old_cost < theta_old` with defaults 0.70 and 0.50 | ✅ Done | ADR 0022 adds exact micro-unit thresholds, inclusive new-tree and strict old-cover comparisons, independent OR triggers, and undefined-data blockers. It does not mutate TreeCover. |
-| 49 | Retire TreeCover, record epoch/trigger, erase applicable old secrets, return to `Normal`, increment version, and verify convergence | 🔄 Current | Retirement must be authenticated and atomic. |
-| 50 | Pass edge-case, threshold-boundary, retirement, erasure, formatting, lint, and regression tests | ⬜ Todo | Include unavailable-cover and division-by-zero cases. |
+| 49 | Retire TreeCover, record epoch/trigger, erase applicable old secrets, return to `Normal`, increment version, and verify convergence | ✅ Done | ADR 0023 adds a staged educational retirement envelope: only a Task 48 `Retire` decision plus future-fork supplied authenticated GroupContext facts may install canonical normal quaternary state at next epoch/version. Three members converge atomically; no TreeCover secret exists in this public harness, so it records that limitation instead of claiming erasure. |
+| 50 | Pass edge-case, threshold-boundary, retirement, erasure, formatting, lint, and regression tests | 🔄 Current | Include unavailable-cover and division-by-zero cases. |
 
 ### Part 10: Transition Evaluation, Reports, and Thesis Acceptance
 
@@ -185,6 +185,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 9, Task 49 — Retire TreeCover, record epoch/trigger, erase applicable old secrets, return to `Normal`, increment version, and verify convergence.
+**Current:** Part 9, Task 50 — Pass edge-case, threshold-boundary, retirement, erasure, formatting, lint, and regression tests.
 
-**Next:** Part 9, Task 50 — Pass edge-case, threshold-boundary, retirement, erasure, formatting, lint, and regression tests.
+**Next:** Part 10, Task 51 — Implement `evaluate_transition.rs` with snapshot/recreate support and the documented CLI.
