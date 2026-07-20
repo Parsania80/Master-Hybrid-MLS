@@ -38,6 +38,7 @@
 - `/crates/adaptive-tree`: Canonical version-1 binary-to-quaternary mapping and immutable public shadow topology with public logical-operation replay; cost estimation and TreeCover remain deferred.
 - `/crates/arity-state`: Canonical Task 41 public metadata for private-use extension `0xF001`. It validates policy/evaluation snapshots and the `Normal`/`Transitioning` state machine, but does not yet inject or authenticate a live MLS extension.
 - `/crates/transition-tree`: Task 42 separate public active-quaternary topology and frozen delivery-only binary TreeCover. It validates Task 41 mapping/cover bindings and exposes only the active quaternary epoch-secret-authority marker; it has no secret derivation or live MLS mutation.
+- `/crates/transition-auth`: Task 43 fail-closed pre-apply transition metadata validator. It consumes future-fork supplied, already MLS-authenticated GroupContext facts and rejects extension/state/tree/hybrid-context mismatches before returning public transition state; it does not authenticate a Commit itself.
 - `/crates/transition-policy`: Task 35/39 policy boundary. It retains an auditable raw accepted-commit trail, bounds post-warmup `W_e`, derives `q_e`/`r_e`, measures canonical transition preflight bytes, computes exact rational savings, resolves typed byte-or-fixed-point-percent Delta thresholds conservatively, and evaluates all start gates with explicit public blockers; transition execution remains deferred.
 - `/crates/metrics`: Typed Task 32/33 measurement boundary. It measures emitted baseline Commit bytes, derives explicitly estimated candidate path payload sizes from the canonical hybrid TLS codec, and records public topology, recipient-resolution, crypto-count, and monotonic timing facts without retaining wire or secret values.
 - `/crates/simulation`: Empty deterministic workload and convergence-simulation boundary.
@@ -153,8 +154,8 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 |---|------|--------|-------|
 | 41 | Implement authenticated `ArityState` and `Normal`/`Transitioning` state-machine validation | ✅ Done | ADR 0016 defines a canonical `0xF001` extension value with threshold/evaluation snapshots, policy digest, mapping/TreeCover bindings, and strict first-transition validation. Commit-level authentication/injection remains Task 43. |
 | 42 | Implement the new active quaternary tree and old binary delivery-only `TreeCover` as separate state | ✅ Done | ADR 0017 provides separate active/carry-only types, validates state/map/cover hashes, keeps only quaternary as the epoch-secret authority, and gives additions/removals their required distinct cover effects. |
-| 43 | Authenticate transition metadata and reject arity, version, state, mapping, group-context-hash, or TreeCover-version inconsistencies | 🔄 Current | Validate before state mutation. |
-| 44 | Verify all members converge after transition commits and divergent/tampered commits fail atomically | ⬜ Todo | Cover multiple committers and recipient resolutions. |
+| 43 | Authenticate transition metadata and reject arity, version, state, mapping, group-context-hash, or TreeCover-version inconsistencies | ✅ Done | ADR 0018 adds a fail-closed pre-apply validator for future-fork supplied MLS-authenticated GroupContext facts, exact `0xF001` state, tree bindings, and hybrid context. It performs no MLS signature/commit authentication itself. |
+| 44 | Verify all members converge after transition commits and divergent/tampered commits fail atomically | 🔄 Current | Cover multiple committers and recipient resolutions. |
 | 45 | Pass the Phase 8 formatting, strict lint, state-machine, rejection, convergence, and regression gate | ⬜ Todo | Record unresolved security limitations. |
 
 ### Part 9: Transition Maturity and TreeCover Retirement
@@ -184,6 +185,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 8, Task 43 — Authenticate transition metadata and reject arity, version, state, mapping, group-context-hash, or TreeCover-version inconsistencies.
+**Current:** Part 8, Task 44 — Verify all members converge after transition commits and divergent/tampered commits fail atomically.
 
-**Next:** Part 8, Task 44 — Verify all members converge after transition commits and divergent/tampered commits fail atomically.
+**Next:** Part 8, Task 45 — Pass the Phase 8 formatting, strict lint, state-machine, rejection, convergence, and regression gate.

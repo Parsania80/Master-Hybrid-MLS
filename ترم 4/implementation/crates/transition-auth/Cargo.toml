@@ -1,0 +1,21 @@
+[package]
+name = "transition-auth"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+adaptive-tree = { path = "../adaptive-tree" }
+arity-state = { path = "../arity-state" }
+hybrid-path-secret = { path = "../hybrid-path-secret" }
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+transition-tree = { path = "../transition-tree" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+mkyber = { path = "../mkyber" }
+transition-policy = { path = "../transition-policy" }

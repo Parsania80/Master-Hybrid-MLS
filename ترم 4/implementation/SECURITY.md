@@ -100,6 +100,8 @@ Baseline and experimental groups are separate protocol populations. A baseline g
 
 RFC 9420 confirms GroupContext extensions through the MLS key schedule, but a GroupContextExtensions proposal replaces the full extension list rather than merging it. Future code must preserve every required existing extension during an `ArityState` update and must reject an update that loses required capabilities. See [RFC 9420, Section 12.1.7](https://www.rfc-editor.org/rfc/rfc9420.html#section-12.1.7).
 
+Task 43 adds a thesis-local pre-apply consistency boundary for a future fork. It accepts only facts that the fork has already extracted from an MLS-authenticated complete GroupContext, then rejects extension type/value, transition state/epoch, mapping, TreeCover, group ID, tree version, arity, and GroupContext-hash mismatches before it returns public transition state. The boundary does not parse or authenticate an MLS commit, verify an MLS signature, prove that a caller extracted an extension from GroupContext bytes, or make a transition atomic; those responsibilities remain with the future fork and Task 44 tests.
+
 The private-use extension code can collide with another private deployment. The fork and its messages are thesis-local and must not be sent to an unrelated MLS deployment. A future interoperable protocol would require an independently specified wire format, capability negotiation, registry action where applicable, and security review.
 
 ## Secret Handling and Reporting Rules

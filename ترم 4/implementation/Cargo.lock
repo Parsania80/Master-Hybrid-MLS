@@ -1741,6 +1741,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
+name = "transition-auth"
+version = "0.1.0"
+dependencies = [
+ "adaptive-tree",
+ "arity-state",
+ "hybrid-path-secret",
+ "mkyber",
+ "serde",
+ "sha2",
+ "thiserror",
+ "transition-policy",
+ "transition-tree",
+]
+
+[[package]]
 name = "transition-policy"
 version = "0.1.0"
 dependencies = [
