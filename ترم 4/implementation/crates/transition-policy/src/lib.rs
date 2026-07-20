@@ -1704,6 +1704,58 @@ mod tests {
         assert_eq!(resolved.resolved_bytes(), 1);
     }
 
+    #[test]
+    fn percentage_delta_blocks_at_equality_and_allows_only_a_strictly_larger_saving() {
+        let preflight = preflight_with_bytes(100);
+        let resolved_delta = DeltaThreshold::PercentOfTransitionMicro(25_000_000)
+            .resolve_for_preflight(preflight)
+            .expect("25-percent Delta resolves against the preflight");
+        assert_eq!(resolved_delta.resolved_bytes(), 25);
+
+        let savings = PreflightSavings::from_impactful_costs_and_preflight(
+            &[ImpactfulCommitByteCosts::new(200, 75)],
+            preflight,
+        )
+        .expect("single impactful preflight saving");
+        assert_eq!(savings.direct_saving_bytes(), 25);
+        assert!(savings.formulas_agree());
+
+        let mut window =
+            PolicyWindow::new(PolicyWindowConfig::new(20, 0, 1).expect("valid window controls"));
+        let record = impactful_record(&mut window, 1);
+        let mut equality_evaluator =
+            TransitionStartEvaluator::new(start_config(4, 1, resolved_delta.resolved_bytes()));
+        let equality = equality_evaluator
+            .evaluate_post_warmup(
+                &record,
+                PolicyTransitionState::Normal,
+                128,
+                &window,
+                Some(savings),
+            )
+            .expect("all start gates evaluate");
+        assert!(!equality.is_triggered());
+        assert_eq!(
+            equality.conditions()[4].blocker(),
+            Some(TransitionStartBlocker::PreflightSavingNotAboveDelta {
+                saving_bytes: 25,
+                delta_bytes: 25,
+            })
+        );
+
+        let mut strictly_above_evaluator = TransitionStartEvaluator::new(start_config(4, 1, 24));
+        let strictly_above = strictly_above_evaluator
+            .evaluate_post_warmup(
+                &record,
+                PolicyTransitionState::Normal,
+                128,
+                &window,
+                Some(savings),
+            )
+            .expect("all start gates evaluate");
+        assert!(strictly_above.is_triggered());
+    }
+
     fn impactful_record(window: &mut PolicyWindow, epoch_after: u64) -> AcceptedCommitRecord {
         window
             .append_accepted(

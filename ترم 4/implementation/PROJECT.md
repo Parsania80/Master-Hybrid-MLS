@@ -143,13 +143,13 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 | 37 | Implement the average and direct savings formulas with checked integer/rational rounding | ✅ Done | ADR 0013 stores exact sums and rational averages, computes signed direct and average-form preflight savings without floats, exposes report-only rounding, and property-tests formula equivalence. |
 | 38 | Implement every start condition and record the exact blocking/triggering condition | ✅ Done | ADR 0014 evaluates all five ADR 0006 gates after each post-warmup accepted record: normal state, `2 -> 4`, stable target size, `q_e >= q_min`, and strict exact saving above Delta. Every blocker is retained; no transition is emitted. |
 | 39 | Support configurable Delta in bytes or as a percentage of `B_transition`, plus TOML/CLI overrides | ✅ Done | ADR 0015 maps exactly one TOML form to a typed policy threshold. Percentage values use checked micro-percent fixed point and ceiling byte resolution against the current preflight; the typed future-CLI override replaces, never combines with, TOML. |
-| 40 | Pass start-gating, positive-trigger, formula-equivalence, formatting, lint, and regression tests | 🔄 Current | Transition must never start early. |
+| 40 | Pass start-gating, positive-trigger, formula-equivalence, formatting, lint, and regression tests | ✅ Done | Phase 7 passed Rust 1.93.1 locked-offline format/check/strict Clippy/all-target tests/doc tests/release build/metadata, baseline regression, and diff validation. The policy suite proves all blockers, delayed positive trigger, strict byte/percent Delta boundaries, and bounded direct/rational formula equivalence. |
 
 ### Part 8: Authenticated Transition State and TreeCover
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 41 | Implement authenticated `ArityState` and `Normal`/`Transitioning` state-machine validation | ⬜ Todo | Include thresholds, evaluation state, transition epoch, impactful count, and tree version. |
+| 41 | Implement authenticated `ArityState` and `Normal`/`Transitioning` state-machine validation | 🔄 Current | Include thresholds, evaluation state, transition epoch, impactful count, and tree version. |
 | 42 | Implement the new active quaternary tree and old binary delivery-only `TreeCover` as separate state | ⬜ Todo | Never derive an epoch secret from two roots. |
 | 43 | Authenticate transition metadata and reject arity, version, state, mapping, group-context-hash, or TreeCover-version inconsistencies | ⬜ Todo | Validate before state mutation. |
 | 44 | Verify all members converge after transition commits and divergent/tampered commits fail atomically | ⬜ Todo | Cover multiple committers and recipient resolutions. |
@@ -182,6 +182,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 7, Task 40 — Pass start-gating, positive-trigger, formula-equivalence, formatting, lint, and regression tests.
+**Current:** Part 8, Task 41 — Implement authenticated `ArityState` and `Normal`/`Transitioning` state-machine validation.
 
-**Next:** Part 8, Task 41 — Implement authenticated `ArityState` and `Normal`/`Transitioning` state-machine validation.
+**Next:** Part 8, Task 42 — Implement the new active quaternary tree and old binary delivery-only `TreeCover` as separate state.
