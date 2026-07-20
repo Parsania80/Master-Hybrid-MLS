@@ -251,6 +251,267 @@ impl CandidateCommitEstimate {
     }
 }
 
+/// One canonical recipient target set `S` for a transition-end cost comparison.
+///
+/// The set is public, strictly ascending by recipient-node index, and may be
+/// empty. Empty sets are recorded because ADR 0006 excludes them from later
+/// maturity aggregation rather than silently discarding them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RecipientTargetSet {
+    recipient_node_indexes: Vec<u32>,
+}
+
+impl RecipientTargetSet {
+    /// Creates a canonical public recipient target set.
+    pub fn new(recipient_node_indexes: Vec<u32>) -> Result<Self, MeasurementError> {
+        if recipient_node_indexes
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(MeasurementError::NonCanonicalTargetSet);
+        }
+        Ok(Self {
+            recipient_node_indexes,
+        })
+    }
+
+    /// Returns the target recipients in canonical ascending order.
+    pub fn recipient_node_indexes(&self) -> &[u32] {
+        &self.recipient_node_indexes
+    }
+
+    /// Returns whether this is an empty target set excluded from maturity aggregation.
+    pub const fn is_empty(&self) -> bool {
+        self.recipient_node_indexes.is_empty()
+    }
+}
+
+/// The delivery construction whose exact canonical ciphertext bytes are counted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum CounterfactualDeliveryKind {
+    /// One independently serialized delivery for every target leaf.
+    Leaf,
+    /// Delivery through currently populated new-quaternary routing targets.
+    New,
+    /// Delivery through eligible frozen binary TreeCover routing targets.
+    Old,
+    /// Delivery through a fully mature quaternary routing topology.
+    Ideal,
+}
+
+/// Why a counterfactual route has no byte cost for a non-empty target set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum DeliveryCostUnavailableReason {
+    /// The empty target set is intentionally excluded from maturity aggregation.
+    EmptyTargetSet,
+    /// The old TreeCover has no eligible route for this target set.
+    NoEligibleOldTreeCoverRoute,
+    /// The requested routing construction has not been materialized by the caller.
+    RouteNotMaterialized,
+}
+
+/// Caller input for one counterfactual route.
+///
+/// Available routes must use actual `HybridPathCiphertext` values. The metric
+/// retains only their public canonical byte counts, never ciphertext bytes.
+#[derive(Clone, Copy, Debug)]
+pub enum CounterfactualDeliveryInput<'a> {
+    /// One or more canonical serialized delivery targets.
+    Serialized(&'a [HybridPathCiphertext]),
+    /// An explicit absence rather than a fabricated byte value.
+    Unavailable(DeliveryCostUnavailableReason),
+}
+
+/// Exact component bytes for one counterfactual delivery construction.
+///
+/// These bytes are measured from the canonical hybrid TLS serializer, but are
+/// not an observed full MLS Commit. Their provenance is consequently
+/// `ShadowExactCodec` rather than an emitted outer-MLS value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct SerializedDeliveryCost {
+    kind: CounterfactualDeliveryKind,
+    delivery_target_count: u32,
+    recipient_count: u32,
+    provenance: SerializedByteProvenance,
+}
+
+impl SerializedDeliveryCost {
+    /// Returns the delivery construction this cost represents.
+    pub const fn kind(&self) -> CounterfactualDeliveryKind {
+        self.kind
+    }
+
+    /// Returns the number of individually serialized routing targets counted.
+    pub const fn delivery_target_count(&self) -> u32 {
+        self.delivery_target_count
+    }
+
+    /// Returns the number of distinct target recipients covered exactly once.
+    pub const fn recipient_count(&self) -> u32 {
+        self.recipient_count
+    }
+
+    /// Returns exact serializer-byte provenance.
+    pub const fn provenance(&self) -> SerializedByteProvenance {
+        self.provenance
+    }
+}
+
+/// A counterfactual cost that was measured or explicitly unavailable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum DeliveryCostAvailability {
+    /// Exact canonical hybrid TLS bytes were counted.
+    Measured(SerializedDeliveryCost),
+    /// No valid byte value exists for this construction and target set.
+    Unavailable(DeliveryCostUnavailableReason),
+}
+
+/// The four Task 46 costs for one target set and one logical payload binding.
+///
+/// `logical_payload_binding` is a public, caller-supplied identifier for the
+/// same logical payload across all four counterfactual constructions. This
+/// crate cannot infer equality of encrypted plaintexts from ciphertext bytes;
+/// a future fork must bind the identifier to its authenticated transition
+/// input. It must not contain secret material.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RecipientTargetSetCostMeasurement {
+    target_set: RecipientTargetSet,
+    logical_payload_binding: [u8; 32],
+    leaf: DeliveryCostAvailability,
+    new: DeliveryCostAvailability,
+    old: DeliveryCostAvailability,
+    ideal: DeliveryCostAvailability,
+}
+
+impl RecipientTargetSetCostMeasurement {
+    /// Measures `C_leaf`, `C_new`, `C_old`, and `C_ideal` for one target set.
+    ///
+    /// Each available input must cover exactly the supplied target recipients.
+    /// `Leaf` additionally requires one single-recipient ciphertext per
+    /// target. No unavailable route is converted into a byte count.
+    pub fn measure(
+        target_set: RecipientTargetSet,
+        logical_payload_binding: [u8; 32],
+        leaf: CounterfactualDeliveryInput<'_>,
+        new: CounterfactualDeliveryInput<'_>,
+        old: CounterfactualDeliveryInput<'_>,
+        ideal: CounterfactualDeliveryInput<'_>,
+    ) -> Result<Self, MeasurementError> {
+        let leaf =
+            measure_counterfactual_route(&target_set, CounterfactualDeliveryKind::Leaf, leaf)?;
+        let new = measure_counterfactual_route(&target_set, CounterfactualDeliveryKind::New, new)?;
+        let old = measure_counterfactual_route(&target_set, CounterfactualDeliveryKind::Old, old)?;
+        let ideal =
+            measure_counterfactual_route(&target_set, CounterfactualDeliveryKind::Ideal, ideal)?;
+        Ok(Self {
+            target_set,
+            logical_payload_binding,
+            leaf,
+            new,
+            old,
+            ideal,
+        })
+    }
+
+    /// Returns the public recipient set `S` for these four values.
+    pub const fn target_set(&self) -> &RecipientTargetSet {
+        &self.target_set
+    }
+
+    /// Returns the caller-supplied public same-logical-payload binding.
+    pub const fn logical_payload_binding(&self) -> &[u8; 32] {
+        &self.logical_payload_binding
+    }
+
+    /// Returns `C_leaf(S)`.
+    pub const fn c_leaf(&self) -> DeliveryCostAvailability {
+        self.leaf
+    }
+
+    /// Returns `C_new(S)`.
+    pub const fn c_new(&self) -> DeliveryCostAvailability {
+        self.new
+    }
+
+    /// Returns `C_old(S)`.
+    pub const fn c_old(&self) -> DeliveryCostAvailability {
+        self.old
+    }
+
+    /// Returns `C_ideal(S)`.
+    pub const fn c_ideal(&self) -> DeliveryCostAvailability {
+        self.ideal
+    }
+}
+
+fn measure_counterfactual_route(
+    target_set: &RecipientTargetSet,
+    kind: CounterfactualDeliveryKind,
+    input: CounterfactualDeliveryInput<'_>,
+) -> Result<DeliveryCostAvailability, MeasurementError> {
+    match input {
+        CounterfactualDeliveryInput::Unavailable(reason) => {
+            if target_set.is_empty() && reason != DeliveryCostUnavailableReason::EmptyTargetSet {
+                return Err(MeasurementError::EmptyTargetSetWrongUnavailableReason);
+            }
+            Ok(DeliveryCostAvailability::Unavailable(reason))
+        }
+        CounterfactualDeliveryInput::Serialized(ciphertexts) => {
+            if target_set.is_empty() {
+                return Err(MeasurementError::EmptyTargetSetHasSerializedCost);
+            }
+            if ciphertexts.is_empty() {
+                return Err(MeasurementError::EmptyCounterfactualRoute);
+            }
+            if kind == CounterfactualDeliveryKind::Leaf
+                && (ciphertexts.len() != target_set.recipient_node_indexes().len()
+                    || ciphertexts
+                        .iter()
+                        .any(|ciphertext| ciphertext.recipients().len() != 1))
+            {
+                return Err(MeasurementError::LeafDeliveryIsNotIndependent);
+            }
+
+            let mut recipient_nodes = Vec::new();
+            let mut byte_count = 0usize;
+            for ciphertext in ciphertexts {
+                let bytes = ciphertext
+                    .commit_authenticated_bytes()
+                    .map_err(|_| MeasurementError::HybridCodec)?;
+                byte_count = byte_count
+                    .checked_add(bytes.len())
+                    .ok_or(MeasurementError::ByteCountOverflow)?;
+                recipient_nodes.extend(
+                    ciphertext
+                        .recipients()
+                        .iter()
+                        .map(|recipient| recipient.recipient_node_index().as_u32()),
+                );
+            }
+            recipient_nodes.sort_unstable();
+            if recipient_nodes.windows(2).any(|pair| pair[0] == pair[1]) {
+                return Err(MeasurementError::DuplicateCounterfactualRecipient);
+            }
+            if recipient_nodes != target_set.recipient_node_indexes() {
+                return Err(MeasurementError::CounterfactualRecipientSetMismatch);
+            }
+            let delivery_target_count = u32::try_from(ciphertexts.len())
+                .map_err(|_| MeasurementError::TopologyCountOverflow)?;
+            let recipient_count = u32::try_from(recipient_nodes.len())
+                .map_err(|_| MeasurementError::TopologyCountOverflow)?;
+            Ok(DeliveryCostAvailability::Measured(SerializedDeliveryCost {
+                kind,
+                delivery_target_count,
+                recipient_count,
+                provenance: SerializedByteProvenance::candidate_component(
+                    byte_count,
+                    ByteEstimationMethod::ShadowExactCodec,
+                ),
+            }))
+        }
+    }
+}
+
 fn validate_disjoint_ranges(components: &[UnchangedOuterFraming]) -> Result<(), MeasurementError> {
     let mut ranges = components
         .iter()
@@ -296,6 +557,27 @@ pub enum MeasurementError {
     /// Recipient-resolution node indexes must be strictly ascending.
     #[error("recipient-resolution node indexes are not in canonical ascending order")]
     NonCanonicalRecipientOrder,
+    /// Task 46 target recipients must be strictly ascending and duplicate-free.
+    #[error("recipient target-set indexes are not in canonical ascending order")]
+    NonCanonicalTargetSet,
+    /// A non-empty target set needs at least one serialized delivery target.
+    #[error("the counterfactual delivery route is empty")]
+    EmptyCounterfactualRoute,
+    /// Independent leaf delivery requires one singleton ciphertext per target.
+    #[error("leaf delivery is not independently serialized per target")]
+    LeafDeliveryIsNotIndependent,
+    /// A recipient occurred in more than one serialized route target.
+    #[error("a counterfactual recipient occurs more than once")]
+    DuplicateCounterfactualRecipient,
+    /// Serialized route recipients did not exactly cover the named target set.
+    #[error("counterfactual route recipients do not match the target set")]
+    CounterfactualRecipientSetMismatch,
+    /// An empty target set must not receive a fabricated serialized byte cost.
+    #[error("an empty target set has a serialized delivery cost")]
+    EmptyTargetSetHasSerializedCost,
+    /// Empty target sets must use their explicit exclusion reason.
+    #[error("an empty target set has the wrong unavailable reason")]
+    EmptyTargetSetWrongUnavailableReason,
     /// Per-operation crypto metrics must be strictly ordered and unique.
     #[error("crypto-operation metrics are not in canonical ascending order")]
     NonCanonicalCryptoOperationOrder,
@@ -812,6 +1094,46 @@ mod tests {
         .expect("canonical recipients")
     }
 
+    fn ciphertext_for_recipients(
+        path_node_index: u32,
+        recipient_node_indexes: &[u32],
+    ) -> HybridPathCiphertext {
+        let recipients = recipient_node_indexes
+            .iter()
+            .enumerate()
+            .map(|(position, recipient_node_index)| {
+                let fill = u8::try_from(position).expect("small test recipient position");
+                HybridRecipientCiphertext::new(
+                    RecipientNodeIndex::new(*recipient_node_index),
+                    [fill; CLASSICAL_ENCAPSULATION_BYTES],
+                    MkyberRecipientCiphertext::from_bytes(&[fill; RECIPIENT_CIPHERTEXT_BYTES])
+                        .expect("fixed recipient component"),
+                    [fill; ENCRYPTED_PATH_SECRET_BYTES],
+                )
+            })
+            .collect();
+        HybridPathCiphertext::new(
+            PathNodeIndex::new(path_node_index),
+            DOMAIN,
+            MkyberCommonCiphertext::from_bytes(&[7; COMMON_CIPHERTEXT_BYTES])
+                .expect("fixed common component"),
+            recipients,
+        )
+        .expect("canonical recipients")
+    }
+
+    fn serialized_bytes(ciphertexts: &[HybridPathCiphertext]) -> usize {
+        ciphertexts
+            .iter()
+            .map(|ciphertext| {
+                ciphertext
+                    .commit_authenticated_bytes()
+                    .expect("hybrid TLS codec")
+                    .len()
+            })
+            .sum()
+    }
+
     fn shadow_tree() -> ShadowQuaternaryTree {
         let mapping = BinaryToQuaternaryLeafMapping::from_binary_members(vec![
             BinaryLeafMember {
@@ -1002,5 +1324,152 @@ mod tests {
             .candidate()
             .estimated_bytes()
             .is_some());
+    }
+
+    #[test]
+    fn target_set_costs_count_actual_canonical_bytes_for_all_four_constructions() {
+        let targets = RecipientTargetSet::new(vec![1, 2, 3]).expect("canonical target set");
+        let leaf = vec![
+            ciphertext_for_recipients(10, &[1]),
+            ciphertext_for_recipients(11, &[2]),
+            ciphertext_for_recipients(12, &[3]),
+        ];
+        let new = vec![ciphertext_for_recipients(20, &[1, 2, 3])];
+        let old = vec![
+            ciphertext_for_recipients(30, &[1, 2]),
+            ciphertext_for_recipients(31, &[3]),
+        ];
+        let ideal = vec![ciphertext_for_recipients(40, &[1, 2, 3])];
+        let costs = RecipientTargetSetCostMeasurement::measure(
+            targets,
+            [42; 32],
+            CounterfactualDeliveryInput::Serialized(&leaf),
+            CounterfactualDeliveryInput::Serialized(&new),
+            CounterfactualDeliveryInput::Serialized(&old),
+            CounterfactualDeliveryInput::Serialized(&ideal),
+        )
+        .expect("every route covers the same target set");
+
+        let expected = [
+            serialized_bytes(&leaf),
+            serialized_bytes(&new),
+            serialized_bytes(&old),
+            serialized_bytes(&ideal),
+        ];
+        for (availability, expected_bytes, expected_kind, expected_targets) in [
+            (
+                costs.c_leaf(),
+                expected[0],
+                CounterfactualDeliveryKind::Leaf,
+                3,
+            ),
+            (
+                costs.c_new(),
+                expected[1],
+                CounterfactualDeliveryKind::New,
+                1,
+            ),
+            (
+                costs.c_old(),
+                expected[2],
+                CounterfactualDeliveryKind::Old,
+                2,
+            ),
+            (
+                costs.c_ideal(),
+                expected[3],
+                CounterfactualDeliveryKind::Ideal,
+                1,
+            ),
+        ] {
+            let DeliveryCostAvailability::Measured(cost) = availability else {
+                panic!("all four routes must have actual canonical serializer bytes");
+            };
+            assert_eq!(cost.kind(), expected_kind);
+            assert_eq!(cost.delivery_target_count(), expected_targets);
+            assert_eq!(cost.recipient_count(), 3);
+            assert_eq!(cost.provenance().measured_bytes(), expected_bytes);
+            assert_eq!(cost.provenance().estimated_bytes(), Some(expected_bytes));
+            assert_eq!(
+                cost.provenance().estimation_method(),
+                ByteEstimationMethod::ShadowExactCodec
+            );
+        }
+        assert_eq!(costs.target_set().recipient_node_indexes(), &[1, 2, 3]);
+        assert_eq!(costs.logical_payload_binding(), &[42; 32]);
+    }
+
+    #[test]
+    fn unavailable_empty_and_inconsistent_routes_are_never_fabricated_as_costs() {
+        let targets = RecipientTargetSet::new(vec![1, 2]).expect("canonical target set");
+        let leaf = vec![
+            ciphertext_for_recipients(10, &[1]),
+            ciphertext_for_recipients(11, &[2]),
+        ];
+        let shared = vec![ciphertext_for_recipients(20, &[1, 2])];
+        let costs = RecipientTargetSetCostMeasurement::measure(
+            targets,
+            [43; 32],
+            CounterfactualDeliveryInput::Serialized(&leaf),
+            CounterfactualDeliveryInput::Serialized(&shared),
+            CounterfactualDeliveryInput::Unavailable(
+                DeliveryCostUnavailableReason::NoEligibleOldTreeCoverRoute,
+            ),
+            CounterfactualDeliveryInput::Serialized(&shared),
+        )
+        .expect("unavailable old cover is explicit");
+        assert_eq!(
+            costs.c_old(),
+            DeliveryCostAvailability::Unavailable(
+                DeliveryCostUnavailableReason::NoEligibleOldTreeCoverRoute
+            )
+        );
+
+        let empty = RecipientTargetSet::new(vec![]).expect("empty target set is recorded");
+        let excluded = RecipientTargetSetCostMeasurement::measure(
+            empty,
+            [44; 32],
+            CounterfactualDeliveryInput::Unavailable(DeliveryCostUnavailableReason::EmptyTargetSet),
+            CounterfactualDeliveryInput::Unavailable(DeliveryCostUnavailableReason::EmptyTargetSet),
+            CounterfactualDeliveryInput::Unavailable(DeliveryCostUnavailableReason::EmptyTargetSet),
+            CounterfactualDeliveryInput::Unavailable(DeliveryCostUnavailableReason::EmptyTargetSet),
+        )
+        .expect("empty target set is explicit rather than discarded");
+        assert!(excluded.target_set().is_empty());
+        assert!(matches!(
+            excluded.c_leaf(),
+            DeliveryCostAvailability::Unavailable(DeliveryCostUnavailableReason::EmptyTargetSet)
+        ));
+
+        assert_eq!(
+            RecipientTargetSet::new(vec![2, 1]),
+            Err(MeasurementError::NonCanonicalTargetSet)
+        );
+        let duplicate = vec![
+            ciphertext_for_recipients(30, &[1]),
+            ciphertext_for_recipients(31, &[1, 2]),
+        ];
+        assert_eq!(
+            RecipientTargetSetCostMeasurement::measure(
+                RecipientTargetSet::new(vec![1, 2]).expect("canonical target set"),
+                [45; 32],
+                CounterfactualDeliveryInput::Serialized(&leaf),
+                CounterfactualDeliveryInput::Serialized(&duplicate),
+                CounterfactualDeliveryInput::Serialized(&shared),
+                CounterfactualDeliveryInput::Serialized(&shared),
+            ),
+            Err(MeasurementError::DuplicateCounterfactualRecipient)
+        );
+        assert_eq!(
+            RecipientTargetSetCostMeasurement::measure(
+                RecipientTargetSet::new(vec![1, 2]).expect("canonical target set"),
+                [46; 32],
+                CounterfactualDeliveryInput::Serialized(&shared),
+                CounterfactualDeliveryInput::Serialized(&shared),
+                CounterfactualDeliveryInput::Serialized(&shared),
+                CounterfactualDeliveryInput::Serialized(&shared),
+            ),
+            Err(MeasurementError::LeafDeliveryIsNotIndependent)
+        );
     }
 }

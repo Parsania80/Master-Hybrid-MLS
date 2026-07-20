@@ -40,7 +40,7 @@
 - `/crates/transition-tree`: Task 42 separate public active-quaternary topology and frozen delivery-only binary TreeCover. It validates Task 41 mapping/cover bindings and exposes only the active quaternary epoch-secret-authority marker; it has no secret derivation or live MLS mutation.
 - `/crates/transition-auth`: Tasks 43/44 fail-closed pre-apply transition metadata and educational batch-application harness. It consumes future-fork supplied, already MLS-authenticated GroupContext facts, stages every recipient's hybrid resolution before replacing public member snapshots, and rejects inconsistent inputs without partial harness mutation; it does not authenticate or process an MLS Commit itself.
 - `/crates/transition-policy`: Task 35/39 policy boundary. It retains an auditable raw accepted-commit trail, bounds post-warmup `W_e`, derives `q_e`/`r_e`, measures canonical transition preflight bytes, computes exact rational savings, resolves typed byte-or-fixed-point-percent Delta thresholds conservatively, and evaluates all start gates with explicit public blockers; transition execution remains deferred.
-- `/crates/metrics`: Typed Task 32/33 measurement boundary. It measures emitted baseline Commit bytes, derives explicitly estimated candidate path payload sizes from the canonical hybrid TLS codec, and records public topology, recipient-resolution, crypto-count, and monotonic timing facts without retaining wire or secret values.
+- `/crates/metrics`: Typed Tasks 32/33/46 measurement boundary. It measures emitted baseline Commit bytes, derives explicitly estimated candidate path payload sizes from the canonical hybrid TLS codec, records public topology/recipient/crypto facts, and measures per-target-set `C_leaf`, `C_new`, `C_old`, and `C_ideal` from actual canonical hybrid TLS serializations with explicit unavailable states, without retaining wire or secret values.
 - `/crates/simulation`: Empty deterministic workload and convergence-simulation boundary.
 - `/crates/report`: Empty safe report-generation boundary.
 - `/src/bin/bootstrap_128.rs` (planned): Build and verify a valid 128-member baseline binary MLS group and emit safe public experiment artifacts.
@@ -162,8 +162,8 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 46 | Measure actual `C_leaf`, `C_new`, `C_old`, and `C_ideal` for each defined recipient target set | 🔄 Current | Preserve raw component costs and availability state. |
-| 47 | Implement `h_new_cost` and `h_old_cost` with checked zero/negative/empty/unavailable handling | ⬜ Todo | Record raw values, clamped values, and every clamp reason. |
+| 46 | Measure actual `C_leaf`, `C_new`, `C_old`, and `C_ideal` for each defined recipient target set | ✅ Done | ADR 0020 adds canonical recipient target sets and exact serializer-driven route-cost records. Leaf delivery requires singleton records; every available route covers `S` exactly once, while empty and unavailable routes retain typed reasons. |
+| 47 | Implement `h_new_cost` and `h_old_cost` with checked zero/negative/empty/unavailable handling | 🔄 Current | Record raw values, clamped values, and every clamp reason. |
 | 48 | Implement `h_new_cost >= theta_new OR h_old_cost < theta_old` with defaults 0.70 and 0.50 | ⬜ Todo | Tests must distinguish OR from AND and trigger each side independently. |
 | 49 | Retire TreeCover, record epoch/trigger, erase applicable old secrets, return to `Normal`, increment version, and verify convergence | ⬜ Todo | Retirement must be authenticated and atomic. |
 | 50 | Pass edge-case, threshold-boundary, retirement, erasure, formatting, lint, and regression tests | ⬜ Todo | Include unavailable-cover and division-by-zero cases. |
@@ -185,6 +185,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 9, Task 46 — Measure actual `C_leaf`, `C_new`, `C_old`, and `C_ideal` for each defined recipient target set.
+**Current:** Part 9, Task 47 — Implement `h_new_cost` and `h_old_cost` with checked zero/negative/empty/unavailable handling.
 
-**Next:** Part 9, Task 47 — Implement `h_new_cost` and `h_old_cost` with checked zero/negative/empty/unavailable handling.
+**Next:** Part 9, Task 48 — Implement `h_new_cost >= theta_new OR h_old_cost < theta_old` with defaults 0.70 and 0.50.
