@@ -58,6 +58,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "arity-state"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2",
+ "thiserror",
+ "transition-policy",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

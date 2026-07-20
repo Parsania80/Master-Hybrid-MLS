@@ -18,6 +18,8 @@ The Rust workspace pins the approved dependencies and contains an unchanged Open
 
 Transition-start Delta is now configurable as either absolute bytes or a fixed-point micro-percent of the current transition preflight. A percentage resolves with checked integer arithmetic and ceiling byte rounding; the typed future-CLI override has explicit precedence over TOML. There is still no transition-evaluation CLI or live transition Commit.
 
+The prototype now also validates a canonical public `ArityState` extension value for the first `2 -> 4` transition. It records policy thresholds, evaluation facts, tree version, and mapping/TreeCover hashes, but it is not yet placed in or authenticated by an MLS GroupContext extension; that fork integration remains future work.
+
 ## How to use it
 
 The 128-member baseline constructor is available now: `cargo +stable run --bin bootstrap_128 --release --locked --offline -- --members 128 --seed 42 --output output/bootstrap-128`. The public seed selects committers only; it is not cryptographic entropy. After verification, the command writes create-new public artifacts under the requested `output/<run>` directory: `bootstrap_public_snapshot.json`, `bootstrap_128_summary.json`, `bootstrap_128_commits.csv`, and `bootstrap_128_report.md`. The snapshot contains public configuration/scheduling data, authenticated group metadata, the public TLS RatchetTree, occupied leaves, and the 127 actual Add KeyPackages. The CSV contains only public per-commit identity, epoch, byte-count, and delivery-count observations—not Commit bodies or ciphertexts. None of these files contain private MLS state, secret material, raw entropy, or a seed that reconstructs it.

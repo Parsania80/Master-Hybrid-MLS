@@ -2,6 +2,7 @@
 members = [
     ".",
     "crates/adaptive-tree",
+    "crates/arity-state",
     "crates/experiment-config",
     "crates/hybrid-path-secret",
     "crates/metrics",
