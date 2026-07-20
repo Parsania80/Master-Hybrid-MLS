@@ -81,6 +81,8 @@ pub struct BaselineState {
     pub member_count: usize,
     /// Public MLS leaf indexes occupied by current members, in tree order.
     pub member_leaf_indices: Vec<u32>,
+    /// Public BasicCredential identities corresponding to `member_leaf_indices`.
+    pub member_identities: Vec<Vec<u8>>,
     /// TLS encoding of the public RFC 9420 ratchet tree.
     pub ratchet_tree: Vec<u8>,
     /// TLS encoding of the authenticated public MLS GroupContext.
@@ -374,11 +376,16 @@ impl BaselineClient {
             MlsMessageBodyOut::GroupInfo(group_info) => group_info.group_context(),
             _ => return Err(BaselineError::OpenMls),
         };
+        let members: Vec<_> = group.members().collect();
         Ok(BaselineState {
             group_id: group.group_id().as_slice().to_vec(),
             epoch: group.epoch().as_u64(),
-            member_count: group.members().count(),
-            member_leaf_indices: group.members().map(|member| member.index.u32()).collect(),
+            member_count: members.len(),
+            member_leaf_indices: members.iter().map(|member| member.index.u32()).collect(),
+            member_identities: members
+                .iter()
+                .map(|member| member.credential.serialized_content().to_vec())
+                .collect(),
             ratchet_tree: group
                 .export_ratchet_tree()
                 .tls_serialize_detached()

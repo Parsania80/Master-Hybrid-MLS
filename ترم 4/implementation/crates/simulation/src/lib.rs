@@ -11,6 +11,8 @@ use rand::{distributions::Distribution, distributions::WeightedIndex, Rng, Seeda
 use rand_chacha::ChaCha20Rng;
 use thiserror::Error;
 
+use mls_adapter::{BaselineClient, BaselineError, BaselineState, InboundEvent, OutboundCommit};
+
 /// One active public member eligible to commit in a future workload.
 ///
 /// Inputs must be sorted by `member_index`; leaf indexes and regions are
@@ -394,6 +396,492 @@ fn member_positions(eligible_members: &[EligibleCommitter]) -> BTreeMap<u32, usi
         .collect()
 }
 
+/// The public logical operation requested by a Task 53 workload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkloadOperation {
+    /// A standard MLS self-update by the selected committer.
+    Update,
+    /// A standard MLS Add of the named new stable member index.
+    Add {
+        /// Stable public member index allocated by the harness.
+        member_index: u32,
+    },
+    /// A standard MLS Remove of one active stable member index.
+    Remove {
+        /// Stable public member index removed by the commit.
+        member_index: u32,
+    },
+}
+
+/// The five deterministic Task 53 workload families.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkloadProfile {
+    /// Every accepted operation is a self-update.
+    UpdateOnly,
+    /// Repeats update, add, remove; infeasible membership operations become updates.
+    Mixed,
+    /// Prefers three removes for each update; infeasible removes add when possible.
+    RemovalHeavy,
+    /// Uses the mixed operation cycle and prefers committers in one public region.
+    RegionSkewed {
+        /// Preferred public leaf-region label.
+        preferred_region: u32,
+    },
+    /// Uniformly draws update/add/remove requests from a public deterministic seed.
+    Uniform {
+        /// Public workload seed; it is not cryptographic entropy.
+        seed: u64,
+    },
+}
+
+/// Public configuration for one in-process baseline workload execution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BaselineWorkloadConfig {
+    /// Non-empty public group identifier for the fresh baseline group.
+    pub group_id: Vec<u8>,
+    /// Initial active members; Task 53 requires at least two.
+    pub initial_member_count: u32,
+    /// Maximum active members permitted by Add workload operations.
+    pub maximum_member_count: u32,
+    /// Number of accepted workload commits to attempt.
+    pub operation_count: u32,
+    /// Number of deterministic public regions used for stable member labels.
+    pub region_count: u32,
+    /// Task 52 committer selector applied against current active members.
+    pub committer_strategy: CommitterStrategy,
+    /// Task 53 logical workload family.
+    pub workload_profile: WorkloadProfile,
+}
+
+/// One accepted, fully delivered baseline workload commit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AcceptedWorkloadOperation {
+    /// One-based accepted-workload sequence number.
+    pub sequence: u32,
+    /// Public stable index of the member that staged the commit.
+    pub committer_member_index: u32,
+    /// Actual logical operation applied by the harness after feasibility checks.
+    pub operation: WorkloadOperation,
+    /// Public epoch before the accepted commit.
+    pub epoch_before: u64,
+    /// Public epoch after all valid members accepted the commit.
+    pub epoch_after: u64,
+    /// Active members after the accepted commit.
+    pub active_member_count: u32,
+}
+
+/// Actual committer use count from an executed workload, including zero for final active members.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutedCommitterCount {
+    /// Stable public member index.
+    pub member_index: u32,
+    /// Number of accepted commits staged by this member.
+    pub accepted_commit_count: u32,
+}
+
+/// Safe public outcome of a fully converged baseline workload execution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BaselineWorkloadExecution {
+    /// Every accepted and fully delivered operation in order.
+    pub accepted_operations: Vec<AcceptedWorkloadOperation>,
+    /// Actual public committer use counts for final active members.
+    pub final_active_committer_counts: Vec<ExecutedCommitterCount>,
+    /// Final converged public MLS epoch.
+    pub final_epoch: u64,
+    /// Final number of valid active members.
+    pub final_member_count: u32,
+}
+
+/// Errors from Task 53 baseline workload planning or execution.
+#[derive(Debug, Error)]
+pub enum WorkloadExecutionError {
+    /// The fresh group identifier must be non-empty.
+    #[error("the workload group identifier is empty")]
+    EmptyGroupId,
+    /// At least two active members are required to preserve a valid committer during removal.
+    #[error("the workload requires at least two initial members")]
+    InitialMemberCountTooSmall,
+    /// Maximum membership must permit the initial public group.
+    #[error("the maximum member count is below the initial member count")]
+    MaximumMemberCountTooSmall,
+    /// Public region labels require a positive region count.
+    #[error("the workload region count must be positive")]
+    ZeroRegionCount,
+    /// A stable public member index could not be allocated.
+    #[error("the workload member index overflowed")]
+    MemberIndexOverflow,
+    /// Task 52 could not select an active public committer.
+    #[error("the workload committer schedule is invalid")]
+    Schedule(#[from] CommitterScheduleError),
+    /// The maintained baseline adapter rejected an MLS operation.
+    #[error("the baseline MLS operation failed")]
+    Baseline(#[from] BaselineError),
+    /// A valid member did not merge an expected delivered commit.
+    #[error("a valid workload member did not merge the delivered commit")]
+    CommitDelivery,
+    /// An Add commit did not contain the expected Welcome.
+    #[error("an Add workload commit did not contain a Welcome")]
+    MissingWelcome,
+    /// Public member identities and leaves cannot be reconciled with harness members.
+    #[error("the public MLS member state is inconsistent with the workload harness")]
+    PublicStateMembershipMismatch,
+    /// Valid members do not share identical public MLS state after a commit.
+    #[error("valid workload members did not converge on public MLS state")]
+    DivergentPublicState,
+}
+
+struct ActiveWorkloadMember {
+    member_index: u32,
+    identity: Vec<u8>,
+    leaf_region: u32,
+    client: BaselineClient,
+}
+
+/// Executes a deterministic Task 53 workload using the unchanged baseline adapter.
+///
+/// Every accepted outbound commit is delivered to each remaining valid member,
+/// merged by its sender, and followed by an exact public-state convergence
+/// check. The harness is in-process educational test infrastructure only; it
+/// does not provide distributed delivery or experimental MLS behavior.
+pub fn execute_baseline_workload(
+    config: &BaselineWorkloadConfig,
+) -> Result<BaselineWorkloadExecution, WorkloadExecutionError> {
+    validate_workload_config(config)?;
+    let mut members = create_initial_workload_group(config)?;
+    let mut next_member_index = config.initial_member_count;
+    let mut uniform_rng = match config.workload_profile {
+        WorkloadProfile::Uniform { seed } => Some(ChaCha20Rng::seed_from_u64(seed)),
+        _ => None,
+    };
+    let mut accepted_operations = Vec::new();
+    accepted_operations
+        .try_reserve(usize::try_from(config.operation_count).unwrap_or(usize::MAX))
+        .map_err(|_| WorkloadExecutionError::MemberIndexOverflow)?;
+    let mut committer_counts = BTreeMap::<u32, u32>::new();
+
+    for sequence in 1..=config.operation_count {
+        let state_before = converged_state(&members)?;
+        let eligible =
+            eligible_members_for_profile(&members, &state_before, config.workload_profile)?;
+        let schedule =
+            build_committer_schedule(&eligible, config.committer_strategy.clone(), sequence)?;
+        let selection = schedule
+            .selections
+            .last()
+            .expect("a schedule with positive sequence count has one selection");
+        let committer_position = members
+            .iter()
+            .position(|member| member.member_index == selection.member_index)
+            .ok_or(WorkloadExecutionError::PublicStateMembershipMismatch)?;
+        let requested = requested_operation(
+            sequence,
+            config.workload_profile,
+            members.len() as u32,
+            config.maximum_member_count,
+            uniform_rng.as_mut(),
+        );
+        let operation = apply_operation(
+            &mut members,
+            committer_position,
+            requested,
+            &mut next_member_index,
+            config.region_count,
+        )?;
+        let state_after = converged_state(&members)?;
+        if state_after.epoch
+            != state_before
+                .epoch
+                .checked_add(1)
+                .ok_or(WorkloadExecutionError::MemberIndexOverflow)?
+        {
+            return Err(WorkloadExecutionError::DivergentPublicState);
+        }
+        *committer_counts.entry(selection.member_index).or_default() += 1;
+        accepted_operations.push(AcceptedWorkloadOperation {
+            sequence,
+            committer_member_index: selection.member_index,
+            operation,
+            epoch_before: state_before.epoch,
+            epoch_after: state_after.epoch,
+            active_member_count: u32::try_from(members.len())
+                .map_err(|_| WorkloadExecutionError::MemberIndexOverflow)?,
+        });
+    }
+
+    let final_state = converged_state(&members)?;
+    let final_active_committer_counts = members
+        .iter()
+        .map(|member| ExecutedCommitterCount {
+            member_index: member.member_index,
+            accepted_commit_count: committer_counts
+                .get(&member.member_index)
+                .copied()
+                .unwrap_or(0),
+        })
+        .collect();
+    Ok(BaselineWorkloadExecution {
+        accepted_operations,
+        final_active_committer_counts,
+        final_epoch: final_state.epoch,
+        final_member_count: u32::try_from(members.len())
+            .map_err(|_| WorkloadExecutionError::MemberIndexOverflow)?,
+    })
+}
+
+fn validate_workload_config(config: &BaselineWorkloadConfig) -> Result<(), WorkloadExecutionError> {
+    if config.group_id.is_empty() {
+        return Err(WorkloadExecutionError::EmptyGroupId);
+    }
+    if config.initial_member_count < 2 {
+        return Err(WorkloadExecutionError::InitialMemberCountTooSmall);
+    }
+    if config.maximum_member_count < config.initial_member_count {
+        return Err(WorkloadExecutionError::MaximumMemberCountTooSmall);
+    }
+    if config.region_count == 0 {
+        return Err(WorkloadExecutionError::ZeroRegionCount);
+    }
+    Ok(())
+}
+
+fn create_initial_workload_group(
+    config: &BaselineWorkloadConfig,
+) -> Result<Vec<ActiveWorkloadMember>, WorkloadExecutionError> {
+    let mut members = Vec::new();
+    for member_index in 0..config.initial_member_count {
+        let identity = workload_identity(member_index);
+        let client = BaselineClient::new(&identity)?;
+        members.push(ActiveWorkloadMember {
+            member_index,
+            identity,
+            leaf_region: member_index % config.region_count,
+            client,
+        });
+    }
+    members[0].client.create_group(&config.group_id)?;
+    for joining_position in 1..members.len() {
+        let key_package = members[joining_position].client.key_package()?;
+        let outbound = members[0]
+            .client
+            .add_members(core::slice::from_ref(key_package.key_package()))?;
+        deliver_commit(
+            &mut members[..=joining_position],
+            0,
+            Some(joining_position),
+            &outbound,
+        )?;
+        members[0].client.merge_pending_commit()?;
+        let welcome = outbound
+            .welcome
+            .as_deref()
+            .ok_or(WorkloadExecutionError::MissingWelcome)?;
+        members[joining_position]
+            .client
+            .join_from_welcome(welcome)?;
+        let _ = converged_state(&members[..=joining_position])?;
+    }
+    Ok(members)
+}
+
+fn eligible_members_for_profile(
+    members: &[ActiveWorkloadMember],
+    state: &BaselineState,
+    profile: WorkloadProfile,
+) -> Result<Vec<EligibleCommitter>, WorkloadExecutionError> {
+    if state.member_identities.len() != state.member_leaf_indices.len()
+        || state.member_count != members.len()
+    {
+        return Err(WorkloadExecutionError::PublicStateMembershipMismatch);
+    }
+    let mut eligible = Vec::with_capacity(members.len());
+    for (identity, leaf_index) in state
+        .member_identities
+        .iter()
+        .zip(&state.member_leaf_indices)
+    {
+        let member = members
+            .iter()
+            .find(|member| member.identity == *identity)
+            .ok_or(WorkloadExecutionError::PublicStateMembershipMismatch)?;
+        eligible.push(EligibleCommitter {
+            member_index: member.member_index,
+            leaf_index: *leaf_index,
+            leaf_region: member.leaf_region,
+        });
+    }
+    eligible.sort_unstable_by_key(|member| member.member_index);
+    if let WorkloadProfile::RegionSkewed { preferred_region } = profile {
+        let preferred: Vec<_> = eligible
+            .iter()
+            .filter(|member| member.leaf_region == preferred_region)
+            .cloned()
+            .collect();
+        if !preferred.is_empty() {
+            return Ok(preferred);
+        }
+    }
+    Ok(eligible)
+}
+
+fn requested_operation(
+    sequence: u32,
+    profile: WorkloadProfile,
+    member_count: u32,
+    maximum_member_count: u32,
+    uniform_rng: Option<&mut ChaCha20Rng>,
+) -> WorkloadOperation {
+    let requested = match profile {
+        WorkloadProfile::UpdateOnly => WorkloadOperation::Update,
+        WorkloadProfile::Mixed | WorkloadProfile::RegionSkewed { .. } => match (sequence - 1) % 3 {
+            0 => WorkloadOperation::Update,
+            1 => WorkloadOperation::Add { member_index: 0 },
+            _ => WorkloadOperation::Remove { member_index: 0 },
+        },
+        WorkloadProfile::RemovalHeavy => match (sequence - 1) % 4 {
+            3 => WorkloadOperation::Update,
+            _ => WorkloadOperation::Remove { member_index: 0 },
+        },
+        WorkloadProfile::Uniform { .. } => match uniform_rng
+            .expect("uniform profile initializes a deterministic RNG")
+            .gen_range(0..3)
+        {
+            0 => WorkloadOperation::Update,
+            1 => WorkloadOperation::Add { member_index: 0 },
+            _ => WorkloadOperation::Remove { member_index: 0 },
+        },
+    };
+    match requested {
+        WorkloadOperation::Add { .. } if member_count >= maximum_member_count => {
+            WorkloadOperation::Update
+        }
+        WorkloadOperation::Remove { .. } if member_count <= 2 => {
+            if member_count < maximum_member_count {
+                WorkloadOperation::Add { member_index: 0 }
+            } else {
+                WorkloadOperation::Update
+            }
+        }
+        _ => requested,
+    }
+}
+
+fn apply_operation(
+    members: &mut Vec<ActiveWorkloadMember>,
+    committer_position: usize,
+    requested: WorkloadOperation,
+    next_member_index: &mut u32,
+    region_count: u32,
+) -> Result<WorkloadOperation, WorkloadExecutionError> {
+    match requested {
+        WorkloadOperation::Update => {
+            let outbound = members[committer_position].client.self_update()?;
+            deliver_commit(members, committer_position, None, &outbound)?;
+            members[committer_position].client.merge_pending_commit()?;
+            Ok(WorkloadOperation::Update)
+        }
+        WorkloadOperation::Add { .. } => {
+            let member_index = *next_member_index;
+            *next_member_index = next_member_index
+                .checked_add(1)
+                .ok_or(WorkloadExecutionError::MemberIndexOverflow)?;
+            let identity = workload_identity(member_index);
+            let mut client = BaselineClient::new(&identity)?;
+            let key_package = client.key_package()?;
+            let outbound = members[committer_position]
+                .client
+                .add_members(core::slice::from_ref(key_package.key_package()))?;
+            deliver_commit(members, committer_position, None, &outbound)?;
+            members[committer_position].client.merge_pending_commit()?;
+            let welcome = outbound
+                .welcome
+                .as_deref()
+                .ok_or(WorkloadExecutionError::MissingWelcome)?;
+            client.join_from_welcome(welcome)?;
+            members.push(ActiveWorkloadMember {
+                member_index,
+                identity,
+                leaf_region: member_index % region_count,
+                client,
+            });
+            members.sort_unstable_by_key(|member| member.member_index);
+            Ok(WorkloadOperation::Add { member_index })
+        }
+        WorkloadOperation::Remove { .. } => {
+            let target_position = members
+                .iter()
+                .enumerate()
+                .filter(|(position, _)| *position != committer_position)
+                .min_by_key(|(_, member)| member.member_index)
+                .map(|(position, _)| position)
+                .ok_or(WorkloadExecutionError::DivergentPublicState)?;
+            let target_identity = members[target_position].identity.clone();
+            let target_member_index = members[target_position].member_index;
+            let outbound = members[committer_position]
+                .client
+                .remove_members_by_identity(&[target_identity])?;
+            deliver_commit(
+                members,
+                committer_position,
+                Some(target_position),
+                &outbound,
+            )?;
+            members[committer_position].client.merge_pending_commit()?;
+            members.remove(target_position);
+            Ok(WorkloadOperation::Remove {
+                member_index: target_member_index,
+            })
+        }
+    }
+}
+
+fn deliver_commit(
+    members: &mut [ActiveWorkloadMember],
+    committer_position: usize,
+    excluded_position: Option<usize>,
+    outbound: &OutboundCommit,
+) -> Result<(), WorkloadExecutionError> {
+    for (position, member) in members.iter_mut().enumerate() {
+        if position == committer_position || Some(position) == excluded_position {
+            continue;
+        }
+        if member.client.process_message(&outbound.commit)? != InboundEvent::CommitMerged {
+            return Err(WorkloadExecutionError::CommitDelivery);
+        }
+    }
+    Ok(())
+}
+
+fn converged_state(
+    members: &[ActiveWorkloadMember],
+) -> Result<BaselineState, WorkloadExecutionError> {
+    let (first, rest) = members
+        .split_first()
+        .ok_or(WorkloadExecutionError::PublicStateMembershipMismatch)?;
+    let reference = first.client.state()?;
+    for member in rest {
+        let state = member.client.state()?;
+        if !same_public_state(&reference, &state) {
+            return Err(WorkloadExecutionError::DivergentPublicState);
+        }
+    }
+    Ok(reference)
+}
+
+fn same_public_state(left: &BaselineState, right: &BaselineState) -> bool {
+    left.group_id == right.group_id
+        && left.epoch == right.epoch
+        && left.member_count == right.member_count
+        && left.member_leaf_indices == right.member_leaf_indices
+        && left.member_identities == right.member_identities
+        && left.ratchet_tree == right.ratchet_tree
+        && left.group_context == right.group_context
+        && left.tree_hash == right.tree_hash
+}
+
+fn workload_identity(member_index: u32) -> Vec<u8> {
+    format!("workload-member-{member_index:03}").into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,5 +1041,104 @@ mod tests {
             ),
             Err(CommitterScheduleError::ZeroWeight)
         );
+    }
+
+    fn workload_config(
+        profile: WorkloadProfile,
+        initial_member_count: u32,
+    ) -> BaselineWorkloadConfig {
+        BaselineWorkloadConfig {
+            group_id: b"task-53-workload".to_vec(),
+            initial_member_count,
+            maximum_member_count: 5,
+            operation_count: 5,
+            region_count: 2,
+            committer_strategy: CommitterStrategy::RoundRobin,
+            workload_profile: profile,
+        }
+    }
+
+    #[test]
+    fn update_only_workload_delivers_each_commit_and_preserves_membership() {
+        let execution = execute_baseline_workload(&workload_config(WorkloadProfile::UpdateOnly, 3))
+            .expect("fully delivered update workload");
+        assert_eq!(execution.accepted_operations.len(), 5);
+        assert!(execution
+            .accepted_operations
+            .iter()
+            .all(|record| record.operation == WorkloadOperation::Update));
+        assert_eq!(execution.final_member_count, 3);
+        assert_eq!(execution.final_epoch, 7);
+    }
+
+    #[test]
+    fn mixed_and_removal_heavy_workloads_apply_real_membership_commits() {
+        let mixed = execute_baseline_workload(&workload_config(WorkloadProfile::Mixed, 3))
+            .expect("fully delivered mixed workload");
+        assert!(mixed
+            .accepted_operations
+            .iter()
+            .any(|record| matches!(record.operation, WorkloadOperation::Add { .. })));
+        assert!(mixed
+            .accepted_operations
+            .iter()
+            .any(|record| matches!(record.operation, WorkloadOperation::Remove { .. })));
+
+        let removal_heavy =
+            execute_baseline_workload(&workload_config(WorkloadProfile::RemovalHeavy, 3))
+                .expect("fully delivered removal-heavy workload");
+        assert!(removal_heavy
+            .accepted_operations
+            .iter()
+            .any(|record| matches!(record.operation, WorkloadOperation::Remove { .. })));
+        assert!(removal_heavy
+            .accepted_operations
+            .iter()
+            .all(|record| record.epoch_after == record.epoch_before + 1));
+    }
+
+    #[test]
+    fn region_skewed_and_uniform_workloads_are_publicly_deterministic() {
+        let mut skewed = workload_config(
+            WorkloadProfile::RegionSkewed {
+                preferred_region: 1,
+            },
+            4,
+        );
+        skewed.operation_count = 3;
+        let skewed_execution = execute_baseline_workload(&skewed).expect("region-skewed workload");
+        assert!(
+            skewed_execution
+                .accepted_operations
+                .iter()
+                .all(|record| record.committer_member_index == 1
+                    || record.committer_member_index == 3)
+        );
+
+        let uniform = workload_config(WorkloadProfile::Uniform { seed: 42 }, 3);
+        let first = execute_baseline_workload(&uniform).expect("uniform workload");
+        let second = execute_baseline_workload(&uniform).expect("same uniform workload");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn workload_configuration_rejects_unsafe_group_shapes() {
+        let mut config = workload_config(WorkloadProfile::UpdateOnly, 1);
+        assert!(matches!(
+            execute_baseline_workload(&config),
+            Err(WorkloadExecutionError::InitialMemberCountTooSmall)
+        ));
+        config.initial_member_count = 3;
+        config.maximum_member_count = 2;
+        assert!(matches!(
+            execute_baseline_workload(&config),
+            Err(WorkloadExecutionError::MaximumMemberCountTooSmall)
+        ));
+        config.maximum_member_count = 5;
+        config.region_count = 0;
+        assert!(matches!(
+            execute_baseline_workload(&config),
+            Err(WorkloadExecutionError::ZeroRegionCount)
+        ));
     }
 }

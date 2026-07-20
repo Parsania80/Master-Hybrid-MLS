@@ -120,6 +120,8 @@ Task 51 accepts only a fixed public bootstrap snapshot schema and performs a fre
 
 Task 52's scheduler consumes only caller-supplied public member indexes, leaf indexes, regions, seeds, fixed lists, and weights. Its seeds are reproducibility inputs, not cryptographic entropy, and its reported distributions are planned selections rather than accepted MLS operations. It does not authorize a member, authenticate a commit, validate a topology beyond unique public leaves, mutate MLS state, or establish fairness/security properties for a future workload. Task 53 must revalidate current membership before any scheduled operation is applied.
 
+Task 53 revalidates current public identity-to-leaf membership before each selected operation, uses only unchanged upstream baseline Add/Remove/self-update APIs, and compares exact public state across every currently valid in-process member after delivery. A removed member is intentionally no longer a valid recipient. This is not network/distributed atomicity, crash recovery, adversarial message handling beyond OpenMLS's normal processing, resource-bound evidence, or a test of any experimental adaptive/hybrid path. The harness returns no private MLS state, but its best-effort in-process lifecycle is not a formal secret-erasure guarantee.
+
 The private-use extension code can collide with another private deployment. The fork and its messages are thesis-local and must not be sent to an unrelated MLS deployment. A future interoperable protocol would require an independently specified wire format, capability negotiation, registry action where applicable, and security review.
 
 ## Secret Handling and Reporting Rules
