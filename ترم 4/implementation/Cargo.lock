@@ -395,6 +395,7 @@ dependencies = [
  "serde",
  "thiserror",
  "toml",
+ "transition-policy",
 ]
 
 [[package]]

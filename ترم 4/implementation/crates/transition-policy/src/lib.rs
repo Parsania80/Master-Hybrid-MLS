@@ -859,6 +859,87 @@ impl PreflightSavings {
     }
 }
 
+/// One percent expressed in the fixed-point Delta micro-percent unit.
+///
+/// For example, `25_000_000` micro-percent represents 25 percent.
+pub const DELTA_MICRO_PERCENT_PER_PERCENT: u64 = 1_000_000;
+
+/// One hundred percent expressed in the fixed-point Delta micro-percent unit.
+pub const DELTA_MICRO_PERCENT_PER_HUNDRED_PERCENT: u64 = 100 * DELTA_MICRO_PERCENT_PER_PERCENT;
+
+/// One configured non-negative Delta threshold before a preflight is known.
+///
+/// A percentage is always resolved against the current
+/// `B_transition_preflight`, never against a later actual transition message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum DeltaThreshold {
+    /// An absolute number of bytes.
+    Bytes(u64),
+    /// A percentage of `B_transition_preflight` in micro-percent units.
+    PercentOfTransitionMicro(u32),
+}
+
+impl DeltaThreshold {
+    /// Resolves this configured threshold against one preflight measurement.
+    ///
+    /// Percentage thresholds use integer-only ceiling division because the
+    /// start gate compares savings strictly against an integer byte threshold.
+    /// Rounding upward prevents a fractional configured threshold from being
+    /// silently weakened.
+    pub fn resolve_for_preflight(
+        self,
+        preflight: TransitionPreflightMeasurement,
+    ) -> Result<ResolvedDeltaThreshold, PolicyError> {
+        let transition_preflight_bytes = u64::try_from(preflight.estimated_bytes())
+            .map_err(|_| PolicyError::PreflightByteCountOverflow)?;
+        let resolved_bytes = match self {
+            Self::Bytes(bytes) => bytes,
+            Self::PercentOfTransitionMicro(micro_percent) => {
+                let numerator = u128::from(transition_preflight_bytes)
+                    .checked_mul(u128::from(micro_percent))
+                    .ok_or(PolicyError::DeltaArithmeticOverflow)?;
+                let denominator = u128::from(DELTA_MICRO_PERCENT_PER_HUNDRED_PERCENT);
+                let rounded_numerator = numerator
+                    .checked_add(denominator - 1)
+                    .ok_or(PolicyError::DeltaArithmeticOverflow)?;
+                u64::try_from(rounded_numerator / denominator)
+                    .map_err(|_| PolicyError::DeltaArithmeticOverflow)?
+            }
+        };
+
+        Ok(ResolvedDeltaThreshold {
+            configured: self,
+            transition_preflight_bytes,
+            resolved_bytes,
+        })
+    }
+}
+
+/// A configured Delta resolved to the integer bytes used by the start gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ResolvedDeltaThreshold {
+    configured: DeltaThreshold,
+    transition_preflight_bytes: u64,
+    resolved_bytes: u64,
+}
+
+impl ResolvedDeltaThreshold {
+    /// Returns the original byte-or-percent configuration form.
+    pub const fn configured(&self) -> DeltaThreshold {
+        self.configured
+    }
+
+    /// Returns the exact `B_transition_preflight` used for resolution.
+    pub const fn transition_preflight_bytes(&self) -> u64 {
+        self.transition_preflight_bytes
+    }
+
+    /// Returns the ceiling-resolved non-negative integer byte threshold.
+    pub const fn resolved_bytes(&self) -> u64 {
+        self.resolved_bytes
+    }
+}
+
 /// The transition state visible to the start-policy evaluator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum PolicyTransitionState {
@@ -1263,6 +1344,9 @@ pub enum PolicyError {
     /// Savings records must describe exactly the current impactful window.
     #[error("the savings impactful-commit count does not match the current window")]
     SavingsImpactfulCountMismatch,
+    /// Checked fixed-point Delta resolution exceeded its supported range.
+    #[error("Delta threshold arithmetic exceeds the supported range")]
+    DeltaArithmeticOverflow,
 }
 
 #[cfg(test)]
@@ -1576,6 +1660,48 @@ mod tests {
     ) -> TransitionStartConfig {
         TransitionStartConfig::new(2, candidate_arity, 128, stable_epoch_count, delta_bytes)
             .expect("valid start controls")
+    }
+
+    fn preflight_with_bytes(bytes: usize) -> TransitionPreflightMeasurement {
+        TransitionPreflightMeasurement::from_serialized_outer_message(
+            &vec![0_u8; bytes],
+            &[TransitionByteRange::new(
+                TransitionByteComponent::BaseCommit,
+                0,
+                bytes,
+            )],
+        )
+        .expect("non-empty canonical preflight partition")
+    }
+
+    #[test]
+    fn delta_threshold_resolves_bytes_and_percentages_without_floating_point() {
+        let preflight = preflight_with_bytes(9);
+        let bytes = DeltaThreshold::Bytes(7)
+            .resolve_for_preflight(preflight)
+            .expect("byte threshold resolves");
+        assert_eq!(bytes.configured(), DeltaThreshold::Bytes(7));
+        assert_eq!(bytes.transition_preflight_bytes(), 9);
+        assert_eq!(bytes.resolved_bytes(), 7);
+
+        let percentage = DeltaThreshold::PercentOfTransitionMicro(25_000_000)
+            .resolve_for_preflight(preflight)
+            .expect("percentage threshold resolves");
+        assert_eq!(
+            percentage.configured(),
+            DeltaThreshold::PercentOfTransitionMicro(25_000_000)
+        );
+        assert_eq!(percentage.transition_preflight_bytes(), 9);
+        assert_eq!(percentage.resolved_bytes(), 3);
+    }
+
+    #[test]
+    fn fractional_micro_percent_delta_rounds_up_conservatively() {
+        let resolved = DeltaThreshold::PercentOfTransitionMicro(1)
+            .resolve_for_preflight(preflight_with_bytes(1))
+            .expect("small percentage threshold resolves");
+
+        assert_eq!(resolved.resolved_bytes(), 1);
     }
 
     fn impactful_record(window: &mut PolicyWindow, epoch_after: u64) -> AcceptedCommitRecord {

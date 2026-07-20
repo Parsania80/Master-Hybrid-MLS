@@ -36,7 +36,7 @@
 - `/crates/mkyber/src/bin/mkyber_benchmark.rs`: Release-mode standalone timing smoke benchmark for the educational backend; prints only public component byte costs and environment-dependent timing aggregates.
 - `/crates/hybrid-path-secret`: Canonical, validated hybrid wire/context boundary plus the Task 21 sender/receiver engine and Task 22 KDF-exclusion instrumentation. It performs one mKyber encapsulation per level, a context-bound 32-byte HPKE exporter-secret derivation per recipient, canonical hybrid KDF input/expansion, and AES-128-GCM path-secret wrapping. Its value-free provenance records actual serialized common/recipient ciphertext lengths and their zero KDF contribution. It is ready for a future experimental fork injection; baseline code does not import it.
 - `/crates/adaptive-tree`: Canonical version-1 binary-to-quaternary mapping and immutable public shadow topology with public logical-operation replay; cost estimation and TreeCover remain deferred.
-- `/crates/transition-policy`: Task 35/38 policy boundary. It retains an auditable raw accepted-commit trail, bounds post-warmup `W_e`, derives `q_e`/`r_e`, measures canonical transition preflight bytes, computes exact rational savings, and evaluates all start gates with explicit public blockers; Delta configuration integration and transition execution remain deferred.
+- `/crates/transition-policy`: Task 35/39 policy boundary. It retains an auditable raw accepted-commit trail, bounds post-warmup `W_e`, derives `q_e`/`r_e`, measures canonical transition preflight bytes, computes exact rational savings, resolves typed byte-or-fixed-point-percent Delta thresholds conservatively, and evaluates all start gates with explicit public blockers; transition execution remains deferred.
 - `/crates/metrics`: Typed Task 32/33 measurement boundary. It measures emitted baseline Commit bytes, derives explicitly estimated candidate path payload sizes from the canonical hybrid TLS codec, and records public topology, recipient-resolution, crypto-count, and monotonic timing facts without retaining wire or secret values.
 - `/crates/simulation`: Empty deterministic workload and convergence-simulation boundary.
 - `/crates/report`: Empty safe report-generation boundary.
@@ -142,8 +142,8 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 | 36 | Measure `B_transition` from serialized transition-only protocol data without mutating the live group during evaluation | ✅ Done | ADR 0012 records `B_transition_preflight` from an exact disjoint partition of caller-provided canonical outer bytes, exposes all six diagnostic components, and reports later actual-byte mismatches without overwriting preflight. It remains an estimate until a transition serializer exists. |
 | 37 | Implement the average and direct savings formulas with checked integer/rational rounding | ✅ Done | ADR 0013 stores exact sums and rational averages, computes signed direct and average-form preflight savings without floats, exposes report-only rounding, and property-tests formula equivalence. |
 | 38 | Implement every start condition and record the exact blocking/triggering condition | ✅ Done | ADR 0014 evaluates all five ADR 0006 gates after each post-warmup accepted record: normal state, `2 -> 4`, stable target size, `q_e >= q_min`, and strict exact saving above Delta. Every blocker is retained; no transition is emitted. |
-| 39 | Support configurable Delta in bytes or as a percentage of `B_transition`, plus TOML/CLI overrides | 🔄 Current | Define mutual exclusion and precedence during Phase 1. |
-| 40 | Pass start-gating, positive-trigger, formula-equivalence, formatting, lint, and regression tests | ⬜ Todo | Transition must never start early. |
+| 39 | Support configurable Delta in bytes or as a percentage of `B_transition`, plus TOML/CLI overrides | ✅ Done | ADR 0015 maps exactly one TOML form to a typed policy threshold. Percentage values use checked micro-percent fixed point and ceiling byte resolution against the current preflight; the typed future-CLI override replaces, never combines with, TOML. |
+| 40 | Pass start-gating, positive-trigger, formula-equivalence, formatting, lint, and regression tests | 🔄 Current | Transition must never start early. |
 
 ### Part 8: Authenticated Transition State and TreeCover
 
@@ -182,6 +182,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 7, Task 39 — Support configurable Delta in bytes or as a percentage of `B_transition`, plus TOML/CLI overrides.
+**Current:** Part 7, Task 40 — Pass start-gating, positive-trigger, formula-equivalence, formatting, lint, and regression tests.
 
-**Next:** Part 7, Task 40 — Pass start-gating, positive-trigger, formula-equivalence, formatting, lint, and regression tests.
+**Next:** Part 8, Task 41 — Implement authenticated `ArityState` and `Normal`/`Transitioning` state-machine validation.
