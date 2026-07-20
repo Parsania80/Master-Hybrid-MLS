@@ -6,3 +6,4 @@
 //! and adaptive-transition behavior remain in their focused workspace crates.
 
 pub mod bootstrap;
+pub mod evaluate;

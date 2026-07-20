@@ -116,6 +116,8 @@ Task 49 adds a thesis-local in-process retirement harness. It requires a Task 48
 
 Task 50's tests are regression evidence for the educational boundary only. They prove that unavailable old-cover routes and non-positive maturity denominators remain `Keep` blockers, and that invalid retirement facts leave all in-process snapshots unchanged. They cannot prove real secret erasure, MLS authentication, distributed atomicity, resource bounds under attacker-controlled inputs, or security of a future fork.
 
+Task 51 accepts only a fixed public bootstrap snapshot schema and performs a fresh baseline recreation from its public schedule seed. It validates public encodings, group shape, membership indexes, and public KeyPackage ordering, then creates new operating-system-generated MLS key material and verifies the fresh group before writing a public manifest. It does not restore the source group's private state, preserve its tree hash, process experimental commits, or supply workload/transition measurements. The manifest explicitly records those limits; no restored secret, private key, raw entropy, or path secret is exposed.
+
 The private-use extension code can collide with another private deployment. The fork and its messages are thesis-local and must not be sent to an unrelated MLS deployment. A future interoperable protocol would require an independently specified wire format, capability negotiation, registry action where applicable, and security review.
 
 ## Secret Handling and Reporting Rules

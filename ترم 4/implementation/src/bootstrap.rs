@@ -15,7 +15,7 @@ use std::{
 use mls_adapter::{
     BaselineClient, BaselineError, BaselineState, InboundEvent, BASELINE_CIPHERSUITE_ID,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// The exact group size required by the thesis bootstrap experiment.
@@ -130,7 +130,8 @@ pub struct BootstrapVerification {
 ///
 /// This type contains no private MLS state, private keys, shared secrets,
 /// path secrets, AEAD material, raw entropy, or a seed that reconstructs it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PublicBootstrapSnapshot {
     /// Versioned schema identifier for non-secret snapshot readers.
     pub format: String,
@@ -145,7 +146,8 @@ pub struct PublicBootstrapSnapshot {
 }
 
 /// Fixed public configuration captured by the first bootstrap executable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PublicSnapshotConfiguration {
     /// Baseline implementation mode, not experimental hybrid behavior.
     pub mode: String,
@@ -158,7 +160,8 @@ pub struct PublicSnapshotConfiguration {
 }
 
 /// Reproducibility data that cannot recreate key material.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PublicSnapshotReproducibility {
     /// Public input selecting only the committer schedule.
     pub schedule_seed: u64,
@@ -167,7 +170,8 @@ pub struct PublicSnapshotReproducibility {
 }
 
 /// Authenticated public state serialized as lowercase hexadecimal TLS bytes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PublicSnapshotGroup {
     /// Public group identifier.
     pub group_id_hex: String,
@@ -184,7 +188,8 @@ pub struct PublicSnapshotGroup {
 }
 
 /// One serialized public KeyPackage in the snapshot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PublicSnapshotKeyPackage {
     /// Bootstrap member index and matching public identity suffix.
     pub member_index: usize,

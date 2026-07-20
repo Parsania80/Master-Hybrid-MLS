@@ -44,7 +44,7 @@
 - `/crates/simulation`: Empty deterministic workload and convergence-simulation boundary.
 - `/crates/report`: Empty safe report-generation boundary.
 - `/src/bin/bootstrap_128.rs` (planned): Build and verify a valid 128-member baseline binary MLS group and emit safe public experiment artifacts.
-- `/src/bin/evaluate_transition.rs` (planned): Run controlled multi-committer workloads, evaluate 2-to-4 transition policy, and generate complete reports.
+- `/src/evaluate.rs` and `/src/bin/evaluate_transition.rs`: Task 51 public snapshot validator and fresh baseline recreation CLI. It accepts only the fixed Task 27 snapshot schema, never restores private MLS state, rebuilds a new verified 128-member baseline group from the public schedule seed, and writes a create-new public manifest. Workloads, transition execution, metrics, and reports remain deferred to Tasks 52–55.
 - `/tests/baseline_regression.rs`: Independent baseline integration tests for epoch, authenticated GroupContext, RFC tree hash, multi-committer convergence, and application-message delivery.
 - `/tests` (planned additions): Hybrid-path, tamper/replay, transition-start, transition-end, property, and 128-member convergence tests.
 - `/output` and `/report` (planned): Generated artifacts only; reports must never contain private keys, shared secrets, path secrets, AEAD keys, raw entropy, or a seed capable of reconstructing secret key material.
@@ -172,8 +172,8 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 51 | Implement `evaluate_transition.rs` with snapshot/recreate support and the documented CLI | 🔄 Current | Continue until retirement or configured maximum commits. |
-| 52 | Implement round-robin, seeded-random, fixed-list, weighted-random, and leaf-region-balanced committer strategies | ⬜ Todo | Report actual member/region distribution. |
+| 51 | Implement `evaluate_transition.rs` with snapshot/recreate support and the documented CLI | ✅ Done | The CLI validates only the fixed public bootstrap snapshot schema or creates a fresh verified 128-member baseline group using the public schedule seed and writes `transition_recreation.json`. It never restores private MLS state, and it does not yet execute workloads, transitions, metrics, or reports. |
+| 52 | Implement round-robin, seeded-random, fixed-list, weighted-random, and leaf-region-balanced committer strategies | 🔄 Current | Report actual member/region distribution. |
 | 53 | Implement update-only, mixed, removal-heavy, region-skewed, and uniform workloads | ⬜ Todo | Apply every accepted commit to all valid members and verify convergence. |
 | 54 | Record the complete required per-commit identity, topology, crypto-count, byte, timing, window, transition, and retirement schema | ⬜ Todo | No fake values; unavailable metrics are explicit. |
 | 55 | Generate `commits.csv`, `epochs.csv`, `transition_events.csv`, `summary.json`, and `report.md` | ⬜ Todo | Include all 27 required report subjects and mandatory security limitation. |
@@ -185,6 +185,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 10, Task 51 — Implement `evaluate_transition.rs` with snapshot/recreate support and the documented CLI.
+**Current:** Part 10, Task 52 — Implement round-robin, seeded-random, fixed-list, weighted-random, and leaf-region-balanced committer strategies.
 
-**Next:** Part 10, Task 52 — Implement round-robin, seeded-random, fixed-list, weighted-random, and leaf-region-balanced committer strategies.
+**Next:** Part 10, Task 53 — Implement update-only, mixed, removal-heavy, region-skewed, and uniform workloads.
