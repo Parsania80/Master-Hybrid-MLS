@@ -10,6 +10,7 @@
 
 use core::fmt;
 
+use rand::rngs::OsRng;
 use rand_core::{CryptoRng, RngCore};
 use sha3::{
     digest::{ExtendableOutput, Update, XofReader},
@@ -17,7 +18,7 @@ use sha3::{
 };
 use subtle::ConstantTimeEq;
 use thiserror::Error;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// mKyber512 encapsulation-key size in bytes.
 pub const ENCAPSULATION_KEY_BYTES: usize = 768;
@@ -28,8 +29,9 @@ pub const RECIPIENT_CIPHERTEXT_BYTES: usize = 48;
 
 /// A secure randomness source accepted by a backend implementation.
 ///
-/// Deterministic test RNGs may implement this trait only in isolated tests;
-/// production key generation and encapsulation require OS-backed randomness.
+/// Deterministic RNG implementations belong only in isolated test fixtures.
+/// Normal reference callers must use the explicit OS-RNG entry points on
+/// [`EducationalMkyber512Reference`].
 pub trait MkyberRandom: RngCore + CryptoRng {}
 
 impl<T> MkyberRandom for T where T: RngCore + CryptoRng {}
@@ -174,6 +176,15 @@ impl MkyberKeyPair {
     /// Returns the private decapsulation key for a backend operation.
     pub fn private_key(&self) -> &MkyberDecapsulationKey {
         &self.private_key
+    }
+
+    /// Consumes the pair into its public and private components.
+    ///
+    /// This is for protocol composition code that must retain a public
+    /// encapsulation key at the sender and private decapsulation material at
+    /// the recipient without cloning secret bytes.
+    pub fn into_parts(self) -> (MkyberEncapsulationKey, MkyberDecapsulationKey) {
+        (self.public_key, self.private_key)
     }
 }
 
@@ -356,6 +367,155 @@ impl MkyberCiphertextSet {
             .map(|entry| &entry.component)
             .ok_or(MkyberError::RecipientNotFound)
     }
+
+    /// Measures the canonical component bytes emitted by this ciphertext set.
+    ///
+    /// The result is derived from the actual common and recipient component
+    /// byte arrays, not from paper constants or an ML-KEM estimate. It excludes
+    /// recipient identifiers, the public domain, and any future outer MLS or
+    /// hybrid-path framing because no such canonical wire format exists yet.
+    pub fn measured_component_costs(&self) -> MkyberMeasuredComponentCosts {
+        let common_component =
+            MkyberComponentByteMeasurement::canonical_component(self.common.as_bytes().len());
+        let recipient_components = self
+            .recipients
+            .iter()
+            .map(|entry| MkyberMeasuredRecipientComponentCost {
+                recipient: entry.recipient,
+                component: MkyberComponentByteMeasurement::canonical_component(
+                    entry.component.as_bytes().len(),
+                ),
+            })
+            .collect::<Vec<_>>();
+        let recipient_component_total = MkyberComponentByteMeasurement::component_sum(
+            recipient_components
+                .iter()
+                .map(|component| component.component.measured_bytes())
+                .sum(),
+        );
+        let total_component = MkyberComponentByteMeasurement::component_sum(
+            common_component.measured_bytes() + recipient_component_total.measured_bytes(),
+        );
+
+        MkyberMeasuredComponentCosts {
+            common_component,
+            recipient_components,
+            recipient_component_total,
+            total_component,
+        }
+    }
+}
+
+/// Provenance of a component-byte measurement with no byte estimate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MkyberByteEstimationMethod {
+    /// Read directly from one canonical common or recipient component array.
+    NotEstimatedCanonicalComponent,
+    /// Computed exclusively by summing measured canonical component arrays.
+    NotEstimatedComponentSum,
+}
+
+/// Byte-cost record with the provenance fields required by ADR 0006.
+///
+/// Task 15 produces only measurements, never byte estimates. Future outer
+/// serializers must create their own records at their own codec boundaries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MkyberComponentByteMeasurement {
+    measured_bytes: usize,
+    estimated_bytes: Option<usize>,
+    estimation_method: MkyberByteEstimationMethod,
+}
+
+impl MkyberComponentByteMeasurement {
+    const fn canonical_component(measured_bytes: usize) -> Self {
+        Self {
+            measured_bytes,
+            estimated_bytes: None,
+            estimation_method: MkyberByteEstimationMethod::NotEstimatedCanonicalComponent,
+        }
+    }
+
+    const fn component_sum(measured_bytes: usize) -> Self {
+        Self {
+            measured_bytes,
+            estimated_bytes: None,
+            estimation_method: MkyberByteEstimationMethod::NotEstimatedComponentSum,
+        }
+    }
+
+    /// Returns the observed bytes from canonical serialized components.
+    pub const fn measured_bytes(self) -> usize {
+        self.measured_bytes
+    }
+
+    /// Returns an estimate when one exists; Task 15 always returns `None`.
+    pub const fn estimated_bytes(self) -> Option<usize> {
+        self.estimated_bytes
+    }
+
+    /// Returns why this record has no byte estimate.
+    pub const fn estimation_method(self) -> MkyberByteEstimationMethod {
+        self.estimation_method
+    }
+}
+
+/// Actual serialized byte cost for one recipient-specific mKyber component.
+///
+/// This is component-only measurement. It deliberately excludes public
+/// recipient identifiers and outer protocol framing until their serializers
+/// exist and can be measured at their own codec boundaries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MkyberMeasuredRecipientComponentCost {
+    /// The public recipient owning this component.
+    pub recipient: RecipientId,
+    component: MkyberComponentByteMeasurement,
+}
+
+impl MkyberMeasuredRecipientComponentCost {
+    /// Returns this recipient component's measured-byte provenance record.
+    pub const fn component(&self) -> MkyberComponentByteMeasurement {
+        self.component
+    }
+}
+
+/// Actual canonical component-byte measurements for one mKyber ciphertext set.
+///
+/// All values are measured serialized component bytes. The total is exactly
+/// `common_component_bytes + recipient_component_total_bytes`; it is not an
+/// outer-wire, MLS-message, or network-byte measurement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MkyberMeasuredComponentCosts {
+    common_component: MkyberComponentByteMeasurement,
+    recipient_components: Vec<MkyberMeasuredRecipientComponentCost>,
+    recipient_component_total: MkyberComponentByteMeasurement,
+    total_component: MkyberComponentByteMeasurement,
+}
+
+impl MkyberMeasuredComponentCosts {
+    /// Returns the common component's measured-byte provenance record.
+    pub const fn common_component(&self) -> MkyberComponentByteMeasurement {
+        self.common_component
+    }
+
+    /// Returns each recipient's independently measured component-byte cost.
+    pub fn recipient_components(&self) -> &[MkyberMeasuredRecipientComponentCost] {
+        &self.recipient_components
+    }
+
+    /// Returns the number of recipient components measured.
+    pub fn recipient_count(&self) -> usize {
+        self.recipient_components.len()
+    }
+
+    /// Returns the recipient-component total's measured-byte provenance record.
+    pub const fn recipient_component_total(&self) -> MkyberComponentByteMeasurement {
+        self.recipient_component_total
+    }
+
+    /// Returns the common-plus-recipient total's measured-byte provenance record.
+    pub const fn total_component(&self) -> MkyberComponentByteMeasurement {
+        self.total_component
+    }
 }
 
 /// A backend-produced mKyber shared secret.
@@ -452,6 +612,27 @@ pub struct EducationalMkyber512Reference;
 impl EducationalMkyber512Reference {
     /// Stable identifier for the thesis-local reference profile.
     pub const PROFILE_LABEL: &'static str = "mkyber512-thesis-v1";
+
+    /// Generates a key pair using the operating system's cryptographic RNG.
+    ///
+    /// This is the normal reference-code entry point. The caller cannot supply
+    /// deterministic entropy through this API.
+    pub fn keygen_with_os_rng(&self, domain: MkyberDomain) -> Result<MkyberKeyPair, MkyberError> {
+        let mut randomness = OsRng;
+        self.keygen(domain, &mut randomness)
+    }
+
+    /// Encapsulates using the operating system's cryptographic RNG.
+    ///
+    /// This is the normal reference-code entry point. Deterministic entropy is
+    /// reserved for private test fixtures and must not be published or reused.
+    pub fn encapsulate_with_os_rng(
+        &self,
+        recipients: &RecipientSet,
+    ) -> Result<MkyberEncapsulation, MkyberError> {
+        let mut randomness = OsRng;
+        self.encapsulate(recipients, &mut randomness)
+    }
 }
 
 impl MultiRecipientKem for EducationalMkyber512Reference {
@@ -460,31 +641,25 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
         domain: MkyberDomain,
         randomness: &mut dyn MkyberRandom,
     ) -> Result<MkyberKeyPair, MkyberError> {
-        let mut entropy = [0_u8; 64];
-        randomness.fill_bytes(&mut entropy);
-        let secret_seed = hash32(TAG_KEYGEN_SECRET, &[&entropy]);
-        let error_seed = hash32(TAG_KEYGEN_ERROR, &[&entropy]);
-        let mut fallback = hash32(TAG_KEYGEN_FALLBACK, &[&entropy]);
-        entropy.zeroize();
+        let mut entropy = Zeroizing::new([0_u8; 64]);
+        randomness.fill_bytes(&mut entropy[..]);
+        let secret_seed = Zeroizing::new(hash32(TAG_KEYGEN_SECRET, &[&entropy[..]]));
+        let error_seed = Zeroizing::new(hash32(TAG_KEYGEN_ERROR, &[&entropy[..]]));
+        let fallback = Zeroizing::new(hash32(TAG_KEYGEN_FALLBACK, &[&entropy[..]]));
 
         let matrix = expand_matrix(domain);
-        let mut secret = sample_polyvec(&secret_seed, 0, ETA1, TAG_KEYGEN_SECRET);
-        let mut error = sample_polyvec(&error_seed, 0, ETA1, TAG_KEYGEN_ERROR);
-        let mut public = add_polyvec(&matrix_times_vec(&matrix, &secret), &error);
+        let secret = Zeroizing::new(sample_polyvec(&secret_seed, 0, ETA1, TAG_KEYGEN_SECRET));
+        let error = Zeroizing::new(sample_polyvec(&error_seed, 0, ETA1, TAG_KEYGEN_ERROR));
+        let public = add_polyvec(&matrix_times_vec(&matrix, &secret), &error);
         let public_bytes = pack_polyvec_12(&public);
         let public_key = MkyberEncapsulationKey::from_bytes(domain, &public_bytes)?;
 
-        let secret_bytes = pack_polyvec_12(&secret);
+        let secret_bytes = Zeroizing::new(pack_polyvec_12(&secret));
         let mut private_bytes = Vec::with_capacity(REFERENCE_SECRET_KEY_BYTES);
-        private_bytes.extend_from_slice(&secret_bytes);
+        private_bytes.extend_from_slice(&secret_bytes[..]);
         private_bytes.extend_from_slice(&public_bytes);
-        private_bytes.extend_from_slice(&fallback);
+        private_bytes.extend_from_slice(&fallback[..]);
         debug_assert_eq!(private_bytes.len(), REFERENCE_SECRET_KEY_BYTES);
-
-        secret.zeroize();
-        error.zeroize();
-        public.zeroize();
-        fallback.zeroize();
 
         let private_key = MkyberDecapsulationKey::from_bytes(domain, private_bytes)?;
         MkyberKeyPair::new(public_key, private_key)
@@ -496,20 +671,18 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
         randomness: &mut dyn MkyberRandom,
     ) -> Result<MkyberEncapsulation, MkyberError> {
         let domain = recipients.domain();
-        let mut entropy = [0_u8; 32];
-        randomness.fill_bytes(&mut entropy);
-        let mut message_hash = hash32(TAG_MESSAGE, &[&entropy]);
-        entropy.zeroize();
-        let mut message = [0_u8; MESSAGE_BYTES];
+        let mut entropy = Zeroizing::new([0_u8; 32]);
+        randomness.fill_bytes(&mut entropy[..]);
+        let message_hash = Zeroizing::new(hash32(TAG_MESSAGE, &[&entropy[..]]));
+        let mut message = Zeroizing::new([0_u8; MESSAGE_BYTES]);
         message.copy_from_slice(&message_hash[..MESSAGE_BYTES]);
-        message_hash.zeroize();
 
-        let key_prime = hash32(TAG_KEY_PRIME, &[&message]);
-        let g1_seed = hash32(TAG_G1, &[domain.as_bytes(), &message]);
+        let key_prime = Zeroizing::new(hash32(TAG_KEY_PRIME, &[&message[..]]));
+        let g1_seed = Zeroizing::new(hash32(TAG_G1, &[domain.as_bytes(), &message[..]]));
         let matrix = expand_matrix(domain);
-        let mut randomness_vector = sample_polyvec(&g1_seed, 0, ETA1, TAG_PRF1);
-        let mut common_error = sample_polyvec(&g1_seed, K as u8, ETA2, TAG_PRF1);
-        let mut common = add_polyvec(
+        let randomness_vector = Zeroizing::new(sample_polyvec(&g1_seed, 0, ETA1, TAG_PRF1));
+        let common_error = Zeroizing::new(sample_polyvec(&g1_seed, K as u8, ETA2, TAG_PRF1));
+        let common = add_polyvec(
             &row_times_matrix(&randomness_vector, &matrix),
             &common_error,
         );
@@ -517,27 +690,25 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
 
         let mut recipient_components = Vec::with_capacity(recipients.recipients().len());
         for recipient in recipients.recipients() {
-            let mut recipient_public = unpack_polyvec_12(recipient.key.as_bytes())?;
-            let g2_seed = hash32(
+            let recipient_public = Zeroizing::new(unpack_polyvec_12(recipient.key.as_bytes())?);
+            let g2_seed = Zeroizing::new(hash32(
                 TAG_G2,
-                &[domain.as_bytes(), recipient.key.as_bytes(), &message],
-            );
-            let mut recipient_error = sample_poly(&g2_seed, 0, ETA2, TAG_PRF2);
-            let mut value = add_poly(
+                &[domain.as_bytes(), recipient.key.as_bytes(), &message[..]],
+            ));
+            let recipient_error = Zeroizing::new(sample_poly(&g2_seed, 0, ETA2, TAG_PRF2));
+            let message_polynomial = Zeroizing::new(encode_message(&message));
+            let value = add_poly(
                 &add_poly(
                     &inner_product(&randomness_vector, &recipient_public),
                     &recipient_error,
                 ),
-                &encode_message(&message),
+                &message_polynomial,
             );
             let component = pack_recipient(&value)?;
             recipient_components.push(RecipientCiphertext {
                 recipient: recipient.recipient,
                 component,
             });
-            recipient_public.zeroize();
-            recipient_error.zeroize();
-            value.zeroize();
         }
 
         let ciphertext = MkyberCiphertextSet::new(domain, common_component, recipient_components)?;
@@ -546,11 +717,6 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
             domain,
             ciphertext.common(),
         ))?;
-
-        message.zeroize();
-        randomness_vector.zeroize();
-        common_error.zeroize();
-        common.zeroize();
 
         Ok(MkyberEncapsulation {
             ciphertext,
@@ -577,36 +743,46 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
         }
 
         let component = ciphertext.recipient_component(recipient)?;
-        let (mut secret, mut public, mut fallback) = parse_reference_private_key(private_key)?;
-        let mut common = unpack_common(ciphertext.common())?;
-        let mut recipient_value = unpack_recipient(component)?;
-        let mut message_poly = subtract_poly(&recipient_value, &inner_product(&common, &secret));
-        let mut message = decode_message(&message_poly);
-        let key_prime = hash32(TAG_KEY_PRIME, &[&message]);
-        let g1_seed = hash32(TAG_G1, &[ciphertext.domain().as_bytes(), &message]);
+        let (secret, public, fallback) = parse_reference_private_key(private_key)?;
+        let secret = Zeroizing::new(secret);
+        let public = Zeroizing::new(public);
+        let fallback = Zeroizing::new(fallback);
+        let common = Zeroizing::new(unpack_common(ciphertext.common())?);
+        let recipient_value = Zeroizing::new(unpack_recipient(component)?);
+        let message_poly = Zeroizing::new(subtract_poly(
+            &recipient_value,
+            &inner_product(&common, &secret),
+        ));
+        let message = Zeroizing::new(decode_message(&message_poly));
+        let key_prime = Zeroizing::new(hash32(TAG_KEY_PRIME, &[&message[..]]));
+        let g1_seed = Zeroizing::new(hash32(
+            TAG_G1,
+            &[ciphertext.domain().as_bytes(), &message[..]],
+        ));
         let matrix = expand_matrix(ciphertext.domain());
-        let mut randomness_vector = sample_polyvec(&g1_seed, 0, ETA1, TAG_PRF1);
-        let mut common_error = sample_polyvec(&g1_seed, K as u8, ETA2, TAG_PRF1);
-        let mut expected_common = add_polyvec(
+        let randomness_vector = Zeroizing::new(sample_polyvec(&g1_seed, 0, ETA1, TAG_PRF1));
+        let common_error = Zeroizing::new(sample_polyvec(&g1_seed, K as u8, ETA2, TAG_PRF1));
+        let expected_common = add_polyvec(
             &row_times_matrix(&randomness_vector, &matrix),
             &common_error,
         );
         let expected_common_component = pack_common(&expected_common)?;
-        let g2_seed = hash32(
+        let g2_seed = Zeroizing::new(hash32(
             TAG_G2,
             &[
                 ciphertext.domain().as_bytes(),
                 &pack_polyvec_12(&public),
-                &message,
+                &message[..],
             ],
-        );
-        let mut recipient_error = sample_poly(&g2_seed, 0, ETA2, TAG_PRF2);
-        let mut expected_value = add_poly(
+        ));
+        let recipient_error = Zeroizing::new(sample_poly(&g2_seed, 0, ETA2, TAG_PRF2));
+        let message_polynomial = Zeroizing::new(encode_message(&message));
+        let expected_value = add_poly(
             &add_poly(
                 &inner_product(&randomness_vector, &public),
                 &recipient_error,
             ),
-            &encode_message(&message),
+            &message_polynomial,
         );
         let expected_component = pack_recipient(&expected_value)?;
 
@@ -625,19 +801,6 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
                 component,
             )
         };
-
-        secret.zeroize();
-        public.zeroize();
-        fallback.zeroize();
-        common.zeroize();
-        recipient_value.zeroize();
-        message_poly.zeroize();
-        message.zeroize();
-        randomness_vector.zeroize();
-        common_error.zeroize();
-        expected_common.zeroize();
-        recipient_error.zeroize();
-        expected_value.zeroize();
 
         MkyberSharedSecret::from_bytes(output)
     }
@@ -1072,6 +1235,63 @@ mod tests {
 
     impl CryptoRng for TestRng {}
 
+    fn deterministic_two_recipient_encapsulation(
+        seed: u64,
+    ) -> (MkyberKeyPair, MkyberKeyPair, MkyberEncapsulation) {
+        let backend = EducationalMkyber512Reference;
+        let mut rng = TestRng(seed);
+        let alice = backend
+            .keygen(DOMAIN, &mut rng)
+            .expect("deterministic key generation must succeed");
+        let bob = backend
+            .keygen(DOMAIN, &mut rng)
+            .expect("deterministic key generation must succeed");
+        let recipients = RecipientSet::new(
+            DOMAIN,
+            vec![
+                RecipientPublicKey {
+                    recipient: RecipientId::new(21),
+                    key: alice.public_key().clone(),
+                },
+                RecipientPublicKey {
+                    recipient: RecipientId::new(22),
+                    key: bob.public_key().clone(),
+                },
+            ],
+        )
+        .expect("same-domain recipients must construct");
+        let encapsulation = backend
+            .encapsulate(&recipients, &mut rng)
+            .expect("deterministic encapsulation must succeed");
+
+        (alice, bob, encapsulation)
+    }
+
+    fn public_regression_digest(
+        alice: &MkyberKeyPair,
+        bob: &MkyberKeyPair,
+        encapsulation: &MkyberEncapsulation,
+    ) -> [u8; 32] {
+        hash32(
+            b"mkyber512-thesis-v1/project-public-regression-vector",
+            &[
+                alice.public_key().as_bytes(),
+                bob.public_key().as_bytes(),
+                encapsulation.ciphertext.common().as_bytes(),
+                encapsulation
+                    .ciphertext
+                    .recipient_component(RecipientId::new(21))
+                    .expect("alice component")
+                    .as_bytes(),
+                encapsulation
+                    .ciphertext
+                    .recipient_component(RecipientId::new(22))
+                    .expect("bob component")
+                    .as_bytes(),
+            ],
+        )
+    }
+
     #[test]
     fn fixed_size_public_artifacts_reject_wrong_lengths() {
         assert_eq!(
@@ -1080,6 +1300,22 @@ mod tests {
                 field: PublicField::EncapsulationKey,
                 expected: ENCAPSULATION_KEY_BYTES,
                 actual: ENCAPSULATION_KEY_BYTES - 1,
+            })
+        );
+        assert_eq!(
+            MkyberCommonCiphertext::from_bytes(&[0; COMMON_CIPHERTEXT_BYTES - 1]),
+            Err(MkyberError::InvalidLength {
+                field: PublicField::CommonCiphertext,
+                expected: COMMON_CIPHERTEXT_BYTES,
+                actual: COMMON_CIPHERTEXT_BYTES - 1,
+            })
+        );
+        assert_eq!(
+            MkyberRecipientCiphertext::from_bytes(&[0; RECIPIENT_CIPHERTEXT_BYTES - 1]),
+            Err(MkyberError::InvalidLength {
+                field: PublicField::RecipientCiphertext,
+                expected: RECIPIENT_CIPHERTEXT_BYTES,
+                actual: RECIPIENT_CIPHERTEXT_BYTES - 1,
             })
         );
         assert!(MkyberCommonCiphertext::from_bytes(&[0; COMMON_CIPHERTEXT_BYTES]).is_ok());
@@ -1207,13 +1443,92 @@ mod tests {
                 RecipientId::new(2),
             )
             .expect("bob decapsulation must succeed");
+        assert!(
+            alice_secret
+                .as_bytes()
+                .ct_eq(encapsulation.shared_secret.as_bytes())
+                .unwrap_u8()
+                == 1,
+            "alice must derive the sender shared secret"
+        );
+        assert!(
+            bob_secret
+                .as_bytes()
+                .ct_eq(encapsulation.shared_secret.as_bytes())
+                .unwrap_u8()
+                == 1,
+            "bob must derive the sender shared secret"
+        );
+    }
+
+    #[test]
+    fn component_costs_are_measured_from_actual_serialized_artifacts() {
+        let backend = EducationalMkyber512Reference;
+        let mut rng = TestRng(6);
+        let alice = backend
+            .keygen(DOMAIN, &mut rng)
+            .expect("reference key generation must succeed");
+        let bob = backend
+            .keygen(DOMAIN, &mut rng)
+            .expect("reference key generation must succeed");
+        let recipients = RecipientSet::new(
+            DOMAIN,
+            vec![
+                RecipientPublicKey {
+                    recipient: RecipientId::new(11),
+                    key: alice.public_key().clone(),
+                },
+                RecipientPublicKey {
+                    recipient: RecipientId::new(12),
+                    key: bob.public_key().clone(),
+                },
+            ],
+        )
+        .expect("same-domain recipients must construct");
+        let ciphertext = backend
+            .encapsulate(&recipients, &mut rng)
+            .expect("reference encapsulation must succeed")
+            .ciphertext;
+
+        let costs = ciphertext.measured_component_costs();
         assert_eq!(
-            alice_secret.as_bytes(),
-            encapsulation.shared_secret.as_bytes()
+            costs.common_component().measured_bytes(),
+            ciphertext.common().as_bytes().len()
+        );
+        assert_eq!(costs.common_component().estimated_bytes(), None);
+        assert_eq!(
+            costs.common_component().estimation_method(),
+            MkyberByteEstimationMethod::NotEstimatedCanonicalComponent
+        );
+        assert_eq!(costs.recipient_count(), 2);
+        assert_eq!(
+            costs.recipient_components()[0].component().measured_bytes(),
+            ciphertext
+                .recipient_component(RecipientId::new(11))
+                .expect("alice component")
+                .as_bytes()
+                .len()
         );
         assert_eq!(
-            bob_secret.as_bytes(),
-            encapsulation.shared_secret.as_bytes()
+            costs.recipient_components()[1].component().measured_bytes(),
+            ciphertext
+                .recipient_component(RecipientId::new(12))
+                .expect("bob component")
+                .as_bytes()
+                .len()
+        );
+        assert_eq!(
+            costs.recipient_component_total().measured_bytes(),
+            RECIPIENT_CIPHERTEXT_BYTES * 2
+        );
+        assert_eq!(
+            costs.total_component().measured_bytes(),
+            COMMON_CIPHERTEXT_BYTES + RECIPIENT_CIPHERTEXT_BYTES * 2
+        );
+        assert_eq!(costs.total_component().estimated_bytes(), None);
+        assert_eq!(
+            costs.total_component().estimation_method(),
+            MkyberByteEstimationMethod::NotEstimatedComponentSum
         );
     }
 
@@ -1254,24 +1569,185 @@ mod tests {
         let fallback = backend
             .decapsulate(key_pair.private_key(), &tampered, RecipientId::new(9))
             .expect("invalid ciphertext must produce fallback secret");
-        assert_ne!(fallback.as_bytes(), encapsulation.shared_secret.as_bytes());
+        assert!(
+            fallback
+                .as_bytes()
+                .ct_eq(encapsulation.shared_secret.as_bytes())
+                .unwrap_u8()
+                == 0,
+            "tampered recipient component must select the fallback secret"
+        );
+    }
+
+    #[test]
+    fn educational_reference_backend_uses_fallback_for_tampered_common_component() {
+        let backend = EducationalMkyber512Reference;
+        let mut rng = TestRng(7);
+        let key_pair = backend
+            .keygen(DOMAIN, &mut rng)
+            .expect("reference key generation must succeed");
+        let recipients = RecipientSet::new(
+            DOMAIN,
+            vec![RecipientPublicKey {
+                recipient: RecipientId::new(10),
+                key: key_pair.public_key().clone(),
+            }],
+        )
+        .expect("recipient set must construct");
+        let encapsulation = backend
+            .encapsulate(&recipients, &mut rng)
+            .expect("reference encapsulation must succeed");
+        let mut common_bytes = *encapsulation.ciphertext.common().as_bytes();
+        common_bytes[0] ^= 1;
+        let tampered = MkyberCiphertextSet::new(
+            DOMAIN,
+            MkyberCommonCiphertext::from_bytes(&common_bytes)
+                .expect("fixed-size tampered common component"),
+            vec![RecipientCiphertext {
+                recipient: RecipientId::new(10),
+                component: encapsulation
+                    .ciphertext
+                    .recipient_component(RecipientId::new(10))
+                    .expect("recipient component")
+                    .clone(),
+            }],
+        )
+        .expect("tampered ciphertext shape must remain valid");
+        let fallback = backend
+            .decapsulate(key_pair.private_key(), &tampered, RecipientId::new(10))
+            .expect("invalid ciphertext must produce fallback secret");
+
+        assert!(
+            fallback
+                .as_bytes()
+                .ct_eq(encapsulation.shared_secret.as_bytes())
+                .unwrap_u8()
+                == 0,
+            "tampered common component must select the fallback secret"
+        );
     }
 
     #[test]
     fn educational_reference_backend_is_deterministic_for_test_rng() {
-        let backend = EducationalMkyber512Reference;
-        let mut first_rng = TestRng(3);
-        let mut second_rng = TestRng(3);
-        let first = backend
-            .keygen(DOMAIN, &mut first_rng)
-            .expect("first key generation must succeed");
-        let second = backend
-            .keygen(DOMAIN, &mut second_rng)
-            .expect("second key generation must succeed");
+        let (first_alice, first_bob, first) = deterministic_two_recipient_encapsulation(3);
+        let (second_alice, second_bob, second) = deterministic_two_recipient_encapsulation(3);
         assert_eq!(
-            first.public_key().as_bytes(),
-            second.public_key().as_bytes()
+            first_alice.public_key().as_bytes(),
+            second_alice.public_key().as_bytes()
         );
+        assert_eq!(
+            first_bob.public_key().as_bytes(),
+            second_bob.public_key().as_bytes()
+        );
+        assert_eq!(
+            first.ciphertext.common().as_bytes(),
+            second.ciphertext.common().as_bytes()
+        );
+        assert_eq!(
+            first
+                .ciphertext
+                .recipient_component(RecipientId::new(21))
+                .expect("first alice component")
+                .as_bytes(),
+            second
+                .ciphertext
+                .recipient_component(RecipientId::new(21))
+                .expect("second alice component")
+                .as_bytes()
+        );
+        assert_eq!(
+            first
+                .ciphertext
+                .recipient_component(RecipientId::new(22))
+                .expect("first bob component")
+                .as_bytes(),
+            second
+                .ciphertext
+                .recipient_component(RecipientId::new(22))
+                .expect("second bob component")
+                .as_bytes()
+        );
+    }
+
+    #[test]
+    fn project_owned_public_regression_vector_is_stable() {
+        let (alice, bob, encapsulation) = deterministic_two_recipient_encapsulation(0x5a17);
+
+        assert_eq!(
+            public_regression_digest(&alice, &bob, &encapsulation),
+            [
+                48, 148, 34, 28, 120, 235, 147, 100, 33, 21, 247, 141, 118, 0, 57, 104, 85, 1, 130,
+                2, 66, 181, 20, 24, 95, 240, 169, 75, 142, 97, 127, 45,
+            ],
+            "project-owned public regression digest changed"
+        );
+    }
+
+    #[test]
+    fn malformed_private_key_is_rejected_without_secret_diagnostics() {
+        let backend = EducationalMkyber512Reference;
+        let (alice, _, encapsulation) = deterministic_two_recipient_encapsulation(8);
+        let malformed =
+            MkyberDecapsulationKey::from_bytes(DOMAIN, vec![0; REFERENCE_SECRET_KEY_BYTES - 1])
+                .expect("non-empty malformed private material must construct");
+
+        assert!(matches!(
+            backend.decapsulate(&malformed, &encapsulation.ciphertext, RecipientId::new(21)),
+            Err(MkyberError::BackendRejected)
+        ));
+        assert!(
+            backend
+                .decapsulate(
+                    alice.private_key(),
+                    &encapsulation.ciphertext,
+                    RecipientId::new(21)
+                )
+                .is_ok(),
+            "a malformed private key must not affect the valid key path"
+        );
+    }
+
+    #[test]
+    fn educational_reference_backend_os_rng_entry_points_agree() {
+        let backend = EducationalMkyber512Reference;
+        let alice = backend
+            .keygen_with_os_rng(DOMAIN)
+            .expect("OS-backed reference key generation must succeed");
+        let recipients = RecipientSet::new(
+            DOMAIN,
+            vec![RecipientPublicKey {
+                recipient: RecipientId::new(13),
+                key: alice.public_key().clone(),
+            }],
+        )
+        .expect("recipient set must construct");
+        let encapsulation = backend
+            .encapsulate_with_os_rng(&recipients)
+            .expect("OS-backed reference encapsulation must succeed");
+        let decapsulated = backend
+            .decapsulate(
+                alice.private_key(),
+                &encapsulation.ciphertext,
+                RecipientId::new(13),
+            )
+            .expect("OS-backed reference ciphertext must decapsulate");
+
+        assert!(
+            decapsulated
+                .as_bytes()
+                .ct_eq(encapsulation.shared_secret.as_bytes())
+                .unwrap_u8()
+                == 1,
+            "OS-backed round trip must derive the sender shared secret"
+        );
+    }
+
+    #[test]
+    fn durable_secret_wrappers_zeroize_on_drop() {
+        fn requires_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+
+        requires_zeroize_on_drop::<MkyberDecapsulationKey>();
+        requires_zeroize_on_drop::<MkyberSharedSecret>();
     }
 
     #[test]
@@ -1345,5 +1821,64 @@ mod tests {
             backend.encapsulate(&recipients, &mut rng),
             Err(MkyberError::BackendRejected)
         ));
+    }
+
+    #[test]
+    fn every_recipient_component_bit_flip_selects_a_fallback_secret() {
+        let backend = EducationalMkyber512Reference;
+        let (alice, bob, encapsulation) = deterministic_two_recipient_encapsulation(9);
+        for (recipient_index, target) in [RecipientId::new(21), RecipientId::new(22)]
+            .into_iter()
+            .enumerate()
+        {
+            let other = [RecipientId::new(22), RecipientId::new(21)][recipient_index];
+            for byte_index in 0..RECIPIENT_CIPHERTEXT_BYTES {
+                for bit_index in 0..8 {
+                    let mut target_bytes = *encapsulation
+                        .ciphertext
+                        .recipient_component(target)
+                        .expect("target component")
+                        .as_bytes();
+                    target_bytes[byte_index] ^= 1 << bit_index;
+                    let tampered = MkyberCiphertextSet::new(
+                        DOMAIN,
+                        encapsulation.ciphertext.common().clone(),
+                        vec![
+                            RecipientCiphertext {
+                                recipient: target,
+                                component: MkyberRecipientCiphertext::from_bytes(&target_bytes)
+                                    .expect("fixed-size tampered component"),
+                            },
+                            RecipientCiphertext {
+                                recipient: other,
+                                component: encapsulation
+                                    .ciphertext
+                                    .recipient_component(other)
+                                    .expect("other component")
+                                    .clone(),
+                            },
+                        ],
+                    )
+                    .expect("tampered ciphertext shape must remain valid");
+                    let recipient_key = if recipient_index == 0 {
+                        alice.private_key()
+                    } else {
+                        bob.private_key()
+                    };
+                    let fallback = backend
+                        .decapsulate(recipient_key, &tampered, target)
+                        .expect("invalid ciphertext must produce fallback secret");
+
+                    assert!(
+                        fallback
+                            .as_bytes()
+                            .ct_eq(encapsulation.shared_secret.as_bytes())
+                            .unwrap_u8()
+                            == 0,
+                        "bit flip at recipient index {recipient_index}, byte {byte_index}, bit {bit_index} must select the fallback secret"
+                    );
+                }
+            }
+        }
     }
 }

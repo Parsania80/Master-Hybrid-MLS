@@ -2,6 +2,7 @@
 members = [
     ".",
     "crates/adaptive-tree",
+    "crates/arity-state",
     "crates/experiment-config",
     "crates/hybrid-path-secret",
     "crates/metrics",
@@ -9,6 +10,8 @@ members = [
     "crates/mls-adapter",
     "crates/report",
     "crates/simulation",
+    "crates/transition-auth",
+    "crates/transition-tree",
     "crates/transition-policy",
 ]
 resolver = "3"
@@ -59,5 +62,12 @@ version.workspace = true
 [lints]
 workspace = true
 
-[dev-dependencies]
+[dependencies]
+csv.workspace = true
+hex.workspace = true
 mls-adapter = { path = "crates/mls-adapter" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]

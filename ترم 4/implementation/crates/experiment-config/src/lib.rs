@@ -9,6 +9,7 @@ use std::path::{Component, Path};
 
 use serde::Deserialize;
 use thiserror::Error;
+use transition_policy::DeltaThreshold;
 
 /// Public execution mode selected for an experiment.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -68,6 +69,18 @@ pub struct TransitionConfig {
     pub delta_bytes: Option<u64>,
     /// Delta as a micro-percent of preflight transition bytes, mutually exclusive with `delta_bytes`.
     pub delta_percent_of_transition_micro: Option<u32>,
+}
+
+/// A parsed command-line Delta override for one evaluation process.
+///
+/// The future evaluation CLI must construct exactly one enum variant. When
+/// present, this value replaces the TOML Delta rather than combining with it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeltaOverride {
+    /// Replace the TOML threshold with an absolute byte threshold.
+    Bytes(u64),
+    /// Replace the TOML threshold with a micro-percent preflight threshold.
+    PercentOfTransitionMicro(u32),
 }
 
 /// Public workload and reproducibility controls.
@@ -163,6 +176,39 @@ impl ExperimentConfig {
         validate_relative_path("output.report_directory", &self.output.report_directory)?;
         Ok(())
     }
+
+    /// Returns the selected typed Delta threshold for one evaluation process.
+    ///
+    /// A CLI override has explicit precedence over the mutually exclusive TOML
+    /// value. Percentage units remain fixed-point micro-percent; resolution to
+    /// integer bytes is deferred until the current preflight is available.
+    pub fn delta_threshold(
+        &self,
+        cli_override: Option<DeltaOverride>,
+    ) -> Result<DeltaThreshold, ConfigError> {
+        self.validate()?;
+        Ok(match cli_override {
+            Some(DeltaOverride::Bytes(bytes)) => DeltaThreshold::Bytes(bytes),
+            Some(DeltaOverride::PercentOfTransitionMicro(micro_percent)) => {
+                DeltaThreshold::PercentOfTransitionMicro(micro_percent)
+            }
+            None => match (
+                self.transition.delta_bytes,
+                self.transition.delta_percent_of_transition_micro,
+            ) {
+                (Some(bytes), None) => DeltaThreshold::Bytes(bytes),
+                (None, Some(micro_percent)) => {
+                    DeltaThreshold::PercentOfTransitionMicro(micro_percent)
+                }
+                _ => {
+                    return Err(invalid(
+                        "transition Delta",
+                        "exactly one Delta form must be configured",
+                    ))
+                }
+            },
+        })
+    }
 }
 
 fn invalid(field: &'static str, reason: &'static str) -> ConfigError {
@@ -190,7 +236,8 @@ fn validate_relative_path(field: &'static str, value: &str) -> Result<(), Config
 
 #[cfg(test)]
 mod tests {
-    use super::ExperimentConfig;
+    use super::{DeltaOverride, ExperimentConfig};
+    use transition_policy::DeltaThreshold;
 
     const VALID_CONFIG: &str = r#"
 mode = "adaptive-binary-to-quaternary-mls"
@@ -224,6 +271,10 @@ report_directory = "report/run-001"
 
         assert_eq!(config.group.target_group_size, 128);
         assert_eq!(config.transition.delta_bytes, Some(2000));
+        assert_eq!(
+            config.delta_threshold(None).expect("typed byte threshold"),
+            DeltaThreshold::Bytes(2000)
+        );
     }
 
     #[test]
@@ -244,5 +295,33 @@ report_directory = "report/run-001"
         );
 
         assert!(ExperimentConfig::parse_toml(&unsafe_path).is_err());
+    }
+
+    #[test]
+    fn percent_delta_and_cli_override_have_explicit_typed_precedence() {
+        let percent_config = VALID_CONFIG.replace(
+            "delta_bytes = 2000",
+            "delta_percent_of_transition_micro = 25_000_000",
+        );
+        let config = ExperimentConfig::parse_toml(&percent_config).expect("valid percent config");
+
+        assert_eq!(
+            config
+                .delta_threshold(None)
+                .expect("typed percentage threshold"),
+            DeltaThreshold::PercentOfTransitionMicro(25_000_000)
+        );
+        assert_eq!(
+            config
+                .delta_threshold(Some(DeltaOverride::Bytes(123)))
+                .expect("typed byte override"),
+            DeltaThreshold::Bytes(123)
+        );
+        assert_eq!(
+            config
+                .delta_threshold(Some(DeltaOverride::PercentOfTransitionMicro(50_000_000)))
+                .expect("typed percentage override"),
+            DeltaThreshold::PercentOfTransitionMicro(50_000_000)
+        );
     }
 }

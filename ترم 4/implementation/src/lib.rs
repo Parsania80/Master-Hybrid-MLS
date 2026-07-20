@@ -2,5 +2,8 @@
 
 //! Workspace root for the adaptive hybrid MLS thesis prototype.
 //!
-//! Protocol behavior belongs to the focused workspace crates. This crate has
-//! no MLS, mKyber, hybrid, or transition implementation yet.
+//! The fixed-size baseline bootstrap orchestration lives here. mKyber, hybrid,
+//! and adaptive-transition behavior remain in their focused workspace crates.
+
+pub mod bootstrap;
+pub mod evaluate;

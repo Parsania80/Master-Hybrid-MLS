@@ -18,6 +18,8 @@ use thiserror::Error;
 /// The only ciphersuite accepted by the first baseline implementation.
 pub const BASELINE_CIPHERSUITE: Ciphersuite =
     Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+/// Numeric identifier of the only supported baseline ciphersuite.
+pub const BASELINE_CIPHERSUITE_ID: u16 = 0x0001;
 
 /// Errors returned by the baseline boundary.
 ///
@@ -77,6 +79,12 @@ pub struct BaselineState {
     pub epoch: u64,
     /// Number of currently active group members.
     pub member_count: usize,
+    /// Public MLS leaf indexes occupied by current members, in tree order.
+    pub member_leaf_indices: Vec<u32>,
+    /// Public BasicCredential identities corresponding to `member_leaf_indices`.
+    pub member_identities: Vec<Vec<u8>>,
+    /// TLS encoding of the public RFC 9420 ratchet tree.
+    pub ratchet_tree: Vec<u8>,
     /// TLS encoding of the authenticated public MLS GroupContext.
     pub group_context: Vec<u8>,
     /// The RFC 9420 tree hash carried by the authenticated GroupContext.
@@ -128,6 +136,22 @@ impl BaselineClient {
                 self.credential.clone(),
             )
             .map_err(|_| BaselineError::OpenMls)
+    }
+
+    /// Builds a KeyPackage and its public TLS encoding for a safe artifact.
+    ///
+    /// The bundle remains necessary only while the caller stages its Add
+    /// proposal. Callers must retain or serialize only the returned bytes, not
+    /// the provider's private key material.
+    pub fn key_package_with_wire_bytes(
+        &self,
+    ) -> Result<(KeyPackageBundle, Vec<u8>), BaselineError> {
+        let bundle = self.key_package()?;
+        let wire_bytes = bundle
+            .key_package()
+            .tls_serialize_detached()
+            .map_err(|_| BaselineError::OpenMls)?;
+        Ok((bundle, wire_bytes))
     }
 
     /// Creates a new RFC 9420 group with the fixed baseline ciphersuite.
@@ -352,10 +376,20 @@ impl BaselineClient {
             MlsMessageBodyOut::GroupInfo(group_info) => group_info.group_context(),
             _ => return Err(BaselineError::OpenMls),
         };
+        let members: Vec<_> = group.members().collect();
         Ok(BaselineState {
             group_id: group.group_id().as_slice().to_vec(),
             epoch: group.epoch().as_u64(),
-            member_count: group.members().count(),
+            member_count: members.len(),
+            member_leaf_indices: members.iter().map(|member| member.index.u32()).collect(),
+            member_identities: members
+                .iter()
+                .map(|member| member.credential.serialized_content().to_vec())
+                .collect(),
+            ratchet_tree: group
+                .export_ratchet_tree()
+                .tls_serialize_detached()
+                .map_err(|_| BaselineError::OpenMls)?,
             group_context: group_context
                 .tls_serialize_detached()
                 .map_err(|_| BaselineError::OpenMls)?,

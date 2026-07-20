@@ -5,11 +5,16 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+arity-state = { path = "../arity-state" }
 csv.workspace = true
 hex.workspace = true
+metrics = { path = "../metrics" }
 serde.workspace = true
 serde_json.workspace = true
+simulation = { path = "../simulation" }
 thiserror.workspace = true
+transition-auth = { path = "../transition-auth" }
+transition-policy = { path = "../transition-policy" }
 
 [lints]
 workspace = true
