@@ -11,7 +11,11 @@
 use arity_state::{
     ArityLifecycle, ArityState, ArityStateError, ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE,
 };
-use hybrid_path_secret::HybridKdfContext;
+use hybrid_path_secret::{
+    open_hybrid_path_level, HybridKdfContext, HybridPathCiphertext, HybridPathLevelContext,
+    HybridPathLevelError, HybridPathRecipientPrivate, HybridPathSecret,
+};
+use mkyber::MultiRecipientKem;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -155,6 +159,214 @@ pub struct PreApplyValidatedTransition {
     metadata_commitment: [u8; 32],
 }
 
+/// Public member state used only by the Task 44 educational transition harness.
+///
+/// This is not an MLS group, does not parse an MLS Commit, and must not be
+/// connected to a live group outside a future experimental fork. It retains
+/// only enough public state to demonstrate that pre-apply validation and
+/// recipient resolution can be staged before a local transition snapshot is
+/// replaced.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct EducationalTransitionMember {
+    member_id: Vec<u8>,
+    group_id: Vec<u8>,
+    pre_transition_epoch: u64,
+    applied_transition: Option<AppliedTransitionState>,
+}
+
+impl EducationalTransitionMember {
+    /// Creates a member snapshot immediately before this thesis's first `2 -> 4` transition.
+    pub fn new(
+        member_id: Vec<u8>,
+        group_id: Vec<u8>,
+        pre_transition_epoch: u64,
+    ) -> Result<Self, TransitionApplicationError> {
+        if member_id.is_empty() {
+            return Err(TransitionApplicationError::EmptyMemberId);
+        }
+        if group_id.is_empty() {
+            return Err(TransitionApplicationError::EmptyMemberGroupId);
+        }
+        Ok(Self {
+            member_id,
+            group_id,
+            pre_transition_epoch,
+            applied_transition: None,
+        })
+    }
+
+    /// Returns the public member identifier used by the educational harness.
+    pub fn member_id(&self) -> &[u8] {
+        &self.member_id
+    }
+
+    /// Returns the committed public transition snapshot, if this member applied one.
+    pub const fn applied_transition(&self) -> Option<&AppliedTransitionState> {
+        self.applied_transition.as_ref()
+    }
+
+    fn stage_transition(
+        &self,
+        metadata: &TransitionMetadataEnvelope,
+        path_level_context: &HybridPathLevelContext,
+        ciphertext: &HybridPathCiphertext,
+        backend: &impl MultiRecipientKem,
+        recipient: &HybridPathRecipientPrivate,
+    ) -> Result<(AppliedTransitionState, HybridPathSecret), TransitionApplicationError> {
+        if self.applied_transition.is_some() {
+            return Err(TransitionApplicationError::TransitionAlreadyApplied);
+        }
+        let hybrid_context = path_level_context.kdf_context(recipient.recipient_node_index());
+        let validated = metadata.clone().validate_pre_apply(&hybrid_context)?;
+        if validated.group_context().group_id() != self.group_id {
+            return Err(TransitionApplicationError::MemberGroupIdMismatch);
+        }
+        let expected_epoch = self
+            .pre_transition_epoch
+            .checked_add(1)
+            .ok_or(TransitionApplicationError::TransitionEpochOverflow)?;
+        if validated.group_context().epoch() != expected_epoch {
+            return Err(TransitionApplicationError::UnexpectedTransitionEpoch {
+                expected: expected_epoch,
+                observed: validated.group_context().epoch(),
+            });
+        }
+        if validated.state().tree_version() != 1 {
+            return Err(TransitionApplicationError::UnexpectedTreeVersion {
+                expected: 1,
+                observed: validated.state().tree_version(),
+            });
+        }
+        if validated.state().active_arity() != 4 {
+            return Err(TransitionApplicationError::UnexpectedActiveArity {
+                expected: 4,
+                observed: validated.state().active_arity(),
+            });
+        }
+
+        // The private result is deliberately obtained before returning the next
+        // public snapshot. A failure here leaves this member untouched.
+        let path_secret =
+            open_hybrid_path_level(backend, path_level_context, ciphertext, recipient)?;
+        let next = AppliedTransitionState {
+            group_id: validated.group_context().group_id().to_vec(),
+            epoch: validated.group_context().epoch(),
+            tree_version: validated.state().tree_version(),
+            active_arity: validated.state().active_arity(),
+            group_context_hash: *validated.group_context().group_context_hash(),
+            metadata_commitment: *validated.metadata_commitment(),
+        };
+        Ok((next, path_secret))
+    }
+}
+
+/// Public state that every educational member must hold after the same transition.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AppliedTransitionState {
+    group_id: Vec<u8>,
+    epoch: u64,
+    tree_version: u32,
+    active_arity: u8,
+    group_context_hash: [u8; 32],
+    metadata_commitment: [u8; 32],
+}
+
+impl AppliedTransitionState {
+    /// Returns the authenticated public group identifier.
+    pub fn group_id(&self) -> &[u8] {
+        &self.group_id
+    }
+
+    /// Returns the transition epoch.
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the first post-transition logical tree version.
+    pub const fn tree_version(&self) -> u32 {
+        self.tree_version
+    }
+
+    /// Returns the active quaternary arity.
+    pub const fn active_arity(&self) -> u8 {
+        self.active_arity
+    }
+
+    /// Returns the hash of the exact authenticated GroupContext bytes.
+    pub const fn group_context_hash(&self) -> &[u8; 32] {
+        &self.group_context_hash
+    }
+
+    /// Returns the public transition metadata commitment.
+    pub const fn metadata_commitment(&self) -> &[u8; 32] {
+        &self.metadata_commitment
+    }
+}
+
+/// A recipient-specific successful application result.
+///
+/// The path secret is returned to the caller for the future fork's tree-secret
+/// work. It is not retained in the public member snapshot.
+pub struct TransitionApplicationReceipt {
+    applied_state: AppliedTransitionState,
+    path_secret: HybridPathSecret,
+}
+
+impl TransitionApplicationReceipt {
+    /// Returns the public state that was atomically installed for this member.
+    pub const fn applied_state(&self) -> &AppliedTransitionState {
+        &self.applied_state
+    }
+
+    /// Returns the resolved private path secret for subsequent fork-owned work.
+    pub const fn path_secret(&self) -> &HybridPathSecret {
+        &self.path_secret
+    }
+}
+
+/// Stages one transition for every supplied educational member, then installs it atomically.
+///
+/// All metadata validation and recipient-specific hybrid opens complete before
+/// this function replaces any public member snapshot. It models only local
+/// in-process atomicity for thesis tests; it is not MLS Commit processing,
+/// network atomicity, or evidence that the outer Commit was authenticated.
+pub fn apply_transition_to_members(
+    members: &mut [EducationalTransitionMember],
+    metadata: &TransitionMetadataEnvelope,
+    path_level_context: &HybridPathLevelContext,
+    ciphertext: &HybridPathCiphertext,
+    backend: &impl MultiRecipientKem,
+    recipients: &[HybridPathRecipientPrivate],
+) -> Result<Vec<TransitionApplicationReceipt>, TransitionApplicationError> {
+    if members.len() != recipients.len() {
+        return Err(TransitionApplicationError::MemberRecipientCountMismatch {
+            members: members.len(),
+            recipients: recipients.len(),
+        });
+    }
+
+    let mut staged = Vec::with_capacity(members.len());
+    for (member, recipient) in members.iter().zip(recipients) {
+        staged.push(member.stage_transition(
+            metadata,
+            path_level_context,
+            ciphertext,
+            backend,
+            recipient,
+        )?);
+    }
+
+    let mut receipts = Vec::with_capacity(members.len());
+    for (member, (next, path_secret)) in members.iter_mut().zip(staged) {
+        member.applied_transition = Some(next.clone());
+        receipts.push(TransitionApplicationReceipt {
+            applied_state: next,
+            path_secret,
+        });
+    }
+    Ok(receipts)
+}
+
 impl PreApplyValidatedTransition {
     /// Returns the validated GroupContext binding.
     pub const fn group_context(&self) -> &AuthenticatedGroupContext {
@@ -229,6 +441,64 @@ pub enum TransitionAuthenticationError {
     HybridGroupContextHashMismatch,
 }
 
+/// Errors from staging or atomically installing a thesis-local transition.
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum TransitionApplicationError {
+    /// An educational member identifier must be non-empty.
+    #[error("the educational member identifier is empty")]
+    EmptyMemberId,
+    /// An educational member must retain a non-empty pre-transition group identifier.
+    #[error("the educational member group identifier is empty")]
+    EmptyMemberGroupId,
+    /// Member and recipient inputs must have one-to-one positional correspondence.
+    #[error("the number of members does not equal the number of recipient private keys")]
+    MemberRecipientCountMismatch {
+        /// Number of public member snapshots.
+        members: usize,
+        /// Number of private recipient-resolution inputs.
+        recipients: usize,
+    },
+    /// A member cannot install a second first-transition snapshot.
+    #[error("the educational member already applied a transition")]
+    TransitionAlreadyApplied,
+    /// The validated metadata names a different group than this member retained.
+    #[error("the educational member group identifier does not match transition metadata")]
+    MemberGroupIdMismatch,
+    /// The pre-transition epoch cannot advance in the supported integer range.
+    #[error("the educational member transition epoch overflows")]
+    TransitionEpochOverflow,
+    /// The metadata is not for the epoch immediately after this member's snapshot.
+    #[error("the transition epoch is not immediately after the member snapshot")]
+    UnexpectedTransitionEpoch {
+        /// Expected post-commit epoch.
+        expected: u64,
+        /// Metadata epoch.
+        observed: u64,
+    },
+    /// This Task 44 harness supports only the first logical transition version.
+    #[error("the transition tree version is not the first transition version")]
+    UnexpectedTreeVersion {
+        /// Required first transition version.
+        expected: u32,
+        /// Metadata tree version.
+        observed: u32,
+    },
+    /// This Task 44 harness supports only the thesis's active quaternary tree.
+    #[error("the transition active arity is not quaternary")]
+    UnexpectedActiveArity {
+        /// Required quaternary arity.
+        expected: u8,
+        /// Metadata active arity.
+        observed: u8,
+    },
+    /// Pre-apply metadata validation rejected the transition.
+    #[error("the transition metadata failed pre-apply validation")]
+    TransitionAuthentication(#[from] TransitionAuthenticationError),
+    /// Recipient-specific hybrid path-secret resolution rejected the transition.
+    #[error("the transition hybrid path-secret resolution failed")]
+    HybridPathLevel(#[from] HybridPathLevelError),
+}
+
 fn validate_hybrid_context(
     group_context: &AuthenticatedGroupContext,
     state: &ArityState,
@@ -273,8 +543,13 @@ mod tests {
         hash_canonical_public_bytes, ArityPolicySnapshot, MappingHash, TransitionEvaluationState,
         TreeCoverBinding,
     };
-    use hybrid_path_secret::{PathNodeIndex, RecipientNodeIndex, TreeArity};
-    use mkyber::MkyberDomain;
+    use hybrid_path_secret::{
+        seal_hybrid_path_level, ClassicalHpkeKeyPair, HybridPathLevelContext,
+        HybridPathRecipientPublic, PathNodeIndex, RecipientNodeIndex, TreeArity,
+    };
+    use mkyber::{EducationalMkyber512Reference, MkyberCommonCiphertext, MkyberDomain};
+    use rand_chacha::ChaCha20Rng;
+    use rand_core::SeedableRng;
     use transition_policy::{
         CommitImpactFacts, DeltaThreshold, PolicyTransitionState, PolicyWindow, PolicyWindowConfig,
         TransitionByteComponent, TransitionByteRange, TransitionPreflightMeasurement,
@@ -290,6 +565,10 @@ mod tests {
             BinaryLeafMember {
                 member_id: b"bob".to_vec(),
                 binary_leaf_index: 1,
+            },
+            BinaryLeafMember {
+                member_id: b"charlie".to_vec(),
+                binary_leaf_index: 2,
             },
         ])
         .expect("canonical mapping")
@@ -398,6 +677,126 @@ mod tests {
             ),
             hybrid,
         )
+    }
+
+    struct TransitionFixture {
+        group_context: AuthenticatedGroupContext,
+        state: ArityState,
+        mapping: BinaryToQuaternaryLeafMapping,
+        cover: DeliveryOnlyTreeCover,
+        path_level_context: HybridPathLevelContext,
+        ciphertext: HybridPathCiphertext,
+        member_ids: Vec<Vec<u8>>,
+        private_recipients: Vec<HybridPathRecipientPrivate>,
+        expected_path_secret: [u8; 32],
+    }
+
+    fn hybrid_recipient(
+        backend: &EducationalMkyber512Reference,
+        randomness: &mut ChaCha20Rng,
+        domain: MkyberDomain,
+        node_index: u32,
+    ) -> (HybridPathRecipientPublic, HybridPathRecipientPrivate) {
+        let mkyber_pair = backend
+            .keygen(domain, randomness)
+            .expect("test mKyber key generation must succeed");
+        let (mkyber_public_key, mkyber_private_key) = mkyber_pair.into_parts();
+        let classical_pair = ClassicalHpkeKeyPair::generate_with_os_rng()
+            .expect("test HPKE key generation must succeed");
+        let (classical_public_key, classical_private_key) = classical_pair.into_parts();
+        let recipient_node_index = RecipientNodeIndex::new(node_index);
+        (
+            HybridPathRecipientPublic::new(
+                recipient_node_index,
+                mkyber_public_key,
+                classical_public_key,
+            ),
+            HybridPathRecipientPrivate::new(
+                recipient_node_index,
+                mkyber_private_key,
+                classical_private_key,
+            ),
+        )
+    }
+
+    fn transition_fixture(
+        complete_group_context: &[u8],
+        path_secret_fill: u8,
+    ) -> TransitionFixture {
+        let backend = EducationalMkyber512Reference;
+        let domain = MkyberDomain::new([23_u8; 32]);
+        let mut randomness = ChaCha20Rng::from_seed([24_u8; 32]);
+        let mapping = mapping();
+        let (state, cover) = state_and_cover(&mapping);
+        let group_context = AuthenticatedGroupContext::from_verified_group_context_bytes(
+            b"group".to_vec(),
+            8,
+            complete_group_context,
+        )
+        .expect("group context binding");
+        let path_level_context = HybridPathLevelContext::new(
+            b"group".to_vec(),
+            8,
+            1,
+            TreeArity::Quaternary,
+            PathNodeIndex::new(3),
+            domain,
+            *group_context.group_context_hash(),
+        );
+        let mut public_recipients = Vec::new();
+        let mut private_recipients = Vec::new();
+        for node_index in [4, 7, 9] {
+            let (public, private) = hybrid_recipient(&backend, &mut randomness, domain, node_index);
+            public_recipients.push(public);
+            private_recipients.push(private);
+        }
+        let expected_path_secret = [path_secret_fill; 32];
+        let path_secret = HybridPathSecret::from_bytes(&expected_path_secret)
+            .expect("exact-size test path secret");
+        let ciphertext = seal_hybrid_path_level(
+            &backend,
+            &mut randomness,
+            &path_level_context,
+            &path_secret,
+            &public_recipients,
+        )
+        .expect("canonical co-path recipients must seal");
+        TransitionFixture {
+            group_context,
+            state,
+            mapping,
+            cover,
+            path_level_context,
+            ciphertext,
+            member_ids: vec![b"alice".to_vec(), b"bob".to_vec(), b"charlie".to_vec()],
+            private_recipients,
+            expected_path_secret,
+        }
+    }
+
+    fn envelope(fixture: &TransitionFixture) -> TransitionMetadataEnvelope {
+        TransitionMetadataEnvelope::new(
+            fixture.group_context.clone(),
+            ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE,
+            fixture
+                .state
+                .extension_value_bytes()
+                .expect("canonical extension bytes"),
+            fixture.mapping.clone(),
+            fixture.cover.clone(),
+        )
+    }
+
+    fn members(fixture: &TransitionFixture) -> Vec<EducationalTransitionMember> {
+        fixture
+            .member_ids
+            .iter()
+            .cloned()
+            .map(|member_id| {
+                EducationalTransitionMember::new(member_id, b"group".to_vec(), 7)
+                    .expect("pre-transition member")
+            })
+            .collect()
     }
 
     #[test]
@@ -615,5 +1014,144 @@ mod tests {
             envelope.validate_pre_apply(&wrong_hash),
             Err(TransitionAuthenticationError::HybridGroupContextHashMismatch)
         );
+    }
+
+    #[test]
+    fn multiple_committers_and_recipient_resolutions_converge_after_transition() {
+        let backend = EducationalMkyber512Reference;
+        for (committer, complete_group_context, path_secret_fill) in [
+            (
+                b"alice".as_slice(),
+                b"alice authenticated transition".as_slice(),
+                31_u8,
+            ),
+            (
+                b"bob".as_slice(),
+                b"bob authenticated transition".as_slice(),
+                32_u8,
+            ),
+        ] {
+            let fixture = transition_fixture(complete_group_context, path_secret_fill);
+            let mut recipients = members(&fixture);
+            let receipts = apply_transition_to_members(
+                &mut recipients,
+                &envelope(&fixture),
+                &fixture.path_level_context,
+                &fixture.ciphertext,
+                &backend,
+                &fixture.private_recipients,
+            )
+            .unwrap_or_else(|error| panic!("{committer:?} transition must converge: {error}"));
+
+            assert!(receipts
+                .iter()
+                .all(|receipt| receipt.path_secret().as_bytes() == &fixture.expected_path_secret));
+            let first = recipients[0]
+                .applied_transition()
+                .expect("first recipient applied")
+                .clone();
+            assert!(recipients.iter().all(|member| {
+                member.applied_transition() == Some(&first)
+                    && member
+                        .applied_transition()
+                        .is_some_and(|state| state.epoch() == 8)
+                    && member
+                        .applied_transition()
+                        .is_some_and(|state| state.tree_version() == 1)
+                    && member
+                        .applied_transition()
+                        .is_some_and(|state| state.active_arity() == 4)
+            }));
+            assert!(receipts
+                .iter()
+                .all(|receipt| receipt.applied_state() == &first));
+        }
+    }
+
+    #[test]
+    fn divergent_or_tampered_transition_inputs_leave_every_member_unchanged() {
+        let backend = EducationalMkyber512Reference;
+
+        let fixture = transition_fixture(b"divergent transition", 33);
+        let mut members_with_divergent_metadata = members(&fixture);
+        let divergent = TransitionMetadataEnvelope::new(
+            fixture.group_context.clone(),
+            0xF002,
+            fixture
+                .state
+                .extension_value_bytes()
+                .expect("canonical extension bytes"),
+            fixture.mapping.clone(),
+            fixture.cover.clone(),
+        );
+        assert!(matches!(
+            apply_transition_to_members(
+                &mut members_with_divergent_metadata,
+                &divergent,
+                &fixture.path_level_context,
+                &fixture.ciphertext,
+                &backend,
+                &fixture.private_recipients,
+            ),
+            Err(TransitionApplicationError::TransitionAuthentication(
+                TransitionAuthenticationError::UnexpectedExtensionType { observed: 0xF002 }
+            ))
+        ));
+        assert!(members_with_divergent_metadata
+            .iter()
+            .all(|member| member.applied_transition().is_none()));
+
+        let mut fixture = transition_fixture(b"recipient resolution failure", 34);
+        let (_, non_recipient) = hybrid_recipient(
+            &backend,
+            &mut ChaCha20Rng::from_seed([35_u8; 32]),
+            MkyberDomain::new([23_u8; 32]),
+            99,
+        );
+        fixture.private_recipients[1] = non_recipient;
+        let mut members_after_staged_success = members(&fixture);
+        assert!(matches!(
+            apply_transition_to_members(
+                &mut members_after_staged_success,
+                &envelope(&fixture),
+                &fixture.path_level_context,
+                &fixture.ciphertext,
+                &backend,
+                &fixture.private_recipients,
+            ),
+            Err(TransitionApplicationError::HybridPathLevel(
+                HybridPathLevelError::RecipientNotFound
+            ))
+        ));
+        assert!(members_after_staged_success
+            .iter()
+            .all(|member| member.applied_transition().is_none()));
+
+        let fixture = transition_fixture(b"tampered transition", 36);
+        let mut tampered_common = *fixture.ciphertext.mkyber_common().as_bytes();
+        tampered_common[0] ^= 1;
+        let tampered_ciphertext = HybridPathCiphertext::new(
+            fixture.ciphertext.path_node_index(),
+            fixture.ciphertext.mkyber_domain(),
+            MkyberCommonCiphertext::from_bytes(&tampered_common)
+                .expect("fixed-size common component"),
+            fixture.ciphertext.recipients().to_vec(),
+        )
+        .expect("canonical recipient ordering remains unchanged");
+        let mut members_with_tampered_ciphertext = members(&fixture);
+        assert!(matches!(
+            apply_transition_to_members(
+                &mut members_with_tampered_ciphertext,
+                &envelope(&fixture),
+                &fixture.path_level_context,
+                &tampered_ciphertext,
+                &backend,
+                &fixture.private_recipients,
+            ),
+            Err(TransitionApplicationError::HybridPathLevel(_))
+        ));
+        assert!(members_with_tampered_ciphertext
+            .iter()
+            .all(|member| member.applied_transition().is_none()));
     }
 }

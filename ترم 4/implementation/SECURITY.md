@@ -102,6 +102,8 @@ RFC 9420 confirms GroupContext extensions through the MLS key schedule, but a Gr
 
 Task 43 adds a thesis-local pre-apply consistency boundary for a future fork. It accepts only facts that the fork has already extracted from an MLS-authenticated complete GroupContext, then rejects extension type/value, transition state/epoch, mapping, TreeCover, group ID, tree version, arity, and GroupContext-hash mismatches before it returns public transition state. The boundary does not parse or authenticate an MLS commit, verify an MLS signature, prove that a caller extracted an extension from GroupContext bytes, or make a transition atomic; those responsibilities remain with the future fork and Task 44 tests.
 
+Task 44 adds a thesis-local batch harness that stages metadata validation and each recipient's hybrid path-secret open before changing any supplied public member snapshot. Its tests cover independent Alice/Bob committer scenarios, three recipient-resolution nodes, divergent extension metadata, a recipient-resolution failure after an earlier stage succeeds, and a tampered common mKyber component. This proves only in-process all-or-nothing replacement of harness snapshots. It does not authenticate an outer MLS Commit, coordinate separate processes, make network delivery atomic, ensure every real MLS member received the same Commit, merge MLS state, or establish a security proof.
+
 The private-use extension code can collide with another private deployment. The fork and its messages are thesis-local and must not be sent to an unrelated MLS deployment. A future interoperable protocol would require an independently specified wire format, capability negotiation, registry action where applicable, and security review.
 
 ## Secret Handling and Reporting Rules
