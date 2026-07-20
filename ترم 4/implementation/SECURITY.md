@@ -151,6 +151,8 @@ The educational reference backend exposes dedicated operating-system RNG entry p
 | SEC-09 | Resource bounds are adequate for malformed or large recipient sets | Denial of service or memory exhaustion | Input limits, allocation review, fuzzing, and load testing |
 | SEC-10 | Measurements accurately distinguish real serialized costs from estimates | Invalid thesis conclusions | Codec-bound instrumentation, provenance fields, and reproducibility review |
 
+Task 54 records only public baseline Commit/Welcome sizes, delivery/join counts, and elapsed lifecycle time. Its elapsed timings are environment-dependent observations, not reproducible performance claims. Candidate topology, mKyber crypto counts/timings, policy, transition, and retirement facts remain typed unavailable values unless a real corresponding hook supplies them. Report output must not reinterpret unavailable as zero, success, an estimate, or evidence of protocol security.
+
 ## Minimum Security Gates Before Experiments
 
 No experimental benchmark may be described as a successful security evaluation until all of the following are true:

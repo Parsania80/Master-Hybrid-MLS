@@ -11,6 +11,7 @@ metrics = { path = "../metrics" }
 mls-adapter = { path = "../mls-adapter" }
 rand.workspace = true
 rand_chacha.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 transition-policy = { path = "../transition-policy" }
 

@@ -175,8 +175,8 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 | 51 | Implement `evaluate_transition.rs` with snapshot/recreate support and the documented CLI | ✅ Done | The CLI validates only the fixed public bootstrap snapshot schema or creates a fresh verified 128-member baseline group using the public schedule seed and writes `transition_recreation.json`. It never restores private MLS state, and it does not yet execute workloads, transitions, metrics, or reports. |
 | 52 | Implement round-robin, seeded-random, fixed-list, weighted-random, and leaf-region-balanced committer strategies | ✅ Done | ADR 0024 adds deterministic public schedules plus zero-inclusive actual member/region selection distributions. It validates canonical active members and strategy inputs, but does not execute an MLS commit. |
 | 53 | Implement update-only, mixed, removal-heavy, region-skewed, and uniform workloads | ✅ Done | ADR 0025 adds an in-process unchanged-baseline harness that delivers every valid Add/Remove/self-update commit to all valid members, merges/joins correctly, and checks exact public convergence after each operation. Fallbacks at minimum/maximum membership are recorded as actual operations. |
-| 54 | Record the complete required per-commit identity, topology, crypto-count, byte, timing, window, transition, and retirement schema | 🔄 Current | No fake values; unavailable metrics are explicit. |
-| 55 | Generate `commits.csv`, `epochs.csv`, `transition_events.csv`, `summary.json`, and `report.md` | ⬜ Todo | Include all 27 required report subjects and mandatory security limitation. |
+| 54 | Record the complete required per-commit identity, topology, crypto-count, byte, timing, window, transition, and retirement schema | ✅ Done | ADR 0026 defines versioned `PerCommitMetricRecord` sections and typed availability. The baseline harness observes only real public Commit/Welcome bytes, delivery/join counts, committer leaf/region, and end-to-end elapsed time; candidate, policy, transition, and retirement facts remain explicit unavailable values until attached. |
+| 55 | Generate `commits.csv`, `epochs.csv`, `transition_events.csv`, `summary.json`, and `report.md` | 🔄 Current | Include all 27 required report subjects and mandatory security limitation. |
 | 56 | Generate plot-ready data and, if practical, SVG charts for bytes, costs, savings, maturity, TreeCover size, and timings | ⬜ Todo | Charts are derived from the same typed records as CSV. |
 | 57 | Compare baseline, binary-with-mKyber, and adaptive 2-to-4 modes under reproducible configurations | ⬜ Todo | Report bandwidth outcome, mKyber CPU overhead, break-even point, and threats to validity. |
 | 58 | Complete unit, integration, property, regression, strict Clippy, format, test, and release-experiment acceptance gates | ⬜ Todo | `cargo clippy` treats warnings as errors. |
@@ -185,6 +185,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 10, Task 54 — Record the complete required per-commit identity, topology, crypto-count, byte, timing, window, transition, and retirement schema.
+**Current:** Part 10, Task 55 — Generate `commits.csv`, `epochs.csv`, `transition_events.csv`, `summary.json`, and `report.md`.
 
-**Next:** Part 10, Task 55 — Generate `commits.csv`, `epochs.csv`, `transition_events.csv`, `summary.json`, and `report.md`.
+**Next:** Part 10, Task 56 — Generate plot-ready data and, if practical, SVG charts for bytes, costs, savings, maturity, TreeCover size, and timings.

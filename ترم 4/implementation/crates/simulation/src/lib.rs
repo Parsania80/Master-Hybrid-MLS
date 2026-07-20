@@ -5,10 +5,14 @@
 //! Task 52 provides public, deterministic committer schedules only. Task 53
 //! applies logical workloads and Task 54 records complete per-commit metrics.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Instant,
+};
 
 use rand::{distributions::Distribution, distributions::WeightedIndex, Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
+use serde::Serialize;
 use thiserror::Error;
 
 use mls_adapter::{BaselineClient, BaselineError, BaselineState, InboundEvent, OutboundCommit};
@@ -397,7 +401,7 @@ fn member_positions(eligible_members: &[EligibleCommitter]) -> BTreeMap<u32, usi
 }
 
 /// The public logical operation requested by a Task 53 workload.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum WorkloadOperation {
     /// A standard MLS self-update by the selected committer.
     Update,
@@ -453,6 +457,25 @@ pub struct BaselineWorkloadConfig {
     pub workload_profile: WorkloadProfile,
 }
 
+/// Public measurements for one accepted baseline commit.
+///
+/// These are direct observations from the unchanged baseline harness. The
+/// elapsed interval includes staging, valid-recipient delivery, sender merge,
+/// Welcome joining, and the post-commit public convergence check.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BaselineCommitMeasurement {
+    /// Actual serialized byte count of the emitted outer RFC 9420 Commit.
+    pub emitted_commit_bytes: u64,
+    /// Actual serialized Welcome byte count when this Add committed one.
+    pub emitted_welcome_bytes: Option<u64>,
+    /// Existing valid members that processed and merged the Commit message.
+    pub direct_commit_delivery_count: u32,
+    /// Newly added members that joined through a Welcome rather than the Commit.
+    pub welcome_join_count: u32,
+    /// Monotonic elapsed time for the accepted commit lifecycle.
+    pub accepted_lifecycle_elapsed_nanoseconds: u128,
+}
+
 /// One accepted, fully delivered baseline workload commit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcceptedWorkloadOperation {
@@ -460,6 +483,10 @@ pub struct AcceptedWorkloadOperation {
     pub sequence: u32,
     /// Public stable index of the member that staged the commit.
     pub committer_member_index: u32,
+    /// Current public MLS leaf index of the committer immediately before staging.
+    pub committer_leaf_index: u32,
+    /// Public workload region label of the committer immediately before staging.
+    pub committer_leaf_region: u32,
     /// Actual logical operation applied by the harness after feasibility checks.
     pub operation: WorkloadOperation,
     /// Public epoch before the accepted commit.
@@ -468,6 +495,8 @@ pub struct AcceptedWorkloadOperation {
     pub epoch_after: u64,
     /// Active members after the accepted commit.
     pub active_member_count: u32,
+    /// Actual public byte, delivery, join, and elapsed-time observations.
+    pub measurement: BaselineCommitMeasurement,
 }
 
 /// Actual committer use count from an executed workload, including zero for final active members.
@@ -510,6 +539,9 @@ pub enum WorkloadExecutionError {
     /// A stable public member index could not be allocated.
     #[error("the workload member index overflowed")]
     MemberIndexOverflow,
+    /// A public serialized byte or delivery count exceeded the schema range.
+    #[error("the workload measurement count overflowed")]
+    MeasurementCountOverflow,
     /// Task 52 could not select an active public committer.
     #[error("the workload committer schedule is invalid")]
     Schedule(#[from] CommitterScheduleError),
@@ -535,6 +567,14 @@ struct ActiveWorkloadMember {
     identity: Vec<u8>,
     leaf_region: u32,
     client: BaselineClient,
+}
+
+struct AppliedWorkloadOperation {
+    operation: WorkloadOperation,
+    emitted_commit_bytes: u64,
+    emitted_welcome_bytes: Option<u64>,
+    direct_commit_delivery_count: u32,
+    welcome_join_count: u32,
 }
 
 /// Executes a deterministic Task 53 workload using the unchanged baseline adapter.
@@ -580,7 +620,8 @@ pub fn execute_baseline_workload(
             config.maximum_member_count,
             uniform_rng.as_mut(),
         );
-        let operation = apply_operation(
+        let started = Instant::now();
+        let applied = apply_operation(
             &mut members,
             committer_position,
             requested,
@@ -600,11 +641,20 @@ pub fn execute_baseline_workload(
         accepted_operations.push(AcceptedWorkloadOperation {
             sequence,
             committer_member_index: selection.member_index,
-            operation,
+            committer_leaf_index: selection.leaf_index,
+            committer_leaf_region: selection.leaf_region,
+            operation: applied.operation,
             epoch_before: state_before.epoch,
             epoch_after: state_after.epoch,
             active_member_count: u32::try_from(members.len())
                 .map_err(|_| WorkloadExecutionError::MemberIndexOverflow)?,
+            measurement: BaselineCommitMeasurement {
+                emitted_commit_bytes: applied.emitted_commit_bytes,
+                emitted_welcome_bytes: applied.emitted_welcome_bytes,
+                direct_commit_delivery_count: applied.direct_commit_delivery_count,
+                welcome_join_count: applied.welcome_join_count,
+                accepted_lifecycle_elapsed_nanoseconds: started.elapsed().as_nanos(),
+            },
         });
     }
 
@@ -771,13 +821,24 @@ fn apply_operation(
     requested: WorkloadOperation,
     next_member_index: &mut u32,
     region_count: u32,
-) -> Result<WorkloadOperation, WorkloadExecutionError> {
+) -> Result<AppliedWorkloadOperation, WorkloadExecutionError> {
     match requested {
         WorkloadOperation::Update => {
             let outbound = members[committer_position].client.self_update()?;
-            deliver_commit(members, committer_position, None, &outbound)?;
+            let direct_commit_delivery_count =
+                deliver_commit(members, committer_position, None, &outbound)?;
             members[committer_position].client.merge_pending_commit()?;
-            Ok(WorkloadOperation::Update)
+            Ok(AppliedWorkloadOperation {
+                operation: WorkloadOperation::Update,
+                emitted_commit_bytes: byte_count(outbound.commit.len())?,
+                emitted_welcome_bytes: outbound
+                    .welcome
+                    .as_ref()
+                    .map(|welcome| byte_count(welcome.len()))
+                    .transpose()?,
+                direct_commit_delivery_count,
+                welcome_join_count: 0,
+            })
         }
         WorkloadOperation::Add { .. } => {
             let member_index = *next_member_index;
@@ -790,7 +851,8 @@ fn apply_operation(
             let outbound = members[committer_position]
                 .client
                 .add_members(core::slice::from_ref(key_package.key_package()))?;
-            deliver_commit(members, committer_position, None, &outbound)?;
+            let direct_commit_delivery_count =
+                deliver_commit(members, committer_position, None, &outbound)?;
             members[committer_position].client.merge_pending_commit()?;
             let welcome = outbound
                 .welcome
@@ -804,7 +866,13 @@ fn apply_operation(
                 client,
             });
             members.sort_unstable_by_key(|member| member.member_index);
-            Ok(WorkloadOperation::Add { member_index })
+            Ok(AppliedWorkloadOperation {
+                operation: WorkloadOperation::Add { member_index },
+                emitted_commit_bytes: byte_count(outbound.commit.len())?,
+                emitted_welcome_bytes: Some(byte_count(welcome.len())?),
+                direct_commit_delivery_count,
+                welcome_join_count: 1,
+            })
         }
         WorkloadOperation::Remove { .. } => {
             let target_position = members
@@ -819,7 +887,7 @@ fn apply_operation(
             let outbound = members[committer_position]
                 .client
                 .remove_members_by_identity(&[target_identity])?;
-            deliver_commit(
+            let direct_commit_delivery_count = deliver_commit(
                 members,
                 committer_position,
                 Some(target_position),
@@ -827,8 +895,18 @@ fn apply_operation(
             )?;
             members[committer_position].client.merge_pending_commit()?;
             members.remove(target_position);
-            Ok(WorkloadOperation::Remove {
-                member_index: target_member_index,
+            Ok(AppliedWorkloadOperation {
+                operation: WorkloadOperation::Remove {
+                    member_index: target_member_index,
+                },
+                emitted_commit_bytes: byte_count(outbound.commit.len())?,
+                emitted_welcome_bytes: outbound
+                    .welcome
+                    .as_ref()
+                    .map(|welcome| byte_count(welcome.len()))
+                    .transpose()?,
+                direct_commit_delivery_count,
+                welcome_join_count: 0,
             })
         }
     }
@@ -839,7 +917,8 @@ fn deliver_commit(
     committer_position: usize,
     excluded_position: Option<usize>,
     outbound: &OutboundCommit,
-) -> Result<(), WorkloadExecutionError> {
+) -> Result<u32, WorkloadExecutionError> {
+    let mut delivery_count = 0_u32;
     for (position, member) in members.iter_mut().enumerate() {
         if position == committer_position || Some(position) == excluded_position {
             continue;
@@ -847,8 +926,15 @@ fn deliver_commit(
         if member.client.process_message(&outbound.commit)? != InboundEvent::CommitMerged {
             return Err(WorkloadExecutionError::CommitDelivery);
         }
+        delivery_count = delivery_count
+            .checked_add(1)
+            .ok_or(WorkloadExecutionError::MeasurementCountOverflow)?;
     }
-    Ok(())
+    Ok(delivery_count)
+}
+
+fn byte_count(value: usize) -> Result<u64, WorkloadExecutionError> {
+    u64::try_from(value).map_err(|_| WorkloadExecutionError::MeasurementCountOverflow)
 }
 
 fn converged_state(
@@ -1118,7 +1204,31 @@ mod tests {
         let uniform = workload_config(WorkloadProfile::Uniform { seed: 42 }, 3);
         let first = execute_baseline_workload(&uniform).expect("uniform workload");
         let second = execute_baseline_workload(&uniform).expect("same uniform workload");
-        assert_eq!(first, second);
+        let deterministic_facts = |execution: &BaselineWorkloadExecution| {
+            execution
+                .accepted_operations
+                .iter()
+                .map(|record| {
+                    (
+                        record.sequence,
+                        record.committer_member_index,
+                        record.committer_leaf_index,
+                        record.committer_leaf_region,
+                        record.operation,
+                        record.epoch_before,
+                        record.epoch_after,
+                        record.active_member_count,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(deterministic_facts(&first), deterministic_facts(&second));
+        assert_eq!(
+            first.final_active_committer_counts,
+            second.final_active_committer_counts
+        );
+        assert_eq!(first.final_epoch, second.final_epoch);
+        assert_eq!(first.final_member_count, second.final_member_count);
     }
 
     #[test]

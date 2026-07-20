@@ -1423,11 +1423,16 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "report"
 version = "0.1.0"
 dependencies = [
+ "arity-state",
  "csv",
  "hex",
+ "metrics",
  "serde",
  "serde_json",
+ "simulation",
  "thiserror",
+ "transition-auth",
+ "transition-policy",
 ]
 
 [[package]]
@@ -1609,6 +1614,7 @@ dependencies = [
  "mls-adapter",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
+ "serde",
  "thiserror",
  "transition-policy",
 ]
