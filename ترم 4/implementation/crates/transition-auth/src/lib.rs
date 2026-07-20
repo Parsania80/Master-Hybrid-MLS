@@ -818,6 +818,7 @@ mod tests {
         seal_hybrid_path_level, ClassicalHpkeKeyPair, HybridPathLevelContext,
         HybridPathRecipientPublic, PathNodeIndex, RecipientNodeIndex, TreeArity,
     };
+    use metrics::TreeCoverRetirementBlocker;
     use mkyber::{EducationalMkyber512Reference, MkyberCommonCiphertext, MkyberDomain};
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
@@ -1427,24 +1428,56 @@ mod tests {
     }
 
     fn retirement_envelope() -> TreeCoverRetirementEnvelope {
+        retirement_envelope_for(
+            b"group".to_vec(),
+            9,
+            normal_retirement_state(4, 4, 2),
+            TreeCoverRetirementDecision::retire(true, false).expect("new-tree trigger"),
+        )
+    }
+
+    fn normal_retirement_state(
+        active_arity: u8,
+        candidate_arity: u8,
+        tree_version: u32,
+    ) -> ArityState {
         let mapping = mapping();
         let (transitioning, _) = state_and_cover(&mapping);
-        let normal =
-            ArityState::normal(4, 4, 2, transitioning.policy(), transitioning.evaluation())
-                .expect("post-retirement normal state");
+        ArityState::normal(
+            active_arity,
+            candidate_arity,
+            tree_version,
+            transitioning.policy(),
+            transitioning.evaluation(),
+        )
+        .expect("post-retirement normal state")
+    }
+
+    fn retirement_envelope_for(
+        group_id: Vec<u8>,
+        epoch: u64,
+        state: ArityState,
+        decision: TreeCoverRetirementDecision,
+    ) -> TreeCoverRetirementEnvelope {
         TreeCoverRetirementEnvelope::new(
             AuthenticatedGroupContext::from_verified_group_context_bytes(
-                b"group".to_vec(),
-                9,
+                group_id,
+                epoch,
                 b"complete authenticated post-retirement GroupContext",
             )
             .expect("authenticated retirement context"),
             ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE,
-            normal
+            state
                 .extension_value_bytes()
                 .expect("normal extension bytes"),
-            TreeCoverRetirementDecision::retire(true, false).expect("new-tree trigger"),
+            decision,
         )
+    }
+
+    fn assert_no_retirement(members: &[EducationalTransitionMember]) {
+        assert!(members
+            .iter()
+            .all(|member| member.retired_transition().is_none()));
     }
 
     fn transitioned_members_for_retirement() -> Vec<EducationalTransitionMember> {
@@ -1508,9 +1541,7 @@ mod tests {
             retire_treecover_for_members(&mut members, &rejected_type),
             Err(TreeCoverRetirementError::UnexpectedExtensionType { observed: 0xF002 })
         ));
-        assert!(members
-            .iter()
-            .all(|member| member.retired_transition().is_none()));
+        assert_no_retirement(&members);
 
         let mut members = transitioned_members_for_retirement();
         members[2].applied_transition = None;
@@ -1518,8 +1549,130 @@ mod tests {
             retire_treecover_for_members(&mut members, &retirement_envelope()),
             Err(TreeCoverRetirementError::TransitionNotApplied)
         );
+        assert_no_retirement(&members);
+    }
+
+    #[test]
+    fn retirement_rejects_decision_state_and_successor_boundary_failures_atomically() {
+        let keep = retirement_envelope_for(
+            b"group".to_vec(),
+            9,
+            normal_retirement_state(4, 4, 2),
+            TreeCoverRetirementDecision::Keep(TreeCoverRetirementBlocker::ThresholdsNotMet),
+        );
+        let mut members = transitioned_members_for_retirement();
+        assert_eq!(
+            retire_treecover_for_members(&mut members, &keep),
+            Err(TreeCoverRetirementError::RetirementNotAuthorized)
+        );
+        assert_no_retirement(&members);
+
+        let mut malformed = retirement_envelope();
+        malformed.extension_value.push(0);
+        let mut members = transitioned_members_for_retirement();
+        assert!(matches!(
+            retire_treecover_for_members(&mut members, &malformed),
+            Err(TreeCoverRetirementError::ArityState(
+                ArityStateError::TrailingData
+            ))
+        ));
+        assert_no_retirement(&members);
+
+        let mapping = mapping();
+        let (transitioning, _) = state_and_cover(&mapping);
+        let transitioning_envelope = retirement_envelope_for(
+            b"group".to_vec(),
+            9,
+            transitioning,
+            TreeCoverRetirementDecision::retire(true, false).expect("trigger"),
+        );
+        let mut members = transitioned_members_for_retirement();
+        assert_eq!(
+            retire_treecover_for_members(&mut members, &transitioning_envelope),
+            Err(TreeCoverRetirementError::StateIsNotNormal)
+        );
+        assert_no_retirement(&members);
+
+        let cases = [
+            (
+                retirement_envelope_for(
+                    b"other".to_vec(),
+                    9,
+                    normal_retirement_state(4, 4, 2),
+                    TreeCoverRetirementDecision::retire(true, false).expect("trigger"),
+                ),
+                TreeCoverRetirementError::MemberGroupIdMismatch,
+            ),
+            (
+                retirement_envelope_for(
+                    b"group".to_vec(),
+                    8,
+                    normal_retirement_state(4, 4, 2),
+                    TreeCoverRetirementDecision::retire(true, false).expect("trigger"),
+                ),
+                TreeCoverRetirementError::UnexpectedRetirementEpoch {
+                    expected: 9,
+                    observed: 8,
+                },
+            ),
+            (
+                retirement_envelope_for(
+                    b"group".to_vec(),
+                    9,
+                    normal_retirement_state(4, 4, 1),
+                    TreeCoverRetirementDecision::retire(true, false).expect("trigger"),
+                ),
+                TreeCoverRetirementError::UnexpectedTreeVersion {
+                    expected: 2,
+                    observed: 1,
+                },
+            ),
+        ];
+        for (envelope, expected_error) in cases {
+            let mut members = transitioned_members_for_retirement();
+            assert_eq!(
+                retire_treecover_for_members(&mut members, &envelope),
+                Err(expected_error)
+            );
+            assert_no_retirement(&members);
+        }
+    }
+
+    #[test]
+    fn retirement_rejects_overflow_and_repeat_without_replacing_snapshots() {
+        let mut epoch_overflow = transitioned_members_for_retirement();
+        epoch_overflow[1]
+            .applied_transition
+            .as_mut()
+            .expect("transition")
+            .epoch = u64::MAX;
+        assert_eq!(
+            retire_treecover_for_members(&mut epoch_overflow, &retirement_envelope()),
+            Err(TreeCoverRetirementError::RetirementEpochOverflow)
+        );
+        assert_no_retirement(&epoch_overflow);
+
+        let mut version_overflow = transitioned_members_for_retirement();
+        version_overflow[1]
+            .applied_transition
+            .as_mut()
+            .expect("transition")
+            .tree_version = u32::MAX;
+        assert_eq!(
+            retire_treecover_for_members(&mut version_overflow, &retirement_envelope()),
+            Err(TreeCoverRetirementError::TreeVersionOverflow)
+        );
+        assert_no_retirement(&version_overflow);
+
+        let mut members = transitioned_members_for_retirement();
+        let first = retire_treecover_for_members(&mut members, &retirement_envelope())
+            .expect("first retirement succeeds");
+        assert_eq!(
+            retire_treecover_for_members(&mut members, &retirement_envelope()),
+            Err(TreeCoverRetirementError::TreeCoverAlreadyRetired)
+        );
         assert!(members
             .iter()
-            .all(|member| member.retired_transition().is_none()));
+            .all(|member| member.retired_transition() == Some(&first[0])));
     }
 }

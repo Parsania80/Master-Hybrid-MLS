@@ -2281,6 +2281,19 @@ mod tests {
                 GlobalMaturityUndefinedReason::UndefinedNonEmptyTargetSet
             )
         ));
+        let unavailable_retirement = evaluate_treecover_retirement(
+            &unavailable,
+            TreeCoverRetirementThresholds::thesis_defaults(),
+        )
+        .expect("unavailable route is an explicit blocker");
+        assert_eq!(unavailable_retirement.new_tree_condition(), None);
+        assert_eq!(unavailable_retirement.old_treecover_condition(), None);
+        assert_eq!(
+            unavailable_retirement.decision(),
+            TreeCoverRetirementDecision::Keep(
+                TreeCoverRetirementBlocker::UndefinedNonEmptyTargetSet
+            )
+        );
 
         let denominator_zero = measured_costs(&[4, 5], &[&[4, 5]], &[&[4, 5]], &[&[4], &[5]], 54);
         let denominator =
@@ -2302,6 +2315,19 @@ mod tests {
                 MaturityUndefinedReason::NonPositiveDenominator { .. }
             )
         ));
+        let denominator_retirement = evaluate_treecover_retirement(
+            &denominator,
+            TreeCoverRetirementThresholds::thesis_defaults(),
+        )
+        .expect("division-by-zero-style denominator is an explicit blocker");
+        assert_eq!(denominator_retirement.new_tree_condition(), None);
+        assert_eq!(denominator_retirement.old_treecover_condition(), None);
+        assert_eq!(
+            denominator_retirement.decision(),
+            TreeCoverRetirementDecision::Keep(
+                TreeCoverRetirementBlocker::UndefinedNonEmptyTargetSet
+            )
+        );
 
         let empty = MaturityCostEvaluation::from_costs(vec![]).expect("empty input is explicit");
         assert!(matches!(
@@ -2368,6 +2394,19 @@ mod tests {
             old_only.decision(),
             TreeCoverRetirementDecision::Retire(TreeCoverRetirementTriggers {
                 new_tree_maturity: false,
+                old_treecover_cost: true,
+            })
+        );
+
+        let both =
+            evaluate_treecover_retirement(&maturity_from_scores(7, 10, 49, 100, false), thresholds)
+                .expect("threshold comparison");
+        assert_eq!(both.new_tree_condition(), Some(true));
+        assert_eq!(both.old_treecover_condition(), Some(true));
+        assert_eq!(
+            both.decision(),
+            TreeCoverRetirementDecision::Retire(TreeCoverRetirementTriggers {
+                new_tree_maturity: true,
                 old_treecover_cost: true,
             })
         );

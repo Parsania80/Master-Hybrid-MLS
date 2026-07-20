@@ -166,13 +166,13 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 | 47 | Implement `h_new_cost` and `h_old_cost` with checked zero/negative/empty/unavailable handling | ✅ Done | ADR 0021 adds exact signed-rational raw scores, unit-interval clamping with reasons, per-target undefined states, and conservative min/max aggregation. Empty sets are excluded; undefined non-empty sets stay visible as retirement blockers. |
 | 48 | Implement `h_new_cost >= theta_new OR h_old_cost < theta_old` with defaults 0.70 and 0.50 | ✅ Done | ADR 0022 adds exact micro-unit thresholds, inclusive new-tree and strict old-cover comparisons, independent OR triggers, and undefined-data blockers. It does not mutate TreeCover. |
 | 49 | Retire TreeCover, record epoch/trigger, erase applicable old secrets, return to `Normal`, increment version, and verify convergence | ✅ Done | ADR 0023 adds a staged educational retirement envelope: only a Task 48 `Retire` decision plus future-fork supplied authenticated GroupContext facts may install canonical normal quaternary state at next epoch/version. Three members converge atomically; no TreeCover secret exists in this public harness, so it records that limitation instead of claiming erasure. |
-| 50 | Pass edge-case, threshold-boundary, retirement, erasure, formatting, lint, and regression tests | 🔄 Current | Include unavailable-cover and division-by-zero cases. |
+| 50 | Pass edge-case, threshold-boundary, retirement, erasure, formatting, lint, and regression tests | ✅ Done | Locked-offline focused and workspace gates cover exact new/old/both threshold triggers, unavailable-cover/non-positive-denominator blockers, `Keep`, malformed/transitioning state, group/epoch/version mismatches, overflow, repeated retirement, atomic non-mutation, baseline regression, doc tests, and release build. The public harness still has no secret store to erase. |
 
 ### Part 10: Transition Evaluation, Reports, and Thesis Acceptance
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 51 | Implement `evaluate_transition.rs` with snapshot/recreate support and the documented CLI | ⬜ Todo | Continue until retirement or configured maximum commits. |
+| 51 | Implement `evaluate_transition.rs` with snapshot/recreate support and the documented CLI | 🔄 Current | Continue until retirement or configured maximum commits. |
 | 52 | Implement round-robin, seeded-random, fixed-list, weighted-random, and leaf-region-balanced committer strategies | ⬜ Todo | Report actual member/region distribution. |
 | 53 | Implement update-only, mixed, removal-heavy, region-skewed, and uniform workloads | ⬜ Todo | Apply every accepted commit to all valid members and verify convergence. |
 | 54 | Record the complete required per-commit identity, topology, crypto-count, byte, timing, window, transition, and retirement schema | ⬜ Todo | No fake values; unavailable metrics are explicit. |
@@ -185,6 +185,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 9, Task 50 — Pass edge-case, threshold-boundary, retirement, erasure, formatting, lint, and regression tests.
+**Current:** Part 10, Task 51 — Implement `evaluate_transition.rs` with snapshot/recreate support and the documented CLI.
 
-**Next:** Part 10, Task 51 — Implement `evaluate_transition.rs` with snapshot/recreate support and the documented CLI.
+**Next:** Part 10, Task 52 — Implement round-robin, seeded-random, fixed-list, weighted-random, and leaf-region-balanced committer strategies.
