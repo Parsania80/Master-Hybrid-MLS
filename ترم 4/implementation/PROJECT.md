@@ -156,13 +156,13 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 | 42 | Implement the new active quaternary tree and old binary delivery-only `TreeCover` as separate state | ✅ Done | ADR 0017 provides separate active/carry-only types, validates state/map/cover hashes, keeps only quaternary as the epoch-secret authority, and gives additions/removals their required distinct cover effects. |
 | 43 | Authenticate transition metadata and reject arity, version, state, mapping, group-context-hash, or TreeCover-version inconsistencies | ✅ Done | ADR 0018 adds a fail-closed pre-apply validator for future-fork supplied MLS-authenticated GroupContext facts, exact `0xF001` state, tree bindings, and hybrid context. It performs no MLS signature/commit authentication itself. |
 | 44 | Verify all members converge after transition commits and divergent/tampered commits fail atomically | ✅ Done | ADR 0019 adds an educational batch harness: all recipient-specific validation/open operations stage before any public member snapshot changes. Tests cover independent Alice/Bob committer scenarios, three resolution nodes, divergent metadata, late recipient-resolution failure, and tampered hybrid ciphertext. |
-| 45 | Pass the Phase 8 formatting, strict lint, state-machine, rejection, convergence, and regression gate | 🔄 Current | Record unresolved security limitations. |
+| 45 | Pass the Phase 8 formatting, strict lint, state-machine, rejection, convergence, and regression gate | ✅ Done | Rust 1.93.1 locked-offline format/check/strict Clippy/focused state-tree-auth tests/baseline regression/all-target tests/doc tests/release build/metadata/diff validation passed. The OpenMLS 0.8.1 feature audit shows only `openmls_rust_crypto`; SEC-01 through SEC-10 remain unresolved. |
 
 ### Part 9: Transition Maturity and TreeCover Retirement
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 46 | Measure actual `C_leaf`, `C_new`, `C_old`, and `C_ideal` for each defined recipient target set | ⬜ Todo | Preserve raw component costs and availability state. |
+| 46 | Measure actual `C_leaf`, `C_new`, `C_old`, and `C_ideal` for each defined recipient target set | 🔄 Current | Preserve raw component costs and availability state. |
 | 47 | Implement `h_new_cost` and `h_old_cost` with checked zero/negative/empty/unavailable handling | ⬜ Todo | Record raw values, clamped values, and every clamp reason. |
 | 48 | Implement `h_new_cost >= theta_new OR h_old_cost < theta_old` with defaults 0.70 and 0.50 | ⬜ Todo | Tests must distinguish OR from AND and trigger each side independently. |
 | 49 | Retire TreeCover, record epoch/trigger, erase applicable old secrets, return to `Normal`, increment version, and verify convergence | ⬜ Todo | Retirement must be authenticated and atomic. |
@@ -185,6 +185,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 8, Task 45 — Pass the Phase 8 formatting, strict lint, state-machine, rejection, convergence, and regression gate.
+**Current:** Part 9, Task 46 — Measure actual `C_leaf`, `C_new`, `C_old`, and `C_ideal` for each defined recipient target set.
 
-**Next:** Part 9, Task 46 — Measure actual `C_leaf`, `C_new`, `C_old`, and `C_ideal` for each defined recipient target set.
+**Next:** Part 9, Task 47 — Implement `h_new_cost` and `h_old_cost` with checked zero/negative/empty/unavailable handling.
