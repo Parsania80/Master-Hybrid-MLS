@@ -41,7 +41,7 @@
 - `/crates/transition-auth`: Tasks 43/44/49 fail-closed transition metadata plus educational batch transition/retirement harnesses. It consumes future-fork supplied, already MLS-authenticated GroupContext facts, stages every member before public snapshot replacement, and records normal-state TreeCover retirement epoch/trigger facts without partial harness mutation. It neither authenticates/processes an MLS Commit nor retains real TreeCover secrets to erase.
 - `/crates/transition-policy`: Task 35/39 policy boundary. It retains an auditable raw accepted-commit trail, bounds post-warmup `W_e`, derives `q_e`/`r_e`, measures canonical transition preflight bytes, computes exact rational savings, resolves typed byte-or-fixed-point-percent Delta thresholds conservatively, and evaluates all start gates with explicit public blockers; transition execution remains deferred.
 - `/crates/metrics`: Typed Tasks 32/33/46/47/48 measurement boundary. It measures emitted baseline Commit bytes, derives explicitly estimated candidate path payload sizes from the canonical hybrid TLS codec, records public topology/recipient/crypto facts, measures target-set costs and maturity, and evaluates the exact non-mutating TreeCover OR threshold rule with explicit blockers, without retaining wire or secret values.
-- `/crates/simulation`: Empty deterministic workload and convergence-simulation boundary.
+- `/crates/simulation`: Task 52 deterministic public committer scheduler. It supports round-robin, seeded-random, fixed-list, weighted-random, and leaf-region-balanced selection with zero-inclusive actual member/region distribution facts; it does not yet execute workloads or mutate MLS state.
 - `/crates/report`: Empty safe report-generation boundary.
 - `/src/bin/bootstrap_128.rs` (planned): Build and verify a valid 128-member baseline binary MLS group and emit safe public experiment artifacts.
 - `/src/evaluate.rs` and `/src/bin/evaluate_transition.rs`: Task 51 public snapshot validator and fresh baseline recreation CLI. It accepts only the fixed Task 27 snapshot schema, never restores private MLS state, rebuilds a new verified 128-member baseline group from the public schedule seed, and writes a create-new public manifest. Workloads, transition execution, metrics, and reports remain deferred to Tasks 52–55.
@@ -173,8 +173,8 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | 51 | Implement `evaluate_transition.rs` with snapshot/recreate support and the documented CLI | ✅ Done | The CLI validates only the fixed public bootstrap snapshot schema or creates a fresh verified 128-member baseline group using the public schedule seed and writes `transition_recreation.json`. It never restores private MLS state, and it does not yet execute workloads, transitions, metrics, or reports. |
-| 52 | Implement round-robin, seeded-random, fixed-list, weighted-random, and leaf-region-balanced committer strategies | 🔄 Current | Report actual member/region distribution. |
-| 53 | Implement update-only, mixed, removal-heavy, region-skewed, and uniform workloads | ⬜ Todo | Apply every accepted commit to all valid members and verify convergence. |
+| 52 | Implement round-robin, seeded-random, fixed-list, weighted-random, and leaf-region-balanced committer strategies | ✅ Done | ADR 0024 adds deterministic public schedules plus zero-inclusive actual member/region selection distributions. It validates canonical active members and strategy inputs, but does not execute an MLS commit. |
+| 53 | Implement update-only, mixed, removal-heavy, region-skewed, and uniform workloads | 🔄 Current | Apply every accepted commit to all valid members and verify convergence. |
 | 54 | Record the complete required per-commit identity, topology, crypto-count, byte, timing, window, transition, and retirement schema | ⬜ Todo | No fake values; unavailable metrics are explicit. |
 | 55 | Generate `commits.csv`, `epochs.csv`, `transition_events.csv`, `summary.json`, and `report.md` | ⬜ Todo | Include all 27 required report subjects and mandatory security limitation. |
 | 56 | Generate plot-ready data and, if practical, SVG charts for bytes, costs, savings, maturity, TreeCover size, and timings | ⬜ Todo | Charts are derived from the same typed records as CSV. |
@@ -185,6 +185,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Part 10, Task 52 — Implement round-robin, seeded-random, fixed-list, weighted-random, and leaf-region-balanced committer strategies.
+**Current:** Part 10, Task 53 — Implement update-only, mixed, removal-heavy, region-skewed, and uniform workloads.
 
-**Next:** Part 10, Task 53 — Implement update-only, mixed, removal-heavy, region-skewed, and uniform workloads.
+**Next:** Part 10, Task 54 — Record the complete required per-commit identity, topology, crypto-count, byte, timing, window, transition, and retirement schema.
