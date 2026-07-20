@@ -110,6 +110,8 @@ Task 46 counts only canonical hybrid TLS component bytes for named public recipi
 
 Task 47 performs checked signed-rational arithmetic only over Task 46 public byte counts. It preserves raw values, explicit clamps, empty-set exclusions, and unavailable/invalid-denominator blockers. It cannot validate routing or payload equality beyond Task 46 inputs, decide retirement, alter TreeCover state, or close SEC-05, SEC-06, or SEC-10.
 
+Task 48 evaluates only the public fixed-point OR threshold. Undefined non-empty inputs block it before either threshold may authorize retirement, and its result does not alter group state or erase secrets. It cannot authenticate or perform retirement, prove TreeCover maturity, or close SEC-05, SEC-06, or SEC-10.
+
 The private-use extension code can collide with another private deployment. The fork and its messages are thesis-local and must not be sent to an unrelated MLS deployment. A future interoperable protocol would require an independently specified wire format, capability negotiation, registry action where applicable, and security review.
 
 ## Secret Handling and Reporting Rules

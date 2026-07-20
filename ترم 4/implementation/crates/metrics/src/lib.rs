@@ -738,6 +738,214 @@ impl MaturityCostEvaluation {
     }
 }
 
+/// Fixed-point scale for a threshold in the inclusive unit interval.
+pub const MATURITY_THRESHOLD_SCALE: u32 = 1_000_000;
+
+/// One exact fixed-point retirement threshold in `[0, 1]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct MaturityThreshold {
+    micro_units: u32,
+}
+
+impl MaturityThreshold {
+    /// Creates a threshold where `1_000_000` represents exactly one.
+    pub fn new(micro_units: u32) -> Result<Self, MeasurementError> {
+        if micro_units > MATURITY_THRESHOLD_SCALE {
+            return Err(MeasurementError::MaturityThresholdOutOfRange);
+        }
+        Ok(Self { micro_units })
+    }
+
+    /// Returns the exact fixed-point unit-interval value.
+    pub const fn micro_units(&self) -> u32 {
+        self.micro_units
+    }
+
+    fn compare_score(&self, score: MaturityScore) -> Result<std::cmp::Ordering, MeasurementError> {
+        let clamped = score.clamped();
+        let left = clamped
+            .numerator()
+            .checked_mul(i128::from(MATURITY_THRESHOLD_SCALE))
+            .ok_or(MeasurementError::MaturityOverflow)?;
+        let right = i128::from(self.micro_units)
+            .checked_mul(clamped.denominator())
+            .ok_or(MeasurementError::MaturityOverflow)?;
+        Ok(left.cmp(&right))
+    }
+}
+
+/// The two fixed-point thresholds in the thesis retirement rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct TreeCoverRetirementThresholds {
+    theta_new: MaturityThreshold,
+    theta_old: MaturityThreshold,
+}
+
+impl TreeCoverRetirementThresholds {
+    /// Creates explicit thresholds for the new-tree and old-TreeCover conditions.
+    pub const fn new(theta_new: MaturityThreshold, theta_old: MaturityThreshold) -> Self {
+        Self {
+            theta_new,
+            theta_old,
+        }
+    }
+
+    /// Returns the default `theta_new = 0.70` and `theta_old = 0.50` values.
+    pub fn thesis_defaults() -> Self {
+        Self {
+            theta_new: MaturityThreshold {
+                micro_units: 700_000,
+            },
+            theta_old: MaturityThreshold {
+                micro_units: 500_000,
+            },
+        }
+    }
+
+    /// Returns `theta_new` for the inclusive `h_new_cost >= theta_new` condition.
+    pub const fn theta_new(&self) -> MaturityThreshold {
+        self.theta_new
+    }
+
+    /// Returns `theta_old` for the strict `h_old_cost < theta_old` condition.
+    pub const fn theta_old(&self) -> MaturityThreshold {
+        self.theta_old
+    }
+}
+
+/// Which side or sides of the exact OR retirement rule were true.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct TreeCoverRetirementTriggers {
+    new_tree_maturity: bool,
+    old_treecover_cost: bool,
+}
+
+impl TreeCoverRetirementTriggers {
+    /// Returns whether `h_new_cost >= theta_new` was true.
+    pub const fn new_tree_maturity(&self) -> bool {
+        self.new_tree_maturity
+    }
+
+    /// Returns whether `h_old_cost < theta_old` was true.
+    pub const fn old_treecover_cost(&self) -> bool {
+        self.old_treecover_cost
+    }
+}
+
+/// Why Task 48 did not authorize a future TreeCover retirement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum TreeCoverRetirementBlocker {
+    /// A non-empty target set had unavailable or invalid maturity input.
+    UndefinedNonEmptyTargetSet,
+    /// One global maturity aggregate was unavailable even though no target-specific blocker was retained.
+    UndefinedGlobalMaturity,
+    /// Both defined conditions were false; the OR rule did not trigger.
+    ThresholdsNotMet,
+}
+
+/// Typed result of evaluating the Task 48 OR rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum TreeCoverRetirementDecision {
+    /// A future Task 49 transition may consider retiring the old TreeCover.
+    Retire(TreeCoverRetirementTriggers),
+    /// Retirement is not authorized at this measurement boundary.
+    Keep(TreeCoverRetirementBlocker),
+}
+
+/// Exact retirement-threshold facts without any state mutation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct TreeCoverRetirementEvaluation {
+    thresholds: TreeCoverRetirementThresholds,
+    new_tree_condition: Option<bool>,
+    old_treecover_condition: Option<bool>,
+    decision: TreeCoverRetirementDecision,
+}
+
+impl TreeCoverRetirementEvaluation {
+    /// Returns the exact thresholds used by this evaluation.
+    pub const fn thresholds(&self) -> TreeCoverRetirementThresholds {
+        self.thresholds
+    }
+
+    /// Returns `Some(h_new_cost >= theta_new)` when `h_new_cost` was defined.
+    pub const fn new_tree_condition(&self) -> Option<bool> {
+        self.new_tree_condition
+    }
+
+    /// Returns `Some(h_old_cost < theta_old)` when `h_old_cost` was defined.
+    pub const fn old_treecover_condition(&self) -> Option<bool> {
+        self.old_treecover_condition
+    }
+
+    /// Returns the non-mutating retirement decision.
+    pub const fn decision(&self) -> TreeCoverRetirementDecision {
+        self.decision
+    }
+}
+
+/// Evaluates `h_new_cost >= theta_new OR h_old_cost < theta_old` exactly.
+///
+/// Any undefined non-empty target set blocks the rule before either threshold
+/// can authorize retirement. This function neither changes TreeCover state nor
+/// emits a protocol message; Task 49 owns authenticated retirement.
+pub fn evaluate_treecover_retirement(
+    maturity: &MaturityCostEvaluation,
+    thresholds: TreeCoverRetirementThresholds,
+) -> Result<TreeCoverRetirementEvaluation, MeasurementError> {
+    if maturity.has_undefined_nonempty_target_set() {
+        return Ok(TreeCoverRetirementEvaluation {
+            thresholds,
+            new_tree_condition: None,
+            old_treecover_condition: None,
+            decision: TreeCoverRetirementDecision::Keep(
+                TreeCoverRetirementBlocker::UndefinedNonEmptyTargetSet,
+            ),
+        });
+    }
+    let GlobalMaturityCost::Defined {
+        score: new_score, ..
+    } = maturity.h_new_cost()
+    else {
+        return Ok(TreeCoverRetirementEvaluation {
+            thresholds,
+            new_tree_condition: None,
+            old_treecover_condition: None,
+            decision: TreeCoverRetirementDecision::Keep(
+                TreeCoverRetirementBlocker::UndefinedGlobalMaturity,
+            ),
+        });
+    };
+    let GlobalMaturityCost::Defined {
+        score: old_score, ..
+    } = maturity.h_old_cost()
+    else {
+        return Ok(TreeCoverRetirementEvaluation {
+            thresholds,
+            new_tree_condition: None,
+            old_treecover_condition: None,
+            decision: TreeCoverRetirementDecision::Keep(
+                TreeCoverRetirementBlocker::UndefinedGlobalMaturity,
+            ),
+        });
+    };
+    let new_tree_condition = !thresholds.theta_new().compare_score(new_score)?.is_lt();
+    let old_treecover_condition = thresholds.theta_old().compare_score(old_score)?.is_lt();
+    let decision = if new_tree_condition || old_treecover_condition {
+        TreeCoverRetirementDecision::Retire(TreeCoverRetirementTriggers {
+            new_tree_maturity: new_tree_condition,
+            old_treecover_cost: old_treecover_condition,
+        })
+    } else {
+        TreeCoverRetirementDecision::Keep(TreeCoverRetirementBlocker::ThresholdsNotMet)
+    };
+    Ok(TreeCoverRetirementEvaluation {
+        thresholds,
+        new_tree_condition: Some(new_tree_condition),
+        old_treecover_condition: Some(old_treecover_condition),
+        decision,
+    })
+}
+
 fn calculate_maturity_score(
     leaf: DeliveryCostAvailability,
     route: DeliveryCostAvailability,
@@ -982,6 +1190,9 @@ pub enum MeasurementError {
     /// Target-set cost measurements must be in canonical ascending set order.
     #[error("maturity target-set measurements are not in canonical order")]
     NonCanonicalMaturityTargetSetOrder,
+    /// A fixed-point maturity threshold exceeded the inclusive unit interval.
+    #[error("the maturity threshold is outside the unit interval")]
+    MaturityThresholdOutOfRange,
     /// Per-operation crypto metrics must be strictly ordered and unique.
     #[error("crypto-operation metrics are not in canonical ascending order")]
     NonCanonicalCryptoOperationOrder,
@@ -1596,6 +1807,33 @@ mod tests {
         .expect("test partitions cover the target set")
     }
 
+    fn maturity_from_scores(
+        h_new_numerator: i128,
+        h_new_denominator: i128,
+        h_old_numerator: i128,
+        h_old_denominator: i128,
+        has_undefined_nonempty_target_set: bool,
+    ) -> MaturityCostEvaluation {
+        let h_new = MaturityScore::from_raw(
+            SignedRational::new(h_new_numerator, h_new_denominator).expect("new rational"),
+        );
+        let h_old = MaturityScore::from_raw(
+            SignedRational::new(h_old_numerator, h_old_denominator).expect("old rational"),
+        );
+        MaturityCostEvaluation {
+            target_sets: vec![],
+            h_new_cost: GlobalMaturityCost::Defined {
+                target_set_index: 0,
+                score: h_new,
+            },
+            h_old_cost: GlobalMaturityCost::Defined {
+                target_set_index: 0,
+                score: h_old,
+            },
+            has_undefined_nonempty_target_set,
+        }
+    }
+
     fn shadow_tree() -> ShadowQuaternaryTree {
         let mapping = BinaryToQuaternaryLeafMapping::from_binary_members(vec![
             BinaryLeafMember {
@@ -2070,6 +2308,70 @@ mod tests {
         assert_eq!(
             MaturityCostEvaluation::from_costs(vec![second, first]),
             Err(MeasurementError::NonCanonicalMaturityTargetSetOrder)
+        );
+    }
+
+    #[test]
+    fn retirement_rule_uses_or_with_independent_new_and_old_triggers() {
+        let thresholds = TreeCoverRetirementThresholds::thesis_defaults();
+        assert_eq!(thresholds.theta_new().micro_units(), 700_000);
+        assert_eq!(thresholds.theta_old().micro_units(), 500_000);
+
+        let new_only =
+            evaluate_treecover_retirement(&maturity_from_scores(7, 10, 1, 2, false), thresholds)
+                .expect("threshold comparison");
+        assert_eq!(new_only.new_tree_condition(), Some(true));
+        assert_eq!(new_only.old_treecover_condition(), Some(false));
+        assert_eq!(
+            new_only.decision(),
+            TreeCoverRetirementDecision::Retire(TreeCoverRetirementTriggers {
+                new_tree_maturity: true,
+                old_treecover_cost: false,
+            })
+        );
+
+        let old_only =
+            evaluate_treecover_retirement(&maturity_from_scores(1, 2, 49, 100, false), thresholds)
+                .expect("threshold comparison");
+        assert_eq!(old_only.new_tree_condition(), Some(false));
+        assert_eq!(old_only.old_treecover_condition(), Some(true));
+        assert_eq!(
+            old_only.decision(),
+            TreeCoverRetirementDecision::Retire(TreeCoverRetirementTriggers {
+                new_tree_maturity: false,
+                old_treecover_cost: true,
+            })
+        );
+
+        let neither =
+            evaluate_treecover_retirement(&maturity_from_scores(69, 100, 1, 2, false), thresholds)
+                .expect("threshold comparison");
+        assert_eq!(neither.new_tree_condition(), Some(false));
+        assert_eq!(neither.old_treecover_condition(), Some(false));
+        assert_eq!(
+            neither.decision(),
+            TreeCoverRetirementDecision::Keep(TreeCoverRetirementBlocker::ThresholdsNotMet)
+        );
+    }
+
+    #[test]
+    fn retirement_rule_blocks_undefined_data_and_rejects_invalid_thresholds() {
+        let blocked = evaluate_treecover_retirement(
+            &maturity_from_scores(1, 1, 0, 1, true),
+            TreeCoverRetirementThresholds::thesis_defaults(),
+        )
+        .expect("undefined result is a normal blocker");
+        assert_eq!(blocked.new_tree_condition(), None);
+        assert_eq!(blocked.old_treecover_condition(), None);
+        assert_eq!(
+            blocked.decision(),
+            TreeCoverRetirementDecision::Keep(
+                TreeCoverRetirementBlocker::UndefinedNonEmptyTargetSet
+            )
+        );
+        assert_eq!(
+            MaturityThreshold::new(MATURITY_THRESHOLD_SCALE + 1),
+            Err(MeasurementError::MaturityThresholdOutOfRange)
         );
     }
 }

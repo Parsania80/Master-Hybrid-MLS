@@ -30,6 +30,8 @@ Task 46 measures the four TreeCover-maturity inputs for each public recipient se
 
 Task 47 turns those inputs into exact rational maturity facts. It keeps both raw and `[0, 1]`-clamped values, records whether clamping occurred, uses the lowest new-tree score and highest old-TreeCover score across non-empty target sets, and retains undefined inputs as blockers. It does not decide retirement yet.
 
+Task 48 applies the thesis retirement rule exactly: retire only when new-tree maturity is at least 0.70 or old-TreeCover maturity is strictly below 0.50. It uses fixed-point integers, records which side triggered, and blocks any undefined non-empty target set. It does not retire or erase anything yet.
+
 ## How to use it
 
 The 128-member baseline constructor is available now: `cargo +stable run --bin bootstrap_128 --release --locked --offline -- --members 128 --seed 42 --output output/bootstrap-128`. The public seed selects committers only; it is not cryptographic entropy. After verification, the command writes create-new public artifacts under the requested `output/<run>` directory: `bootstrap_public_snapshot.json`, `bootstrap_128_summary.json`, `bootstrap_128_commits.csv`, and `bootstrap_128_report.md`. The snapshot contains public configuration/scheduling data, authenticated group metadata, the public TLS RatchetTree, occupied leaves, and the 127 actual Add KeyPackages. The CSV contains only public per-commit identity, epoch, byte-count, and delivery-count observations—not Commit bodies or ciphertexts. None of these files contain private MLS state, secret material, raw entropy, or a seed that reconstructs it.
