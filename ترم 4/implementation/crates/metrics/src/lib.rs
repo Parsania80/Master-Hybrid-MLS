@@ -444,6 +444,401 @@ impl RecipientTargetSetCostMeasurement {
     }
 }
 
+/// An exact signed rational value with a positive normalized denominator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct SignedRational {
+    numerator: i128,
+    denominator: i128,
+}
+
+impl SignedRational {
+    fn new(numerator: i128, denominator: i128) -> Result<Self, MeasurementError> {
+        if denominator <= 0 {
+            return Err(MeasurementError::InvalidMaturityDenominator);
+        }
+        let divisor = greatest_common_divisor(numerator.unsigned_abs(), denominator as u128);
+        let divisor = i128::try_from(divisor).map_err(|_| MeasurementError::MaturityOverflow)?;
+        Ok(Self {
+            numerator: numerator
+                .checked_div(divisor)
+                .ok_or(MeasurementError::MaturityOverflow)?,
+            denominator: denominator
+                .checked_div(divisor)
+                .ok_or(MeasurementError::MaturityOverflow)?,
+        })
+    }
+
+    const fn zero() -> Self {
+        Self {
+            numerator: 0,
+            denominator: 1,
+        }
+    }
+
+    const fn one() -> Self {
+        Self {
+            numerator: 1,
+            denominator: 1,
+        }
+    }
+
+    /// Returns the exact signed numerator.
+    pub const fn numerator(&self) -> i128 {
+        self.numerator
+    }
+
+    /// Returns the positive exact denominator.
+    pub const fn denominator(&self) -> i128 {
+        self.denominator
+    }
+
+    fn checked_cmp(&self, other: &Self) -> Result<std::cmp::Ordering, MeasurementError> {
+        let left = self
+            .numerator
+            .checked_mul(other.denominator)
+            .ok_or(MeasurementError::MaturityOverflow)?;
+        let right = other
+            .numerator
+            .checked_mul(self.denominator)
+            .ok_or(MeasurementError::MaturityOverflow)?;
+        Ok(left.cmp(&right))
+    }
+}
+
+/// Why a raw maturity ratio was or was not clamped to the unit interval.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum MaturityClampReason {
+    /// The raw ratio was already in the inclusive interval `[0, 1]`.
+    InRange,
+    /// The raw ratio was negative and was clamped to zero.
+    BelowZero,
+    /// The raw ratio exceeded one and was clamped to one.
+    AboveOne,
+}
+
+/// One exact raw maturity ratio and the clamped ratio used by later thresholds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct MaturityScore {
+    raw: SignedRational,
+    clamped: SignedRational,
+    clamp_reason: MaturityClampReason,
+}
+
+impl MaturityScore {
+    fn from_raw(raw: SignedRational) -> Self {
+        if raw.numerator < 0 {
+            Self {
+                raw,
+                clamped: SignedRational::zero(),
+                clamp_reason: MaturityClampReason::BelowZero,
+            }
+        } else if raw.numerator > raw.denominator {
+            Self {
+                raw,
+                clamped: SignedRational::one(),
+                clamp_reason: MaturityClampReason::AboveOne,
+            }
+        } else {
+            Self {
+                raw,
+                clamped: raw,
+                clamp_reason: MaturityClampReason::InRange,
+            }
+        }
+    }
+
+    /// Returns the exact unbounded formula result.
+    pub const fn raw(&self) -> SignedRational {
+        self.raw
+    }
+
+    /// Returns the exact result after clamping to `[0, 1]`.
+    pub const fn clamped(&self) -> SignedRational {
+        self.clamped
+    }
+
+    /// Returns why the threshold value was or was not clamped.
+    pub const fn clamp_reason(&self) -> MaturityClampReason {
+        self.clamp_reason
+    }
+}
+
+/// Why one non-empty target set has no usable maturity ratio.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum MaturityUndefinedReason {
+    /// A formula input was explicitly unavailable rather than numerically measured.
+    UnavailableCost {
+        /// The missing delivery construction.
+        kind: CounterfactualDeliveryKind,
+        /// Why no byte cost exists.
+        reason: DeliveryCostUnavailableReason,
+    },
+    /// `C_leaf - C_ideal` was zero or negative, so the ratio is undefined.
+    NonPositiveDenominator {
+        /// Exact `C_leaf` bytes.
+        c_leaf_bytes: usize,
+        /// Exact `C_ideal` bytes.
+        c_ideal_bytes: usize,
+    },
+}
+
+/// A per-target result for one maturity formula.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum TargetSetMaturityScore {
+    /// The target set had a valid exact raw and clamped ratio.
+    Defined(MaturityScore),
+    /// The non-empty target set cannot contribute a maturity ratio.
+    Undefined(MaturityUndefinedReason),
+}
+
+/// Maturity facts for one target set, or a recorded empty-set exclusion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub enum TargetSetMaturity {
+    /// An empty target set is recorded and excluded from aggregation.
+    ExcludedEmpty {
+        /// The empty target set.
+        target_set: RecipientTargetSet,
+    },
+    /// Both formula results for one non-empty target set.
+    Evaluated {
+        /// The non-empty target set.
+        target_set: RecipientTargetSet,
+        /// `h_new_raw(S)` and its clamped threshold value.
+        h_new: TargetSetMaturityScore,
+        /// `h_old_raw(S)` and its clamped threshold value.
+        h_old: TargetSetMaturityScore,
+    },
+}
+
+impl TargetSetMaturity {
+    /// Returns the recorded public target set.
+    pub const fn target_set(&self) -> &RecipientTargetSet {
+        match self {
+            Self::ExcludedEmpty { target_set } | Self::Evaluated { target_set, .. } => target_set,
+        }
+    }
+}
+
+/// Why a global conservative maturity value is unavailable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum GlobalMaturityUndefinedReason {
+    /// No non-empty target set was supplied.
+    NoNonEmptyTargetSets,
+    /// At least one non-empty target set had no value for this formula.
+    UndefinedNonEmptyTargetSet,
+}
+
+/// A conservative global maturity result and the target-set record that selected it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum GlobalMaturityCost {
+    /// A conservative clamped value was selected from all non-empty target sets.
+    Defined {
+        /// Index in `MaturityCostEvaluation::target_sets` that selected this value.
+        target_set_index: usize,
+        /// Exact raw/clamped score for that target set.
+        score: MaturityScore,
+    },
+    /// No safe aggregate value exists.
+    Undefined(GlobalMaturityUndefinedReason),
+}
+
+/// Checked per-target and global `h_new_cost`/`h_old_cost` maturity facts.
+///
+/// `h_new_cost` is the minimum clamped new-tree score over all non-empty
+/// target sets. `h_old_cost` is the maximum clamped old-TreeCover score. Empty
+/// sets remain visible but do not participate. Later retirement logic must
+/// treat any undefined non-empty target set as a blocker.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct MaturityCostEvaluation {
+    target_sets: Vec<TargetSetMaturity>,
+    h_new_cost: GlobalMaturityCost,
+    h_old_cost: GlobalMaturityCost,
+    has_undefined_nonempty_target_set: bool,
+}
+
+impl MaturityCostEvaluation {
+    /// Evaluates checked raw and clamped maturity facts for canonical target-set costs.
+    pub fn from_costs(
+        measurements: Vec<RecipientTargetSetCostMeasurement>,
+    ) -> Result<Self, MeasurementError> {
+        validate_maturity_measurement_order(&measurements)?;
+        let mut target_sets = Vec::with_capacity(measurements.len());
+        let mut h_new_candidates = Vec::new();
+        let mut h_old_candidates = Vec::new();
+        let mut has_nonempty_target_set = false;
+        let mut has_undefined_nonempty_target_set = false;
+
+        for measurement in measurements {
+            if measurement.target_set().is_empty() {
+                target_sets.push(TargetSetMaturity::ExcludedEmpty {
+                    target_set: measurement.target_set,
+                });
+                continue;
+            }
+            has_nonempty_target_set = true;
+            let h_new = calculate_maturity_score(
+                measurement.c_leaf(),
+                measurement.c_new(),
+                measurement.c_ideal(),
+                CounterfactualDeliveryKind::New,
+            )?;
+            let h_old = calculate_maturity_score(
+                measurement.c_leaf(),
+                measurement.c_old(),
+                measurement.c_ideal(),
+                CounterfactualDeliveryKind::Old,
+            )?;
+            if matches!(h_new, TargetSetMaturityScore::Undefined(_))
+                || matches!(h_old, TargetSetMaturityScore::Undefined(_))
+            {
+                has_undefined_nonempty_target_set = true;
+            }
+            let index = target_sets.len();
+            if let TargetSetMaturityScore::Defined(score) = h_new {
+                h_new_candidates.push((index, score));
+            }
+            if let TargetSetMaturityScore::Defined(score) = h_old {
+                h_old_candidates.push((index, score));
+            }
+            target_sets.push(TargetSetMaturity::Evaluated {
+                target_set: measurement.target_set,
+                h_new,
+                h_old,
+            });
+        }
+
+        let h_new_cost = aggregate_maturity(&h_new_candidates, has_nonempty_target_set, true)?;
+        let h_old_cost = aggregate_maturity(&h_old_candidates, has_nonempty_target_set, false)?;
+        Ok(Self {
+            target_sets,
+            h_new_cost,
+            h_old_cost,
+            has_undefined_nonempty_target_set,
+        })
+    }
+
+    /// Returns every target-set result, including empty-set exclusions.
+    pub fn target_sets(&self) -> &[TargetSetMaturity] {
+        &self.target_sets
+    }
+
+    /// Returns the conservative minimum `h_new_cost` result.
+    pub const fn h_new_cost(&self) -> GlobalMaturityCost {
+        self.h_new_cost
+    }
+
+    /// Returns the conservative maximum `h_old_cost` result.
+    pub const fn h_old_cost(&self) -> GlobalMaturityCost {
+        self.h_old_cost
+    }
+
+    /// Returns whether any non-empty target set was undefined for either formula.
+    pub const fn has_undefined_nonempty_target_set(&self) -> bool {
+        self.has_undefined_nonempty_target_set
+    }
+}
+
+fn calculate_maturity_score(
+    leaf: DeliveryCostAvailability,
+    route: DeliveryCostAvailability,
+    ideal: DeliveryCostAvailability,
+    route_kind: CounterfactualDeliveryKind,
+) -> Result<TargetSetMaturityScore, MeasurementError> {
+    let c_leaf = measured_cost_bytes(leaf, CounterfactualDeliveryKind::Leaf)?;
+    let c_route = measured_cost_bytes(route, route_kind)?;
+    let c_ideal = measured_cost_bytes(ideal, CounterfactualDeliveryKind::Ideal)?;
+    let (c_leaf, c_route, c_ideal) = match (c_leaf, c_route, c_ideal) {
+        (Ok(leaf), Ok(route), Ok(ideal)) => (leaf, route, ideal),
+        (Err(reason), _, _) | (_, Err(reason), _) | (_, _, Err(reason)) => {
+            return Ok(TargetSetMaturityScore::Undefined(reason));
+        }
+    };
+    if c_leaf <= c_ideal {
+        return Ok(TargetSetMaturityScore::Undefined(
+            MaturityUndefinedReason::NonPositiveDenominator {
+                c_leaf_bytes: c_leaf,
+                c_ideal_bytes: c_ideal,
+            },
+        ));
+    }
+    let leaf = i128::try_from(c_leaf).map_err(|_| MeasurementError::MaturityOverflow)?;
+    let route = i128::try_from(c_route).map_err(|_| MeasurementError::MaturityOverflow)?;
+    let ideal = i128::try_from(c_ideal).map_err(|_| MeasurementError::MaturityOverflow)?;
+    let numerator = leaf
+        .checked_sub(route)
+        .ok_or(MeasurementError::MaturityOverflow)?;
+    let denominator = leaf
+        .checked_sub(ideal)
+        .ok_or(MeasurementError::MaturityOverflow)?;
+    Ok(TargetSetMaturityScore::Defined(MaturityScore::from_raw(
+        SignedRational::new(numerator, denominator)?,
+    )))
+}
+
+fn measured_cost_bytes(
+    availability: DeliveryCostAvailability,
+    kind: CounterfactualDeliveryKind,
+) -> Result<Result<usize, MaturityUndefinedReason>, MeasurementError> {
+    match availability {
+        DeliveryCostAvailability::Measured(cost) => Ok(Ok(cost.provenance().measured_bytes())),
+        DeliveryCostAvailability::Unavailable(reason) => {
+            Ok(Err(MaturityUndefinedReason::UnavailableCost {
+                kind,
+                reason,
+            }))
+        }
+    }
+}
+
+fn aggregate_maturity(
+    candidates: &[(usize, MaturityScore)],
+    has_nonempty_target_set: bool,
+    select_minimum: bool,
+) -> Result<GlobalMaturityCost, MeasurementError> {
+    if !has_nonempty_target_set {
+        return Ok(GlobalMaturityCost::Undefined(
+            GlobalMaturityUndefinedReason::NoNonEmptyTargetSets,
+        ));
+    }
+    let Some(&(mut selected_index, mut selected_score)) = candidates.first() else {
+        return Ok(GlobalMaturityCost::Undefined(
+            GlobalMaturityUndefinedReason::UndefinedNonEmptyTargetSet,
+        ));
+    };
+    for &(index, score) in &candidates[1..] {
+        let ordering = score.clamped().checked_cmp(&selected_score.clamped())?;
+        if (select_minimum && ordering.is_lt()) || (!select_minimum && ordering.is_gt()) {
+            selected_index = index;
+            selected_score = score;
+        }
+    }
+    Ok(GlobalMaturityCost::Defined {
+        target_set_index: selected_index,
+        score: selected_score,
+    })
+}
+
+fn validate_maturity_measurement_order(
+    measurements: &[RecipientTargetSetCostMeasurement],
+) -> Result<(), MeasurementError> {
+    if measurements.windows(2).any(|pair| {
+        pair[0].target_set().recipient_node_indexes()
+            >= pair[1].target_set().recipient_node_indexes()
+    }) {
+        return Err(MeasurementError::NonCanonicalMaturityTargetSetOrder);
+    }
+    Ok(())
+}
+
+fn greatest_common_divisor(mut left: u128, mut right: u128) -> u128 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
+}
+
 fn measure_counterfactual_route(
     target_set: &RecipientTargetSet,
     kind: CounterfactualDeliveryKind,
@@ -578,6 +973,15 @@ pub enum MeasurementError {
     /// Empty target sets must use their explicit exclusion reason.
     #[error("an empty target set has the wrong unavailable reason")]
     EmptyTargetSetWrongUnavailableReason,
+    /// A maturity ratio requires a positive denominator.
+    #[error("the maturity ratio denominator is invalid")]
+    InvalidMaturityDenominator,
+    /// Checked maturity arithmetic exceeded the supported signed representation.
+    #[error("maturity arithmetic overflows the supported representation")]
+    MaturityOverflow,
+    /// Target-set cost measurements must be in canonical ascending set order.
+    #[error("maturity target-set measurements are not in canonical order")]
+    NonCanonicalMaturityTargetSetOrder,
     /// Per-operation crypto metrics must be strictly ordered and unique.
     #[error("crypto-operation metrics are not in canonical ascending order")]
     NonCanonicalCryptoOperationOrder,
@@ -1134,6 +1538,64 @@ mod tests {
             .sum()
     }
 
+    fn measured_costs(
+        recipient_nodes: &[u32],
+        new_partitions: &[&[u32]],
+        old_partitions: &[&[u32]],
+        ideal_partitions: &[&[u32]],
+        binding: u8,
+    ) -> RecipientTargetSetCostMeasurement {
+        let leaf = recipient_nodes
+            .iter()
+            .enumerate()
+            .map(|(position, recipient)| {
+                ciphertext_for_recipients(
+                    10 + u32::try_from(position).expect("small test path index"),
+                    &[*recipient],
+                )
+            })
+            .collect::<Vec<_>>();
+        let new = new_partitions
+            .iter()
+            .enumerate()
+            .map(|(position, recipients)| {
+                ciphertext_for_recipients(
+                    30 + u32::try_from(position).expect("small test path index"),
+                    recipients,
+                )
+            })
+            .collect::<Vec<_>>();
+        let old = old_partitions
+            .iter()
+            .enumerate()
+            .map(|(position, recipients)| {
+                ciphertext_for_recipients(
+                    50 + u32::try_from(position).expect("small test path index"),
+                    recipients,
+                )
+            })
+            .collect::<Vec<_>>();
+        let ideal = ideal_partitions
+            .iter()
+            .enumerate()
+            .map(|(position, recipients)| {
+                ciphertext_for_recipients(
+                    70 + u32::try_from(position).expect("small test path index"),
+                    recipients,
+                )
+            })
+            .collect::<Vec<_>>();
+        RecipientTargetSetCostMeasurement::measure(
+            RecipientTargetSet::new(recipient_nodes.to_vec()).expect("canonical target set"),
+            [binding; 32],
+            CounterfactualDeliveryInput::Serialized(&leaf),
+            CounterfactualDeliveryInput::Serialized(&new),
+            CounterfactualDeliveryInput::Serialized(&old),
+            CounterfactualDeliveryInput::Serialized(&ideal),
+        )
+        .expect("test partitions cover the target set")
+    }
+
     fn shadow_tree() -> ShadowQuaternaryTree {
         let mapping = BinaryToQuaternaryLeafMapping::from_binary_members(vec![
             BinaryLeafMember {
@@ -1470,6 +1932,144 @@ mod tests {
                 CounterfactualDeliveryInput::Serialized(&shared),
             ),
             Err(MeasurementError::LeafDeliveryIsNotIndependent)
+        );
+    }
+
+    #[test]
+    fn maturity_costs_preserve_raw_clamps_and_conservative_min_max_aggregation() {
+        let empty = RecipientTargetSetCostMeasurement::measure(
+            RecipientTargetSet::new(vec![]).expect("empty target set"),
+            [50; 32],
+            CounterfactualDeliveryInput::Unavailable(DeliveryCostUnavailableReason::EmptyTargetSet),
+            CounterfactualDeliveryInput::Unavailable(DeliveryCostUnavailableReason::EmptyTargetSet),
+            CounterfactualDeliveryInput::Unavailable(DeliveryCostUnavailableReason::EmptyTargetSet),
+            CounterfactualDeliveryInput::Unavailable(DeliveryCostUnavailableReason::EmptyTargetSet),
+        )
+        .expect("empty target set");
+        let first = measured_costs(&[1, 2], &[&[1, 2]], &[&[1], &[2]], &[&[1, 2]], 51);
+        let second = measured_costs(
+            &[4, 5, 6],
+            &[&[4, 5], &[6]],
+            &[&[4, 5, 6]],
+            &[&[4, 5, 6]],
+            52,
+        );
+        let evaluation = MaturityCostEvaluation::from_costs(vec![empty, first, second])
+            .expect("canonical target-set order");
+
+        assert!(!evaluation.has_undefined_nonempty_target_set());
+        assert!(matches!(
+            evaluation.target_sets()[0],
+            TargetSetMaturity::ExcludedEmpty { .. }
+        ));
+        let GlobalMaturityCost::Defined {
+            target_set_index,
+            score,
+        } = evaluation.h_new_cost()
+        else {
+            panic!("new maturity must be defined");
+        };
+        assert_eq!(target_set_index, 2);
+        assert_eq!(score.raw(), SignedRational::new(1, 2).expect("rational"));
+        assert_eq!(
+            score.clamped(),
+            SignedRational::new(1, 2).expect("rational")
+        );
+        assert_eq!(score.clamp_reason(), MaturityClampReason::InRange);
+
+        let GlobalMaturityCost::Defined {
+            target_set_index,
+            score,
+        } = evaluation.h_old_cost()
+        else {
+            panic!("old maturity must be defined");
+        };
+        assert_eq!(target_set_index, 2);
+        assert_eq!(score.raw(), SignedRational::one());
+        assert_eq!(score.clamped(), SignedRational::one());
+    }
+
+    #[test]
+    fn undefined_nonempty_sets_block_maturity_without_numeric_fallbacks() {
+        let unavailable_old = RecipientTargetSetCostMeasurement::measure(
+            RecipientTargetSet::new(vec![1, 2]).expect("target set"),
+            [53; 32],
+            CounterfactualDeliveryInput::Serialized(&[
+                ciphertext_for_recipients(10, &[1]),
+                ciphertext_for_recipients(11, &[2]),
+            ]),
+            CounterfactualDeliveryInput::Serialized(&[ciphertext_for_recipients(20, &[1, 2])]),
+            CounterfactualDeliveryInput::Unavailable(
+                DeliveryCostUnavailableReason::NoEligibleOldTreeCoverRoute,
+            ),
+            CounterfactualDeliveryInput::Serialized(&[ciphertext_for_recipients(30, &[1, 2])]),
+        )
+        .expect("explicit unavailable old route");
+        let unavailable =
+            MaturityCostEvaluation::from_costs(vec![unavailable_old]).expect("one target set");
+        assert!(unavailable.has_undefined_nonempty_target_set());
+        assert!(matches!(
+            unavailable.h_old_cost(),
+            GlobalMaturityCost::Undefined(
+                GlobalMaturityUndefinedReason::UndefinedNonEmptyTargetSet
+            )
+        ));
+
+        let denominator_zero = measured_costs(&[4, 5], &[&[4, 5]], &[&[4, 5]], &[&[4], &[5]], 54);
+        let denominator =
+            MaturityCostEvaluation::from_costs(vec![denominator_zero]).expect("one target set");
+        assert!(denominator.has_undefined_nonempty_target_set());
+        let TargetSetMaturity::Evaluated { h_new, h_old, .. } = &denominator.target_sets()[0]
+        else {
+            panic!("non-empty target set must be evaluated");
+        };
+        assert!(matches!(
+            h_new,
+            TargetSetMaturityScore::Undefined(
+                MaturityUndefinedReason::NonPositiveDenominator { .. }
+            )
+        ));
+        assert!(matches!(
+            h_old,
+            TargetSetMaturityScore::Undefined(
+                MaturityUndefinedReason::NonPositiveDenominator { .. }
+            )
+        ));
+
+        let empty = MaturityCostEvaluation::from_costs(vec![]).expect("empty input is explicit");
+        assert!(matches!(
+            empty.h_new_cost(),
+            GlobalMaturityCost::Undefined(GlobalMaturityUndefinedReason::NoNonEmptyTargetSets)
+        ));
+    }
+
+    #[test]
+    fn maturity_clamps_out_of_range_raw_values_and_rejects_noncanonical_measurement_order() {
+        let above_one = measured_costs(
+            &[1, 2, 3],
+            &[&[1, 2, 3]],
+            &[&[1, 2, 3]],
+            &[&[1, 2], &[3]],
+            55,
+        );
+        let evaluation =
+            MaturityCostEvaluation::from_costs(vec![above_one]).expect("one target set");
+        let GlobalMaturityCost::Defined { score, .. } = evaluation.h_new_cost() else {
+            panic!("new maturity must be defined");
+        };
+        assert_eq!(score.raw(), SignedRational::new(2, 1).expect("rational"));
+        assert_eq!(score.clamped(), SignedRational::one());
+        assert_eq!(score.clamp_reason(), MaturityClampReason::AboveOne);
+
+        let below_zero = MaturityScore::from_raw(SignedRational::new(-1, 3).expect("rational"));
+        assert_eq!(below_zero.clamped(), SignedRational::zero());
+        assert_eq!(below_zero.clamp_reason(), MaturityClampReason::BelowZero);
+
+        let first = measured_costs(&[1, 2], &[&[1, 2]], &[&[1, 2]], &[&[1, 2]], 56);
+        let second = measured_costs(&[4, 5], &[&[4, 5]], &[&[4, 5]], &[&[4, 5]], 57);
+        assert_eq!(
+            MaturityCostEvaluation::from_costs(vec![second, first]),
+            Err(MeasurementError::NonCanonicalMaturityTargetSetOrder)
         );
     }
 }

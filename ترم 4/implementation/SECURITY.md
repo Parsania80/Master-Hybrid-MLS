@@ -108,6 +108,8 @@ The Phase 8 quality gate passes formatting, strict lint, focused transition stat
 
 Task 46 counts only canonical hybrid TLS component bytes for named public recipient sets. It retains no ciphertext bodies or secret material, rejects partial or duplicate recipient coverage, and records empty or unavailable routes without a numeric fallback. The caller-supplied logical-payload binding is public and must not contain a secret. These costs are counterfactual serializer measurements only; they do not authenticate a route, prove the same encrypted plaintext was used, measure a network packet or full MLS Commit, or close SEC-05, SEC-06, or SEC-10.
 
+Task 47 performs checked signed-rational arithmetic only over Task 46 public byte counts. It preserves raw values, explicit clamps, empty-set exclusions, and unavailable/invalid-denominator blockers. It cannot validate routing or payload equality beyond Task 46 inputs, decide retirement, alter TreeCover state, or close SEC-05, SEC-06, or SEC-10.
+
 The private-use extension code can collide with another private deployment. The fork and its messages are thesis-local and must not be sent to an unrelated MLS deployment. A future interoperable protocol would require an independently specified wire format, capability negotiation, registry action where applicable, and security review.
 
 ## Secret Handling and Reporting Rules
