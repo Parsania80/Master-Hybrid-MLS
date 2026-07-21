@@ -29,6 +29,7 @@ use crate::{
 
 /// Helper for building a proposal based on the raw values.
 #[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "experimental-hybrid", allow(clippy::large_enum_variant))]
 pub enum Propose {
     /// An add proposal requires a key package of the addee.
     Add(KeyPackage),

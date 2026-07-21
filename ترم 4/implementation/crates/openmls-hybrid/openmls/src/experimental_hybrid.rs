@@ -4,13 +4,22 @@
 //! UpdatePath, derive a path secret, or make an experimental commit available.
 //! The private-use values are intentionally not standardized or interoperable.
 
+use std::{collections::BTreeMap, fmt};
+
 use hybrid_path_secret::{
     ClassicalHpkePrivateKey, ClassicalHpkeProvider, ClassicalHpkePublicKey,
     ClassicalHpkeSenderOutput, ClassicalSharedSecret, HybridPathCiphertext, HybridPathLevelError,
     CLASSICAL_ENCAPSULATION_BYTES, CLASSICAL_SHARED_SECRET_BYTES,
 };
-use mkyber::{MkyberDomain, MkyberEncapsulationKey, ENCAPSULATION_KEY_BYTES};
+use mkyber::{
+    EducationalMkyber512Reference, MkyberDecapsulationKey, MkyberDomain, MkyberEncapsulationKey,
+    ENCAPSULATION_KEY_BYTES,
+};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
+use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize};
+use zeroize::Zeroize;
 
 use crate::prelude::{Ciphersuite, OpenMlsCrypto, OpenMlsProvider};
 use crate::{
@@ -61,6 +70,240 @@ pub enum ExperimentalMkyberError {
     /// A fixed-size public key could not be reconstructed.
     #[error("the mKyber recipient public key is invalid")]
     InvalidPublicKey,
+}
+
+/// Public tree-array node identifier for one experimental TreeKEM resolution key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ExperimentalResolutionNodeId(u32);
+
+impl ExperimentalResolutionNodeId {
+    /// Creates an identifier from the public TreeKEM node index.
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// Returns the public TreeKEM node index.
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+/// Public mKyber material bound to one TreeKEM resolution node.
+///
+/// This is distinct from the signed KeyPackage extension: the same shape is
+/// required for parent nodes, which have no KeyPackage. The feature-gated
+/// TreeSync `EncryptionKey` stores this value beside the corresponding
+/// classical TreeKEM public key.
+#[derive(
+    Clone, PartialEq, Eq, Hash, TlsSerialize, TlsDeserialize, TlsDeserializeBytes, TlsSize,
+)]
+pub struct ExperimentalMkyberNodePublicKey {
+    domain: [u8; 32],
+    public_key: [u8; ENCAPSULATION_KEY_BYTES],
+}
+
+impl ExperimentalMkyberNodePublicKey {
+    /// Converts a typed mKyber encapsulation key into serializable public node material.
+    pub fn from_mkyber_key(public_key: &MkyberEncapsulationKey) -> Self {
+        Self {
+            domain: *public_key.domain().as_bytes(),
+            public_key: *public_key.as_bytes(),
+        }
+    }
+
+    /// Reconstructs the typed public mKyber key for a hybrid sender operation.
+    pub fn to_mkyber_key(&self) -> Result<MkyberEncapsulationKey, ExperimentalMkyberError> {
+        MkyberEncapsulationKey::from_bytes(MkyberDomain::new(self.domain), &self.public_key)
+            .map_err(|_| ExperimentalMkyberError::InvalidPublicKey)
+    }
+
+    /// Returns the strict canonical public-node serialization.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, ExperimentalNodeKeyError> {
+        let mut bytes =
+            Vec::with_capacity(core::mem::size_of_val(&self.domain) + ENCAPSULATION_KEY_BYTES);
+        bytes.extend_from_slice(&self.domain);
+        bytes.extend_from_slice(&self.public_key);
+        Ok(bytes)
+    }
+
+    /// Parses exact canonical public-node serialization with no trailing data.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ExperimentalNodeKeyError> {
+        let expected_length = core::mem::size_of::<[u8; 32]>() + ENCAPSULATION_KEY_BYTES;
+        if bytes.len() != expected_length {
+            return Err(ExperimentalNodeKeyError::InvalidPublicEncoding);
+        }
+        let (domain, public_key) = bytes.split_at(core::mem::size_of::<[u8; 32]>());
+        let domain = domain
+            .try_into()
+            .map_err(|_| ExperimentalNodeKeyError::InvalidPublicEncoding)?;
+        let public_key = public_key
+            .try_into()
+            .map_err(|_| ExperimentalNodeKeyError::InvalidPublicEncoding)?;
+        Ok(Self { domain, public_key })
+    }
+
+    /// Returns the public mKyber domain.
+    pub const fn domain(&self) -> MkyberDomain {
+        MkyberDomain::new(self.domain)
+    }
+}
+
+impl fmt::Debug for ExperimentalMkyberNodePublicKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExperimentalMkyberNodePublicKey")
+            .field("domain", &self.domain())
+            .field("public_key_bytes", &ENCAPSULATION_KEY_BYTES)
+            .finish()
+    }
+}
+
+impl Serialize for ExperimentalMkyberNodePublicKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ExperimentalMkyberNodePublicKey", 2)?;
+        state.serialize_field("domain", &self.domain)?;
+        state.serialize_field("public_key", self.public_key.as_slice())?;
+        state.end()
+    }
+}
+
+#[derive(Deserialize)]
+struct ExperimentalMkyberNodePublicKeySerde {
+    domain: [u8; 32],
+    public_key: Vec<u8>,
+}
+
+impl<'de> Deserialize<'de> for ExperimentalMkyberNodePublicKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ExperimentalMkyberNodePublicKeySerde::deserialize(deserializer)?;
+        let mut bytes =
+            Vec::with_capacity(core::mem::size_of_val(&wire.domain) + wire.public_key.len());
+        bytes.extend_from_slice(&wire.domain);
+        bytes.extend_from_slice(&wire.public_key);
+        Self::from_canonical_bytes(&bytes).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Errors returned by experimental node-key lifecycle operations.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ExperimentalNodeKeyError {
+    /// The requested public encoding was malformed or had trailing data.
+    #[error("the mKyber node public-key encoding is invalid")]
+    InvalidPublicEncoding,
+    /// A private mKyber node key was requested after retirement or before creation.
+    #[error("no mKyber private key is available for resolution node {0}")]
+    MissingPrivateKey(u32),
+    /// A new key would overwrite live private material for the same node.
+    #[error("mKyber private material already exists for resolution node {0}")]
+    DuplicatePrivateKey(u32),
+    /// The educational mKyber backend could not create or reconstruct key material.
+    #[error("mKyber node-key operation failed")]
+    Mkyber,
+}
+
+/// Private mKyber node material retained only in the local fork lifecycle store.
+///
+/// It is not debug-formatted. Its byte vector is zeroized when the record is
+/// retired or dropped. A future storage integration may serialize this internal
+/// record only through the existing private key-store boundary.
+struct ExperimentalMkyberNodePrivateKey {
+    domain: MkyberDomain,
+    private_key: Vec<u8>,
+}
+
+impl ExperimentalMkyberNodePrivateKey {
+    fn from_mkyber_key(private_key: MkyberDecapsulationKey) -> Self {
+        Self {
+            domain: private_key.domain(),
+            private_key: private_key.as_bytes().to_vec(),
+        }
+    }
+
+    fn to_mkyber_key(&self) -> Result<MkyberDecapsulationKey, ExperimentalNodeKeyError> {
+        MkyberDecapsulationKey::from_bytes(self.domain, self.private_key.clone())
+            .map_err(|_| ExperimentalNodeKeyError::Mkyber)
+    }
+}
+
+impl Drop for ExperimentalMkyberNodePrivateKey {
+    fn drop(&mut self) {
+        self.private_key.zeroize();
+    }
+}
+
+impl fmt::Debug for ExperimentalMkyberNodePrivateKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExperimentalMkyberNodePrivateKey")
+            .field("domain", &self.domain)
+            .field("private_key", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Local private-key lifecycle for experimental leaf and parent resolution nodes.
+///
+/// The public key returned from generation belongs in the authenticated fork
+/// tree. This store retains only its matching private decapsulation material.
+/// A TreeSync integration must insert, persist, and retire records atomically
+/// with the corresponding public tree mutation.
+#[derive(Default, Debug)]
+pub struct ExperimentalMkyberNodeKeyStore {
+    private_keys: BTreeMap<ExperimentalResolutionNodeId, ExperimentalMkyberNodePrivateKey>,
+}
+
+impl ExperimentalMkyberNodeKeyStore {
+    /// Generates and records a fresh mKyber pair for one leaf or parent node.
+    pub fn generate_for_node(
+        &mut self,
+        node_id: ExperimentalResolutionNodeId,
+        domain: MkyberDomain,
+    ) -> Result<ExperimentalMkyberNodePublicKey, ExperimentalNodeKeyError> {
+        if self.private_keys.contains_key(&node_id) {
+            return Err(ExperimentalNodeKeyError::DuplicatePrivateKey(
+                node_id.as_u32(),
+            ));
+        }
+        let (public_key, private_key) = EducationalMkyber512Reference
+            .keygen_with_os_rng(domain)
+            .map_err(|_| ExperimentalNodeKeyError::Mkyber)?
+            .into_parts();
+        let public_key = ExperimentalMkyberNodePublicKey::from_mkyber_key(&public_key);
+        self.private_keys.insert(
+            node_id,
+            ExperimentalMkyberNodePrivateKey::from_mkyber_key(private_key),
+        );
+        Ok(public_key)
+    }
+
+    /// Returns a typed private key for one local hybrid receiver operation.
+    pub fn private_key_for(
+        &self,
+        node_id: ExperimentalResolutionNodeId,
+    ) -> Result<MkyberDecapsulationKey, ExperimentalNodeKeyError> {
+        self.private_keys
+            .get(&node_id)
+            .ok_or(ExperimentalNodeKeyError::MissingPrivateKey(
+                node_id.as_u32(),
+            ))?
+            .to_mkyber_key()
+    }
+
+    /// Retires one private key record and zeroizes its stored bytes on drop.
+    pub fn retire_node(&mut self, node_id: ExperimentalResolutionNodeId) -> bool {
+        self.private_keys.remove(&node_id).is_some()
+    }
+
+    /// Returns the number of locally retained private node keys.
+    pub fn retained_key_count(&self) -> usize {
+        self.private_keys.len()
+    }
 }
 
 /// Errors returned while admitting canonical hybrid delivery bytes into the fork.

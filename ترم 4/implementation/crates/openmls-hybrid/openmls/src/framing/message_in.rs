@@ -71,6 +71,7 @@ pub struct MlsMessageIn {
 #[derive(Debug, PartialEq, Clone, TlsDeserialize, TlsDeserializeBytes, TlsSize)]
 #[cfg_attr(feature = "test-utils", derive(TlsSerialize))]
 #[repr(u16)]
+#[cfg_attr(feature = "experimental-hybrid", allow(clippy::large_enum_variant))]
 pub enum MlsMessageBodyIn {
     /// Plaintext message
     #[tls_codec(discriminant = 1)]

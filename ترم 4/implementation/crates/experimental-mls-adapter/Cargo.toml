@@ -12,6 +12,7 @@ hybrid-path-secret = { path = "../hybrid-path-secret" }
 mkyber = { path = "../mkyber" }
 rand_chacha.workspace = true
 rand_core.workspace = true
+tls_codec.workspace = true
 
 [lints]
 workspace = true

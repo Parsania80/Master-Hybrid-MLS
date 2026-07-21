@@ -9,6 +9,8 @@ use openmls_traits::{
 use serde::{Deserialize, Serialize};
 use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize, VLBytes};
 
+#[cfg(feature = "experimental-hybrid")]
+use crate::experimental_hybrid::ExperimentalMkyberNodePublicKey;
 use crate::{
     ciphersuite::{hpke, HpkePrivateKey, HpkePublicKey, Secret},
     error::LibraryError,
@@ -32,6 +34,12 @@ use crate::{
 )]
 pub struct EncryptionKey {
     key: HpkePublicKey,
+    /// Optional non-standard mKyber public material for this TreeKEM node.
+    ///
+    /// The field exists only in the experimental fork wire format. A future
+    /// UpdatePath integration must require `Some` for every resolution node.
+    #[cfg(feature = "experimental-hybrid")]
+    experimental_mkyber_key: Option<ExperimentalMkyberNodePublicKey>,
 }
 
 impl EncryptionKey {
@@ -43,6 +51,22 @@ impl EncryptionKey {
     /// Return the internal [`HpkePublicKey`] as slice.
     pub(crate) fn as_slice(&self) -> &[u8] {
         self.key.as_slice()
+    }
+
+    /// Attaches feature-gated public mKyber material to this TreeKEM node.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn with_experimental_mkyber_key(
+        mut self,
+        mkyber_key: ExperimentalMkyberNodePublicKey,
+    ) -> Self {
+        self.experimental_mkyber_key = Some(mkyber_key);
+        self
+    }
+
+    /// Returns the feature-gated public mKyber material for this TreeKEM node.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn experimental_mkyber_key(&self) -> Option<&ExperimentalMkyberNodePublicKey> {
+        self.experimental_mkyber_key.as_ref()
     }
 
     /// Encrypt to this HPKE public key.
@@ -67,7 +91,11 @@ impl EncryptionKey {
 
 impl From<Vec<u8>> for EncryptionKey {
     fn from(key: Vec<u8>) -> Self {
-        Self { key: key.into() }
+        Self {
+            key: key.into(),
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_mkyber_key: None,
+        }
     }
 }
 
@@ -139,7 +167,11 @@ impl EncryptionPrivateKey {
 
 impl From<HpkePublicKey> for EncryptionKey {
     fn from(key: HpkePublicKey) -> Self {
-        Self { key }
+        Self {
+            key,
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_mkyber_key: None,
+        }
     }
 }
 
@@ -249,6 +281,8 @@ impl EncryptionKeyPair {
         Self {
             public_key: EncryptionKey {
                 key: public_key.into(),
+                #[cfg(feature = "experimental-hybrid")]
+                experimental_mkyber_key: None,
             },
             private_key: EncryptionPrivateKey {
                 key: private_key.into(),

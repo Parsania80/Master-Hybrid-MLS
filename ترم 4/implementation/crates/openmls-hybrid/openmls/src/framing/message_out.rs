@@ -56,6 +56,7 @@ pub struct MlsMessageOut {
 /// ```
 #[derive(Debug, PartialEq, Clone, TlsSerialize, TlsSize, serde::Serialize, serde::Deserialize)]
 #[repr(u16)]
+#[cfg_attr(feature = "experimental-hybrid", allow(clippy::large_enum_variant))]
 pub enum MlsMessageBodyOut {
     /// Plaintext message
     #[tls_codec(discriminant = 1)]

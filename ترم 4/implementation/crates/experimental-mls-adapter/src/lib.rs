@@ -26,20 +26,25 @@ mod tests {
     };
     use mkyber::{
         EducationalMkyber512Reference, MkyberCommonCiphertext, MkyberDomain,
-        MkyberRecipientCiphertext, MultiRecipientKem,
+        MkyberRecipientCiphertext, MultiRecipientKem, RecipientId, RecipientPublicKey,
+        RecipientSet,
     };
     use openmls_hybrid::{
         experimental_hybrid::{
             mkyber_recipient_capabilities, required_mkyber_recipient_capabilities,
             supports_mkyber_recipient_capabilities, ExperimentalHybridDeliveryError,
-            ExperimentalHybridPathDelivery, ExperimentalMkyberError, ForkClassicalHpkeProvider,
+            ExperimentalHybridPathDelivery, ExperimentalMkyberError,
+            ExperimentalMkyberNodeKeyStore, ExperimentalMkyberNodePublicKey,
+            ExperimentalNodeKeyError, ExperimentalResolutionNodeId, ForkClassicalHpkeProvider,
             MkyberRecipientKeyMaterial, MKYBER_RECIPIENT_KEY_MATERIAL_BYTES,
             MKYBER_RECIPIENT_KEY_MATERIAL_VERSION,
         },
         prelude::{Extension, Extensions, KeyPackage, UnknownExtension},
+        treesync::{EncryptionKey, ParentNode},
     };
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
+    use tls_codec::{Deserialize as TlsDeserializeTrait, Serialize as TlsSerializeTrait};
 
     use super::{fork_ciphersuite_type_name, OPENMLS_HYBRID_UPSTREAM_REVISION};
 
@@ -183,5 +188,122 @@ mod tests {
         .expect("fork provider must open");
 
         assert_eq!(opened.as_bytes(), path_secret.as_bytes());
+    }
+
+    #[test]
+    fn node_key_store_separates_leaf_and_parent_lifecycle() {
+        let domain = MkyberDomain::new([0x61; 32]);
+        let leaf = ExperimentalResolutionNodeId::new(0);
+        let parent = ExperimentalResolutionNodeId::new(1);
+        let mut store = ExperimentalMkyberNodeKeyStore::default();
+        let leaf_public = store
+            .generate_for_node(leaf, domain)
+            .expect("leaf key generation");
+        let parent_public = store
+            .generate_for_node(parent, domain)
+            .expect("parent key generation");
+        let parent_recipient = RecipientId::new(parent.as_u32());
+        let recipient_set = RecipientSet::new(
+            domain,
+            vec![RecipientPublicKey {
+                recipient: parent_recipient,
+                key: parent_public
+                    .to_mkyber_key()
+                    .expect("typed parent public key"),
+            }],
+        )
+        .expect("single parent recipient");
+        let backend = EducationalMkyber512Reference;
+        let encapsulation = backend
+            .encapsulate_with_os_rng(&recipient_set)
+            .expect("parent public key must encapsulate");
+        let recovered = backend
+            .decapsulate(
+                &store
+                    .private_key_for(parent)
+                    .expect("matching parent private key"),
+                &encapsulation.ciphertext,
+                parent_recipient,
+            )
+            .expect("matching parent private key must decapsulate");
+        let leaf_canonical = leaf_public.canonical_bytes().expect("canonical leaf key");
+
+        assert_eq!(store.retained_key_count(), 2);
+        assert_eq!(recovered.as_bytes(), encapsulation.shared_secret.as_bytes());
+        assert_eq!(leaf_canonical.len(), 800);
+        assert_eq!(
+            leaf_public,
+            ExperimentalMkyberNodePublicKey::from_canonical_bytes(&leaf_canonical)
+                .expect("exact leaf public key"),
+        );
+        assert_eq!(
+            ExperimentalMkyberNodePublicKey::from_canonical_bytes(&leaf_canonical[..799]),
+            Err(ExperimentalNodeKeyError::InvalidPublicEncoding)
+        );
+        assert_eq!(
+            store.generate_for_node(parent, domain),
+            Err(ExperimentalNodeKeyError::DuplicatePrivateKey(1))
+        );
+        assert_ne!(
+            leaf_public
+                .to_mkyber_key()
+                .expect("typed leaf key")
+                .as_bytes(),
+            parent_public
+                .to_mkyber_key()
+                .expect("typed parent key")
+                .as_bytes(),
+        );
+        assert_eq!(
+            store
+                .private_key_for(parent)
+                .expect("parent private key")
+                .domain(),
+            domain
+        );
+        assert!(store.retire_node(parent));
+        assert_eq!(store.retained_key_count(), 1);
+        assert!(matches!(
+            store.private_key_for(parent),
+            Err(ExperimentalNodeKeyError::MissingPrivateKey(1))
+        ));
+    }
+
+    #[test]
+    fn node_public_key_is_bound_to_experimental_tree_key_state() {
+        let domain = MkyberDomain::new([0x71; 32]);
+        let mut store = ExperimentalMkyberNodeKeyStore::default();
+        let node_key = store
+            .generate_for_node(ExperimentalResolutionNodeId::new(5), domain)
+            .expect("node key generation");
+        let plain_key = EncryptionKey::from(vec![0x72; 32]);
+        let bound_key = plain_key
+            .clone()
+            .with_experimental_mkyber_key(node_key.clone());
+        let encoded_key = bound_key
+            .tls_serialize_detached()
+            .expect("experimental tree key serialization");
+        let decoded_key = EncryptionKey::tls_deserialize_exact(&encoded_key)
+            .expect("experimental tree key deserialization");
+        let parent = ParentNode::from(bound_key.clone());
+        let encoded_parent = parent
+            .tls_serialize_detached()
+            .expect("experimental parent serialization");
+        let decoded_parent = ParentNode::tls_deserialize_exact(&encoded_parent)
+            .expect("experimental parent deserialization");
+
+        assert_ne!(
+            plain_key
+                .tls_serialize_detached()
+                .expect("plain tree key serialization"),
+            encoded_key
+        );
+        assert_eq!(
+            decoded_key
+                .experimental_mkyber_key()
+                .expect("decoded key material"),
+            &node_key
+        );
+        assert_eq!(decoded_parent, parent);
     }
 }
