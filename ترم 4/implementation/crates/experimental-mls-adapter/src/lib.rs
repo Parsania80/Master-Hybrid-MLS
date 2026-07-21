@@ -17,12 +17,16 @@ pub fn fork_ciphersuite_type_name() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use hybrid_path_secret::{
+        HybridPathCiphertext, HybridRecipientCiphertext, PathNodeIndex, RecipientNodeIndex,
+    };
+    use mkyber::{MkyberCommonCiphertext, MkyberDomain, MkyberRecipientCiphertext};
     use openmls_hybrid::{
         experimental_hybrid::{
             mkyber_recipient_capabilities, required_mkyber_recipient_capabilities,
-            supports_mkyber_recipient_capabilities, ExperimentalMkyberError,
-            MkyberRecipientKeyMaterial, MKYBER_RECIPIENT_KEY_MATERIAL_BYTES,
-            MKYBER_RECIPIENT_KEY_MATERIAL_VERSION,
+            supports_mkyber_recipient_capabilities, ExperimentalHybridDeliveryError,
+            ExperimentalHybridPathDelivery, ExperimentalMkyberError, MkyberRecipientKeyMaterial,
+            MKYBER_RECIPIENT_KEY_MATERIAL_BYTES, MKYBER_RECIPIENT_KEY_MATERIAL_VERSION,
         },
         prelude::{Extension, Extensions, KeyPackage, UnknownExtension},
     };
@@ -77,6 +81,39 @@ mod tests {
             MkyberRecipientKeyMaterial::from_extension_value(&[0_u8; 3]),
             Err(ExperimentalMkyberError::InvalidEncodingLength {
                 expected: MKYBER_RECIPIENT_KEY_MATERIAL_BYTES,
+                actual: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn hybrid_delivery_accepts_only_exact_canonical_bytes_for_its_path_node() {
+        let ciphertext = HybridPathCiphertext::new(
+            PathNodeIndex::new(3),
+            MkyberDomain::new([0x42; 32]),
+            MkyberCommonCiphertext::from_bytes(&[0x11; 704]).expect("fixed-size common component"),
+            vec![HybridRecipientCiphertext::new(
+                RecipientNodeIndex::new(7),
+                [0x22; 32],
+                MkyberRecipientCiphertext::from_bytes(&[0x33; 48])
+                    .expect("fixed-size recipient component"),
+                [0x44; 48],
+            )],
+        )
+        .expect("canonical fixture");
+        let canonical_bytes = ciphertext
+            .commit_authenticated_bytes()
+            .expect("canonical serialization");
+
+        let delivery =
+            ExperimentalHybridPathDelivery::from_canonical_bytes(3, canonical_bytes.clone())
+                .expect("matching canonical delivery");
+        assert_eq!(delivery.path_node_index(), 3);
+        assert_eq!(delivery.canonical_bytes(), canonical_bytes);
+        assert_eq!(
+            ExperimentalHybridPathDelivery::from_canonical_bytes(4, canonical_bytes),
+            Err(ExperimentalHybridDeliveryError::PathNodeMismatch {
+                expected: 4,
                 actual: 3,
             })
         );

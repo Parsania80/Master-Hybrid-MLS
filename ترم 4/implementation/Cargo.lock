@@ -412,6 +412,8 @@ dependencies = [
 name = "experimental-mls-adapter"
 version = "0.1.0"
 dependencies = [
+ "hybrid-path-secret",
+ "mkyber",
  "openmls-hybrid",
 ]
 
@@ -1077,6 +1079,7 @@ dependencies = [
 name = "openmls-hybrid"
 version = "0.8.1"
 dependencies = [
+ "hybrid-path-secret",
  "log",
  "mkyber",
  "openmls_rust_crypto 0.5.1",

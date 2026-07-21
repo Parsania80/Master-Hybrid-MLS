@@ -52,6 +52,8 @@ Task 57 adds a strict three-file public configuration comparison. It validates t
 
 ADR 0030 now imports and compiles the exact OpenMLS 0.8.1 source base through a separately named `openmls-hybrid` adapter, while leaving the maintained baseline dependency unchanged. ADR 0032 adds a feature-gated fork-native `0xF002` KeyPackage extension containing one strict versioned public mKyber recipient key; recipients must advertise both that extension and the existing `0xF001` adaptive-state capability. This is signed public admission material only: the fork still has no hybrid UpdatePath, authenticated ArityState application, or adaptive transition behavior, so it cannot yet produce experimental measurements.
 
+ADR 0033 now gives the fork a validated canonical hybrid-delivery byte value bound to one path-node index. It is a preparatory component for replacing experimental UpdatePath delivery, not a detached message and not yet a live Commit field; sender/receiver execution and atomic TreeSync application remain future work.
+
 Ubuntu 26.04 development setup is verified with the repository-pinned Rust 1.93.1 toolchain, including `rustfmt` and Clippy. The exact locked dependency graph is cached locally, and the workspace passes a locked offline all-target check.
 
 ## How to use it

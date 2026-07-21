@@ -7,5 +7,9 @@ version.workspace = true
 [dependencies]
 openmls-hybrid.workspace = true
 
+[dev-dependencies]
+hybrid-path-secret = { path = "../hybrid-path-secret" }
+mkyber = { path = "../mkyber" }
+
 [lints]
 workspace = true

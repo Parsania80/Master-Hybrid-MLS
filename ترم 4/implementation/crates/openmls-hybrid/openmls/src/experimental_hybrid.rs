@@ -4,6 +4,7 @@
 //! UpdatePath, derive a path secret, or make an experimental commit available.
 //! The private-use values are intentionally not standardized or interoperable.
 
+use hybrid_path_secret::HybridPathCiphertext;
 use mkyber::{MkyberDomain, MkyberEncapsulationKey, ENCAPSULATION_KEY_BYTES};
 use thiserror::Error;
 
@@ -55,6 +56,75 @@ pub enum ExperimentalMkyberError {
     /// A fixed-size public key could not be reconstructed.
     #[error("the mKyber recipient public key is invalid")]
     InvalidPublicKey,
+}
+
+/// Errors returned while admitting canonical hybrid delivery bytes into the fork.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ExperimentalHybridDeliveryError {
+    /// The supplied bytes are not one exact canonical hybrid path ciphertext.
+    #[error("the hybrid path delivery bytes are malformed or non-canonical")]
+    InvalidCanonicalEncoding,
+    /// The delivery's embedded node index differs from the enclosing UpdatePath node.
+    #[error("the hybrid path delivery node index {actual} does not match expected {expected}")]
+    PathNodeMismatch {
+        /// Node index supplied by the enclosing experimental UpdatePath node.
+        expected: u32,
+        /// Node index authenticated inside the hybrid delivery bytes.
+        actual: u32,
+    },
+}
+
+/// Canonical public hybrid delivery bytes for one experimental UpdatePath node.
+///
+/// This is a fork-owned value, intended to replace the standard
+/// `encrypted_path_secret` vector within an experimental UpdatePath node. It
+/// stores no parsed upstream OpenMLS type, no mKyber private key, and no path
+/// secret. Its constructor validates the canonical hybrid wire value before it
+/// can enter fork state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExperimentalHybridPathDelivery {
+    path_node_index: u32,
+    canonical_bytes: Vec<u8>,
+}
+
+impl ExperimentalHybridPathDelivery {
+    /// Validates and retains exact canonical hybrid bytes for one path node.
+    pub fn from_canonical_bytes(
+        expected_path_node_index: u32,
+        canonical_bytes: Vec<u8>,
+    ) -> Result<Self, ExperimentalHybridDeliveryError> {
+        let ciphertext = HybridPathCiphertext::from_commit_authenticated_bytes(&canonical_bytes)
+            .map_err(|_| ExperimentalHybridDeliveryError::InvalidCanonicalEncoding)?;
+        let actual_path_node_index = ciphertext.path_node_index().as_u32();
+        if actual_path_node_index != expected_path_node_index {
+            return Err(ExperimentalHybridDeliveryError::PathNodeMismatch {
+                expected: expected_path_node_index,
+                actual: actual_path_node_index,
+            });
+        }
+        if ciphertext
+            .commit_authenticated_bytes()
+            .map_err(|_| ExperimentalHybridDeliveryError::InvalidCanonicalEncoding)?
+            != canonical_bytes
+        {
+            return Err(ExperimentalHybridDeliveryError::InvalidCanonicalEncoding);
+        }
+
+        Ok(Self {
+            path_node_index: expected_path_node_index,
+            canonical_bytes,
+        })
+    }
+
+    /// Returns the enclosing experimental UpdatePath-node index.
+    pub const fn path_node_index(&self) -> u32 {
+        self.path_node_index
+    }
+
+    /// Returns the validated canonical bytes that the enclosing MLS Commit must authenticate.
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
 }
 
 /// Public mKyber encapsulation key associated with one experimental recipient.
