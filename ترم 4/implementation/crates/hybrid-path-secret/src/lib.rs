@@ -871,6 +871,118 @@ impl fmt::Debug for ClassicalHpkePrivateKey {
     }
 }
 
+/// Classical HPKE sender output consumed by the hybrid KDF and wire encoder.
+pub struct ClassicalHpkeSenderOutput {
+    encapsulation: [u8; CLASSICAL_ENCAPSULATION_BYTES],
+    shared_secret: ClassicalSharedSecret,
+}
+
+impl ClassicalHpkeSenderOutput {
+    /// Creates an output from an exact-size public encapsulation and secret exporter output.
+    pub const fn new(
+        encapsulation: [u8; CLASSICAL_ENCAPSULATION_BYTES],
+        shared_secret: ClassicalSharedSecret,
+    ) -> Self {
+        Self {
+            encapsulation,
+            shared_secret,
+        }
+    }
+
+    /// Consumes this output without cloning secret material.
+    pub fn into_parts(self) -> ([u8; CLASSICAL_ENCAPSULATION_BYTES], ClassicalSharedSecret) {
+        (self.encapsulation, self.shared_secret)
+    }
+}
+
+impl fmt::Debug for ClassicalHpkeSenderOutput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClassicalHpkeSenderOutput")
+            .field("encapsulation_bytes", &CLASSICAL_ENCAPSULATION_BYTES)
+            .field("shared_secret", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Byte-level classical HPKE operations used by hybrid path-secret delivery.
+///
+/// Implementations own the OpenMLS provider and type universe they use. The
+/// trait deliberately accepts and returns only fixed-size byte wrappers, so a
+/// separately named OpenMLS fork can execute the same hybrid construction
+/// without exchanging upstream provider types.
+pub trait ClassicalHpkeProvider {
+    /// Sets up a sender and exports the fixed 32-byte classical secret.
+    fn setup_sender_and_export(
+        &self,
+        recipient_public_key: &ClassicalHpkePublicKey,
+        info: &[u8],
+        exporter_context: &[u8],
+    ) -> Result<ClassicalHpkeSenderOutput, HybridPathLevelError>;
+
+    /// Sets up a receiver and exports the fixed 32-byte classical secret.
+    fn setup_receiver_and_export(
+        &self,
+        encapsulation: &[u8; CLASSICAL_ENCAPSULATION_BYTES],
+        recipient_private_key: &ClassicalHpkePrivateKey,
+        info: &[u8],
+        exporter_context: &[u8],
+    ) -> Result<ClassicalSharedSecret, HybridPathLevelError>;
+}
+
+/// Classical HPKE provider for the unchanged crates.io OpenMLS baseline.
+#[derive(Debug, Default)]
+pub struct UpstreamClassicalHpkeProvider;
+
+impl ClassicalHpkeProvider for UpstreamClassicalHpkeProvider {
+    fn setup_sender_and_export(
+        &self,
+        recipient_public_key: &ClassicalHpkePublicKey,
+        info: &[u8],
+        exporter_context: &[u8],
+    ) -> Result<ClassicalHpkeSenderOutput, HybridPathLevelError> {
+        let provider = OpenMlsRustCrypto::default();
+        let (encapsulation, shared_secret) = provider
+            .crypto()
+            .hpke_setup_sender_and_export(
+                hybrid_hpke_config(),
+                recipient_public_key.as_bytes(),
+                info,
+                exporter_context,
+                CLASSICAL_SHARED_SECRET_BYTES,
+            )
+            .map_err(|_| HybridPathLevelError::ClassicalHpke)?;
+        let encapsulation = encapsulation.as_slice().try_into().map_err(|_| {
+            HybridPathLevelError::InvalidClassicalEncapsulationLength(encapsulation.len())
+        })?;
+        let shared_secret = ClassicalSharedSecret::from_bytes(&shared_secret)
+            .map_err(|_| HybridPathLevelError::Kdf)?;
+        Ok(ClassicalHpkeSenderOutput::new(encapsulation, shared_secret))
+    }
+
+    fn setup_receiver_and_export(
+        &self,
+        encapsulation: &[u8; CLASSICAL_ENCAPSULATION_BYTES],
+        recipient_private_key: &ClassicalHpkePrivateKey,
+        info: &[u8],
+        exporter_context: &[u8],
+    ) -> Result<ClassicalSharedSecret, HybridPathLevelError> {
+        let provider = OpenMlsRustCrypto::default();
+        let shared_secret = provider
+            .crypto()
+            .hpke_setup_receiver_and_export(
+                hybrid_hpke_config(),
+                encapsulation,
+                recipient_private_key.as_bytes(),
+                info,
+                exporter_context,
+                CLASSICAL_SHARED_SECRET_BYTES,
+            )
+            .map_err(|_| HybridPathLevelError::ClassicalHpke)?;
+        ClassicalSharedSecret::from_bytes(&shared_secret).map_err(|_| HybridPathLevelError::Kdf)
+    }
+}
+
 /// Matching classical HPKE material for one experimental recipient node.
 pub struct ClassicalHpkeKeyPair {
     public_key: ClassicalHpkePublicKey,
@@ -1105,6 +1217,25 @@ pub fn seal_hybrid_path_level(
     path_secret: &HybridPathSecret,
     recipients: &[HybridPathRecipientPublic],
 ) -> Result<HybridPathCiphertext, HybridPathLevelError> {
+    seal_hybrid_path_level_with_provider(
+        &UpstreamClassicalHpkeProvider,
+        backend,
+        randomness,
+        context,
+        path_secret,
+        recipients,
+    )
+}
+
+/// Builds one complete hybrid ciphertext set with a caller-selected classical HPKE provider.
+pub fn seal_hybrid_path_level_with_provider(
+    classical_provider: &impl ClassicalHpkeProvider,
+    backend: &impl MultiRecipientKem,
+    randomness: &mut dyn mkyber::MkyberRandom,
+    context: &HybridPathLevelContext,
+    path_secret: &HybridPathSecret,
+    recipients: &[HybridPathRecipientPublic],
+) -> Result<HybridPathCiphertext, HybridPathLevelError> {
     validate_recipient_public_keys(context, recipients)?;
     let recipient_set = RecipientSet::new(
         context.mkyber_domain(),
@@ -1124,10 +1255,19 @@ pub fn seal_hybrid_path_level(
 
     for recipient in recipients {
         let recipient_context = context.kdf_context(recipient.recipient_node_index());
-        let classical_shared_secret =
-            classical_sender_secret(&recipient.classical_public_key, &recipient_context)?;
+        let context_bytes = recipient_context
+            .canonical_bytes()
+            .map_err(|_| HybridPathLevelError::Kdf)?;
+        let classical_info = hybrid_info(CLASSICAL_HPKE_INFO_SUFFIX, &context_bytes);
+        let (classical_encapsulation, classical_shared_secret) = classical_provider
+            .setup_sender_and_export(
+                &recipient.classical_public_key,
+                &classical_info,
+                &context_bytes,
+            )?
+            .into_parts();
         let input = build_hybrid_kdf_input(
-            &classical_shared_secret.shared_secret,
+            &classical_shared_secret,
             &encapsulation.shared_secret,
             &recipient_context,
         )
@@ -1140,7 +1280,7 @@ pub fn seal_hybrid_path_level(
             .clone();
         records.push(HybridRecipientCiphertext::new(
             recipient.recipient_node_index(),
-            classical_shared_secret.encapsulation,
+            classical_encapsulation,
             mkyber_recipient,
             encrypted_path_secret,
         ));
@@ -1157,6 +1297,23 @@ pub fn seal_hybrid_path_level(
 
 /// Opens one recipient record from a complete experimental UpdatePath level.
 pub fn open_hybrid_path_level(
+    backend: &impl MultiRecipientKem,
+    context: &HybridPathLevelContext,
+    ciphertext: &HybridPathCiphertext,
+    recipient: &HybridPathRecipientPrivate,
+) -> Result<HybridPathSecret, HybridPathLevelError> {
+    open_hybrid_path_level_with_provider(
+        &UpstreamClassicalHpkeProvider,
+        backend,
+        context,
+        ciphertext,
+        recipient,
+    )
+}
+
+/// Opens one recipient record with a caller-selected classical HPKE provider.
+pub fn open_hybrid_path_level_with_provider(
+    classical_provider: &impl ClassicalHpkeProvider,
     backend: &impl MultiRecipientKem,
     context: &HybridPathLevelContext,
     ciphertext: &HybridPathCiphertext,
@@ -1191,10 +1348,15 @@ pub fn open_hybrid_path_level(
         )
         .map_err(|_| HybridPathLevelError::Mkyber)?;
     let recipient_context = context.kdf_context(recipient.recipient_node_index());
-    let classical_shared_secret = classical_receiver_secret(
+    let context_bytes = recipient_context
+        .canonical_bytes()
+        .map_err(|_| HybridPathLevelError::Kdf)?;
+    let classical_info = hybrid_info(CLASSICAL_HPKE_INFO_SUFFIX, &context_bytes);
+    let classical_shared_secret = classical_provider.setup_receiver_and_export(
         record.classical_encapsulation(),
         &recipient.classical_private_key,
-        &recipient_context,
+        &classical_info,
+        &context_bytes,
     )?;
     let input = build_hybrid_kdf_input(
         &classical_shared_secret,
@@ -1203,64 +1365,6 @@ pub fn open_hybrid_path_level(
     )
     .map_err(|_| HybridPathLevelError::Kdf)?;
     decrypt_path_secret(record.encrypted_path_secret(), &input, &recipient_context)
-}
-
-struct ClassicalHpkeSenderSecret {
-    encapsulation: [u8; CLASSICAL_ENCAPSULATION_BYTES],
-    shared_secret: ClassicalSharedSecret,
-}
-
-fn classical_sender_secret(
-    public_key: &ClassicalHpkePublicKey,
-    context: &HybridKdfContext,
-) -> Result<ClassicalHpkeSenderSecret, HybridPathLevelError> {
-    let provider = OpenMlsRustCrypto::default();
-    let context_bytes = context
-        .canonical_bytes()
-        .map_err(|_| HybridPathLevelError::Kdf)?;
-    let info = hybrid_info(CLASSICAL_HPKE_INFO_SUFFIX, &context_bytes);
-    let (encapsulation, shared_secret) = provider
-        .crypto()
-        .hpke_setup_sender_and_export(
-            hybrid_hpke_config(),
-            public_key.as_bytes(),
-            &info,
-            &context_bytes,
-            CLASSICAL_SHARED_SECRET_BYTES,
-        )
-        .map_err(|_| HybridPathLevelError::ClassicalHpke)?;
-    let encapsulation = encapsulation.as_slice().try_into().map_err(|_| {
-        HybridPathLevelError::InvalidClassicalEncapsulationLength(encapsulation.len())
-    })?;
-    Ok(ClassicalHpkeSenderSecret {
-        encapsulation,
-        shared_secret: ClassicalSharedSecret::from_bytes(&shared_secret)
-            .map_err(|_| HybridPathLevelError::Kdf)?,
-    })
-}
-
-fn classical_receiver_secret(
-    encapsulation: &[u8; CLASSICAL_ENCAPSULATION_BYTES],
-    private_key: &ClassicalHpkePrivateKey,
-    context: &HybridKdfContext,
-) -> Result<ClassicalSharedSecret, HybridPathLevelError> {
-    let provider = OpenMlsRustCrypto::default();
-    let context_bytes = context
-        .canonical_bytes()
-        .map_err(|_| HybridPathLevelError::Kdf)?;
-    let info = hybrid_info(CLASSICAL_HPKE_INFO_SUFFIX, &context_bytes);
-    let shared_secret = provider
-        .crypto()
-        .hpke_setup_receiver_and_export(
-            hybrid_hpke_config(),
-            encapsulation,
-            private_key.as_bytes(),
-            &info,
-            &context_bytes,
-            CLASSICAL_SHARED_SECRET_BYTES,
-        )
-        .map_err(|_| HybridPathLevelError::ClassicalHpke)?;
-    ClassicalSharedSecret::from_bytes(&shared_secret).map_err(|_| HybridPathLevelError::Kdf)
 }
 
 fn encrypt_path_secret(

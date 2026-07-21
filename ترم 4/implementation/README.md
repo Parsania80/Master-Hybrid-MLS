@@ -54,6 +54,8 @@ ADR 0030 now imports and compiles the exact OpenMLS 0.8.1 source base through a 
 
 ADR 0033 now gives the fork a validated canonical hybrid-delivery byte value bound to one path-node index. It is a preparatory component for replacing experimental UpdatePath delivery, not a detached message and not yet a live Commit field; sender/receiver execution and atomic TreeSync application remain future work.
 
+ADR 0034 makes the hybrid sender/receiver engine provider-neutral and proves a fork-local HPKE provider can seal and open an mKyber hybrid path level. It still cannot be inserted into TreeSync: mKyber public/secret material must first be bound to every TreeKEM resolution node, including parent nodes, rather than only to leaf KeyPackages.
+
 Ubuntu 26.04 development setup is verified with the repository-pinned Rust 1.93.1 toolchain, including `rustfmt` and Clippy. The exact locked dependency graph is cached locally, and the workspace passes a locked offline all-target check.
 
 ## How to use it

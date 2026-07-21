@@ -4,10 +4,15 @@
 //! UpdatePath, derive a path secret, or make an experimental commit available.
 //! The private-use values are intentionally not standardized or interoperable.
 
-use hybrid_path_secret::HybridPathCiphertext;
+use hybrid_path_secret::{
+    ClassicalHpkePrivateKey, ClassicalHpkeProvider, ClassicalHpkePublicKey,
+    ClassicalHpkeSenderOutput, ClassicalSharedSecret, HybridPathCiphertext, HybridPathLevelError,
+    CLASSICAL_ENCAPSULATION_BYTES, CLASSICAL_SHARED_SECRET_BYTES,
+};
 use mkyber::{MkyberDomain, MkyberEncapsulationKey, ENCAPSULATION_KEY_BYTES};
 use thiserror::Error;
 
+use crate::prelude::{Ciphersuite, OpenMlsCrypto, OpenMlsProvider};
 use crate::{
     extensions::{
         errors::InvalidExtensionError, Extension, ExtensionType, Extensions, UnknownExtension,
@@ -85,6 +90,62 @@ pub enum ExperimentalHybridDeliveryError {
 pub struct ExperimentalHybridPathDelivery {
     path_node_index: u32,
     canonical_bytes: Vec<u8>,
+}
+
+/// Classical HPKE execution provider bound to the local OpenMLS fork types.
+///
+/// It implements the provider-neutral hybrid interface without exposing its
+/// local provider or trait objects to the upstream hybrid-wire crate.
+#[derive(Debug, Default)]
+pub struct ForkClassicalHpkeProvider(openmls_rust_crypto::OpenMlsRustCrypto);
+
+impl ClassicalHpkeProvider for ForkClassicalHpkeProvider {
+    fn setup_sender_and_export(
+        &self,
+        recipient_public_key: &ClassicalHpkePublicKey,
+        info: &[u8],
+        exporter_context: &[u8],
+    ) -> Result<ClassicalHpkeSenderOutput, HybridPathLevelError> {
+        let (encapsulation, shared_secret) = self
+            .0
+            .crypto()
+            .hpke_setup_sender_and_export(
+                Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.hpke_config(),
+                recipient_public_key.as_bytes(),
+                info,
+                exporter_context,
+                CLASSICAL_SHARED_SECRET_BYTES,
+            )
+            .map_err(|_| HybridPathLevelError::ClassicalHpke)?;
+        let encapsulation = encapsulation.as_slice().try_into().map_err(|_| {
+            HybridPathLevelError::InvalidClassicalEncapsulationLength(encapsulation.len())
+        })?;
+        let shared_secret = ClassicalSharedSecret::from_bytes(&shared_secret)
+            .map_err(|_| HybridPathLevelError::Kdf)?;
+        Ok(ClassicalHpkeSenderOutput::new(encapsulation, shared_secret))
+    }
+
+    fn setup_receiver_and_export(
+        &self,
+        encapsulation: &[u8; CLASSICAL_ENCAPSULATION_BYTES],
+        recipient_private_key: &ClassicalHpkePrivateKey,
+        info: &[u8],
+        exporter_context: &[u8],
+    ) -> Result<ClassicalSharedSecret, HybridPathLevelError> {
+        let shared_secret = self
+            .0
+            .crypto()
+            .hpke_setup_receiver_and_export(
+                Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.hpke_config(),
+                encapsulation,
+                recipient_private_key.as_bytes(),
+                info,
+                exporter_context,
+                CLASSICAL_SHARED_SECRET_BYTES,
+            )
+            .map_err(|_| HybridPathLevelError::ClassicalHpke)?;
+        ClassicalSharedSecret::from_bytes(&shared_secret).map_err(|_| HybridPathLevelError::Kdf)
+    }
 }
 
 impl ExperimentalHybridPathDelivery {

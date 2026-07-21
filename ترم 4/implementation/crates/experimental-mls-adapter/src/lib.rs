@@ -18,18 +18,28 @@ pub fn fork_ciphersuite_type_name() -> &'static str {
 #[cfg(test)]
 mod tests {
     use hybrid_path_secret::{
-        HybridPathCiphertext, HybridRecipientCiphertext, PathNodeIndex, RecipientNodeIndex,
+        open_hybrid_path_level_with_provider, seal_hybrid_path_level_with_provider,
+        ClassicalHpkeKeyPair, HybridPathCiphertext, HybridPathLevelContext,
+        HybridPathRecipientPrivate, HybridPathRecipientPublic, HybridPathSecret,
+        HybridRecipientCiphertext, PathNodeIndex, RecipientNodeIndex, TreeArity,
+        MLS_PATH_SECRET_BYTES,
     };
-    use mkyber::{MkyberCommonCiphertext, MkyberDomain, MkyberRecipientCiphertext};
+    use mkyber::{
+        EducationalMkyber512Reference, MkyberCommonCiphertext, MkyberDomain,
+        MkyberRecipientCiphertext, MultiRecipientKem,
+    };
     use openmls_hybrid::{
         experimental_hybrid::{
             mkyber_recipient_capabilities, required_mkyber_recipient_capabilities,
             supports_mkyber_recipient_capabilities, ExperimentalHybridDeliveryError,
-            ExperimentalHybridPathDelivery, ExperimentalMkyberError, MkyberRecipientKeyMaterial,
-            MKYBER_RECIPIENT_KEY_MATERIAL_BYTES, MKYBER_RECIPIENT_KEY_MATERIAL_VERSION,
+            ExperimentalHybridPathDelivery, ExperimentalMkyberError, ForkClassicalHpkeProvider,
+            MkyberRecipientKeyMaterial, MKYBER_RECIPIENT_KEY_MATERIAL_BYTES,
+            MKYBER_RECIPIENT_KEY_MATERIAL_VERSION,
         },
         prelude::{Extension, Extensions, KeyPackage, UnknownExtension},
     };
+    use rand_chacha::ChaCha20Rng;
+    use rand_core::SeedableRng;
 
     use super::{fork_ciphersuite_type_name, OPENMLS_HYBRID_UPSTREAM_REVISION};
 
@@ -117,5 +127,61 @@ mod tests {
                 actual: 3,
             })
         );
+    }
+
+    #[test]
+    fn fork_classical_provider_executes_hybrid_delivery_without_upstream_provider_types() {
+        let backend = EducationalMkyber512Reference;
+        let domain = MkyberDomain::new([0x52; 32]);
+        let mut randomness = ChaCha20Rng::from_seed([0x53; 32]);
+        let (mkyber_public, mkyber_private) = backend
+            .keygen(domain, &mut randomness)
+            .expect("deterministic test mKyber key generation")
+            .into_parts();
+        let (classical_public, classical_private) = ClassicalHpkeKeyPair::generate_with_os_rng()
+            .expect("classical key generation")
+            .into_parts();
+        let context = HybridPathLevelContext::new(
+            b"fork-provider-test".to_vec(),
+            9,
+            1,
+            TreeArity::Binary,
+            PathNodeIndex::new(4),
+            domain,
+            [0x54; 32],
+        );
+        let path_secret = HybridPathSecret::from_bytes(&[0x55; MLS_PATH_SECRET_BYTES])
+            .expect("fixed-size path secret");
+        let recipient_public = HybridPathRecipientPublic::new(
+            RecipientNodeIndex::new(6),
+            mkyber_public,
+            classical_public,
+        );
+        let recipient_private = HybridPathRecipientPrivate::new(
+            RecipientNodeIndex::new(6),
+            mkyber_private,
+            classical_private,
+        );
+        let provider = ForkClassicalHpkeProvider::default();
+
+        let ciphertext = seal_hybrid_path_level_with_provider(
+            &provider,
+            &backend,
+            &mut randomness,
+            &context,
+            &path_secret,
+            &[recipient_public],
+        )
+        .expect("fork provider must seal");
+        let opened = open_hybrid_path_level_with_provider(
+            &provider,
+            &backend,
+            &context,
+            &ciphertext,
+            &recipient_private,
+        )
+        .expect("fork provider must open");
+
+        assert_eq!(opened.as_bytes(), path_secret.as_bytes());
     }
 }
