@@ -1078,6 +1078,7 @@ name = "openmls-hybrid"
 version = "0.8.1"
 dependencies = [
  "log",
+ "mkyber",
  "openmls_rust_crypto 0.5.1",
  "openmls_traits 0.5.0",
  "rayon",

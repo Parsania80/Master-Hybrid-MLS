@@ -173,6 +173,9 @@ pub mod ciphersuite;
 #[cfg(feature = "extensions-draft-08")]
 pub mod component;
 pub mod credentials;
+/// Experimental thesis-local hybrid capability and recipient-key material.
+#[cfg(feature = "experimental-hybrid")]
+pub mod experimental_hybrid;
 pub mod extensions;
 pub mod framing;
 pub mod grease;
