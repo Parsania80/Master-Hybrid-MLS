@@ -16,5 +16,8 @@ thiserror.workspace = true
 transition-auth = { path = "../transition-auth" }
 transition-policy = { path = "../transition-policy" }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true
