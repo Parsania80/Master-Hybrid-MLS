@@ -1,0 +1,11 @@
+[package]
+name = "experimental-mls-adapter"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+openmls-hybrid.workspace = true
+
+[lints]
+workspace = true

@@ -7,6 +7,7 @@ version.workspace = true
 [dependencies]
 arity-state = { path = "../arity-state" }
 csv.workspace = true
+experiment-config = { path = "../experiment-config" }
 hex.workspace = true
 metrics = { path = "../metrics" }
 serde.workspace = true

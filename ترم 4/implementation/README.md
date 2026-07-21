@@ -48,6 +48,10 @@ Task 55 adds the create-new public report family: `commits.csv`, `epochs.csv`, `
 
 Task 56 adds `plot_data.csv` plus `bytes.svg`, `costs.svg`, `savings.svg`, `maturity.svg`, `treecover_size.svg`, and `timings.svg`. Baseline Commit/Welcome bytes and lifecycle timing render as real values. Candidate costs, savings, maturity, and TreeCover size remain explicitly unavailable until real experimental instrumentation exists, so their SVGs display the typed reason instead of a fake zero-valued chart.
 
+Task 57 adds a strict three-file public configuration comparison. It validates that baseline, mKyber, and adaptive TOML files use equivalent controls, derives public per-run workload/committer seeds, and writes raw post-warmup baseline observations plus typed unavailable rows for the two experimental modes. The current output is deliberately a partial comparison: no bandwidth delta, mKyber CPU overhead, or adaptive break-even point exists until an OpenMLS fork executes those modes in accepted commits.
+
+ADR 0030 now imports and compiles the exact OpenMLS 0.8.1 source base through a separately named `openmls-hybrid` adapter, while leaving the maintained baseline dependency unchanged. ADR 0031 requires a fork-native capability and sender/receiver seam before replacing UpdatePath delivery; the fork does not yet carry hybrid UpdatePath, authenticated ArityState, or adaptive-transition behavior, so it cannot yet produce experimental measurements.
+
 Ubuntu 26.04 development setup is verified with the repository-pinned Rust 1.93.1 toolchain, including `rustfmt` and Clippy. The exact locked dependency graph is cached locally, and the workspace passes a locked offline all-target check.
 
 ## How to use it
@@ -57,6 +61,8 @@ The 128-member baseline constructor is available now: `cargo +stable run --bin b
 Before the constructor reports success, it verifies 128 members at epoch 127, baseline binary arity 2 and height 7, actual occupied public leaf indexes `0..127`, common authenticated GroupContext/tree hash, and application delivery to every other member. It returns public facts only and then drops private client state; that lifecycle action is not a formal proof of upstream process-memory zeroization.
 
 Run `cargo +stable test --workspace --all-targets --locked --offline` to verify the baseline and educational mKyber reference tests. Run `cargo +stable run -p mkyber --bin mkyber_benchmark --release --locked --offline` for the standalone reference timing smoke benchmark. It prints only the reference profile/parameters, actual public 704/48-byte component costs, and environment-dependent timing averages; it is not a production benchmark, security evaluation, or thesis experiment result. Generate a baseline report and plots with `cargo +stable run -p report --bin generate_baseline_report --release --locked --offline -- --group-id <PUBLIC_ID> --initial-members <N> --maximum-members <N> --operations <N> --regions <N> --workload mixed --committer round-robin --output output/<run> --report report/<run>`.
+
+Generate the current availability-aware three-mode comparison with `cargo +stable run -p report --bin compare_modes --release --locked --offline -- --baseline-config configs/task57-baseline.toml --mkyber-config configs/task57-mkyber.toml --adaptive-config configs/task57-adaptive.toml --initial-members 2 --maximum-members 4 --operations 6 --regions 2 --output output/<run> --report report/<run>`. It creates `mode_comparison.csv`, `mode_comparison.json`, and `mode_comparison.md`; only baseline is executed today.
 
 ## Security and interoperability warning
 
