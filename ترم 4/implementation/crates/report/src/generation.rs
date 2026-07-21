@@ -189,7 +189,7 @@ pub fn write_baseline_report_artifacts(
     Ok(paths)
 }
 
-fn validate_artifact_directory(
+pub(crate) fn validate_artifact_directory(
     path: &Path,
     required_prefix: &'static str,
     kind: &'static str,
@@ -209,7 +209,7 @@ fn validate_artifact_directory(
     Ok(())
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> Result<(), ReportArtifactError> {
+pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), ReportArtifactError> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)

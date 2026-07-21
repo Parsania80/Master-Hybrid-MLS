@@ -46,6 +46,8 @@ Task 54 adds the versioned public per-commit schema used by later report generat
 
 Task 55 adds the create-new public report family: `commits.csv`, `epochs.csv`, `transition_events.csv`, and `summary.json` under `output/<run>`, plus a 27-subject `report.md` under `report/<run>`. A strict baseline-only CLI preserves unavailable experimental values rather than changing them to zero or estimates. Its release acceptance workload produced six accepted records at final epoch 7 and an explicit `TransitionNotStarted` row; it does not establish experimental-transition behavior or any security property.
 
+Task 56 adds `plot_data.csv` plus `bytes.svg`, `costs.svg`, `savings.svg`, `maturity.svg`, `treecover_size.svg`, and `timings.svg`. Baseline Commit/Welcome bytes and lifecycle timing render as real values. Candidate costs, savings, maturity, and TreeCover size remain explicitly unavailable until real experimental instrumentation exists, so their SVGs display the typed reason instead of a fake zero-valued chart.
+
 Ubuntu 26.04 development setup is verified with the repository-pinned Rust 1.93.1 toolchain, including `rustfmt` and Clippy. The exact locked dependency graph is cached locally, and the workspace passes a locked offline all-target check.
 
 ## How to use it
@@ -54,7 +56,7 @@ The 128-member baseline constructor is available now: `cargo +stable run --bin b
 
 Before the constructor reports success, it verifies 128 members at epoch 127, baseline binary arity 2 and height 7, actual occupied public leaf indexes `0..127`, common authenticated GroupContext/tree hash, and application delivery to every other member. It returns public facts only and then drops private client state; that lifecycle action is not a formal proof of upstream process-memory zeroization.
 
-Run `cargo +stable test --workspace --all-targets --locked --offline` to verify the baseline and educational mKyber reference tests. Run `cargo +stable run -p mkyber --bin mkyber_benchmark --release --locked --offline` for the standalone reference timing smoke benchmark. It prints only the reference profile/parameters, actual public 704/48-byte component costs, and environment-dependent timing averages; it is not a production benchmark, security evaluation, or thesis experiment result. Generate a baseline report with `cargo +stable run -p report --bin generate_baseline_report --release --locked --offline -- --group-id <PUBLIC_ID> --initial-members <N> --maximum-members <N> --operations <N> --regions <N> --workload mixed --committer round-robin --output output/<run> --report report/<run>`.
+Run `cargo +stable test --workspace --all-targets --locked --offline` to verify the baseline and educational mKyber reference tests. Run `cargo +stable run -p mkyber --bin mkyber_benchmark --release --locked --offline` for the standalone reference timing smoke benchmark. It prints only the reference profile/parameters, actual public 704/48-byte component costs, and environment-dependent timing averages; it is not a production benchmark, security evaluation, or thesis experiment result. Generate a baseline report and plots with `cargo +stable run -p report --bin generate_baseline_report --release --locked --offline -- --group-id <PUBLIC_ID> --initial-members <N> --maximum-members <N> --operations <N> --regions <N> --workload mixed --committer round-robin --output output/<run> --report report/<run>`.
 
 ## Security and interoperability warning
 

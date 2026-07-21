@@ -4,7 +4,8 @@
 
 use std::{env, path::PathBuf, process::ExitCode};
 
-use report::generation::generate_baseline_report;
+use report::{generation::write_baseline_report_artifacts, plots::write_baseline_plot_artifacts};
+use simulation::execute_baseline_workload;
 use simulation::{BaselineWorkloadConfig, CommitterStrategy, CommitterWeight, WorkloadProfile};
 
 #[derive(Debug)]
@@ -52,25 +53,57 @@ fn main() -> ExitCode {
         committer_strategy: cli.committer,
         workload_profile: cli.workload,
     };
-    match generate_baseline_report(&workload, &cli.output, &cli.report) {
-        Ok(paths) => {
-            println!(
-                "Generated {} accepted baseline-commit records.",
-                workload.operation_count
-            );
-            println!(
-                "Machine-readable artifacts: {}, {}, {}, {}",
-                paths.commits_csv.display(),
-                paths.epochs_csv.display(),
-                paths.transition_events_csv.display(),
-                paths.summary_json.display(),
-            );
-            println!("Markdown report: {}", paths.report_markdown.display());
-            println!("Experimental metrics remain explicitly unavailable unless real instrumentation records them.");
-            ExitCode::SUCCESS
+    match execute_baseline_workload(&workload) {
+        Ok(execution) => {
+            match write_baseline_report_artifacts(&workload, &execution, &cli.output, &cli.report) {
+                Ok(report_paths) => match write_baseline_plot_artifacts(
+                    &workload,
+                    &execution,
+                    &cli.output,
+                    &cli.report,
+                ) {
+                    Ok(plot_paths) => {
+                        println!(
+                            "Generated {} accepted baseline-commit records.",
+                            workload.operation_count
+                        );
+                        println!(
+                            "Machine-readable artifacts: {}, {}, {}, {}",
+                            report_paths.commits_csv.display(),
+                            report_paths.epochs_csv.display(),
+                            report_paths.transition_events_csv.display(),
+                            report_paths.summary_json.display(),
+                        );
+                        println!(
+                            "Markdown report: {}",
+                            report_paths.report_markdown.display()
+                        );
+                        println!(
+                            "Plot data and SVGs: {}, {}, {}, {}, {}, {}, {}",
+                            plot_paths.plot_data_csv.display(),
+                            plot_paths.bytes_svg.display(),
+                            plot_paths.costs_svg.display(),
+                            plot_paths.savings_svg.display(),
+                            plot_paths.maturity_svg.display(),
+                            plot_paths.treecover_size_svg.display(),
+                            plot_paths.timings_svg.display(),
+                        );
+                        println!("Experimental metrics remain explicitly unavailable unless real instrumentation records them.");
+                        ExitCode::SUCCESS
+                    }
+                    Err(error) => {
+                        eprintln!("generate_baseline_report plot output failed: {error}");
+                        ExitCode::FAILURE
+                    }
+                },
+                Err(error) => {
+                    eprintln!("generate_baseline_report report output failed: {error}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(error) => {
-            eprintln!("generate_baseline_report: {error}");
+            eprintln!("generate_baseline_report workload execution failed: {error}");
             ExitCode::FAILURE
         }
     }
@@ -262,7 +295,7 @@ fn print_usage() {
          \n\
          Workloads: update-only | mixed | removal-heavy | region-skewed:<REGION> | uniform:<SEED>\n\
          Committers: round-robin | leaf-region-balanced | seeded-random:<SEED> | fixed-list:<MEMBER,...> | weighted-random:<SEED>:<MEMBER>=<WEIGHT>,...\n\
-         All inputs are public. The command writes create-new redacted artifacts and never treats unavailable experimental metrics as zero."
+         All inputs are public. The command writes create-new redacted report and plot artifacts and never treats unavailable experimental metrics as zero."
     );
 }
 

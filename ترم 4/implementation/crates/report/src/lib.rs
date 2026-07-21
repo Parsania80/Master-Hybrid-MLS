@@ -5,6 +5,7 @@
 //! Report code must redact secret material and label all experimental results.
 
 pub mod generation;
+pub mod plots;
 
 use arity_state::ArityState;
 use metrics::{CommitByteMetrics, CryptoMetrics, RecipientResolutionMetrics, TopologyMetrics};
