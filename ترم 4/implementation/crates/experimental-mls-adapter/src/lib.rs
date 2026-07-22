@@ -358,7 +358,7 @@ pub fn execute_experimental_adaptive_workload(
     config: &BaselineWorkloadConfig,
 ) -> Result<ExperimentalAdaptiveWorkloadExecution, ExperimentalBinaryWorkloadError> {
     validate_controls(config)?;
-    if config.operation_count < 3 {
+    if config.operation_count < 2 {
         return Err(ExperimentalBinaryWorkloadError::InvalidControls);
     }
 
@@ -422,81 +422,103 @@ pub fn execute_experimental_adaptive_workload(
         .checked_add(1)
         .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
 
-    let first_current_bytes = u64::try_from(normal_wire.len())
-        .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
-    let second_selection = select_committer(&members, config, 2)?;
-    let second_position = member_position(&members, second_selection.member_index)?;
-    let second_epoch_before = members[second_position].group.epoch().as_u64();
-    let second_started = Instant::now();
-    let (second_wire, second_hybrid_metrics) = stage_self_update(&mut members[second_position])?;
-    let second_deliveries = deliver_to_receivers(&mut members, second_position, &second_wire)?;
-    merge_sender_binary(&mut members[second_position])?;
-    let second_epoch_after = converged_epoch(&members)?;
-    ensure_epoch_advance(second_epoch_before, second_epoch_after)?;
-    let policy_record = policy_window
-        .append_accepted(
-            second_epoch_after,
-            CommitImpactFacts {
-                path_delivery_changed: true,
-                recipient_resolution_changed: true,
-                ..CommitImpactFacts::default()
-            },
-        )
-        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
-        .record;
-    accepted_operations.push(AcceptedExperimentalAdaptiveOperation {
-        sequence,
-        phase: ExperimentalAdaptiveCommitPhase::NormalBinaryUpdate,
-        committer_member_index: second_selection.member_index,
-        committer_leaf_index: second_selection.leaf_index,
-        committer_leaf_region: second_selection.leaf_region,
-        epoch_before: second_epoch_before,
-        epoch_after: second_epoch_after,
-        active_member_count: member_count,
-        emitted_commit_bytes: u64::try_from(second_wire.len())
-            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
-        direct_commit_delivery_count: second_deliveries,
-        accepted_lifecycle_elapsed_nanoseconds: second_started.elapsed().as_nanos(),
-        hybrid_delivery: Some(second_hybrid_metrics),
-        arity_state: arity_state_from_group(&members[0].group)?,
-        policy_record: Some(policy_record.clone()),
-        transition: None,
-    });
-    sequence = sequence
-        .checked_add(1)
-        .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
-
-    let normal = arity_state_from_group(&members[0].group)?;
-    let current_bytes = u64::try_from(second_wire.len())
-        .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
     let candidate_bytes = u64::try_from(probe.quaternary_update_wire.len())
         .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
-    let savings = PreflightSavings::from_impactful_costs(
-        &[
-            ImpactfulCommitByteCosts::new(first_current_bytes, candidate_bytes),
-            ImpactfulCommitByteCosts::new(current_bytes, candidate_bytes),
-        ],
-        normal.policy().transition_preflight_bytes(),
-    )
-    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
-    let start_config = adaptive_start_config(&normal)?;
-    let evaluation = TransitionStartEvaluator::new(start_config)
-        .evaluate_post_warmup(
-            &policy_record,
-            PolicyTransitionState::Normal,
-            member_count,
-            &policy_window,
-            Some(savings),
+    let mut costs = vec![ImpactfulCommitByteCosts::new(
+        u64::try_from(normal_wire.len())
+            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+        candidate_bytes,
+    )];
+    let mut last_current_bytes = costs[0].current_bytes();
+    let mut transition_selection = None;
+    let mut transition_position = None;
+    let mut transition_record = policy_record;
+    let mut transition_savings = None;
+    let mut transition_evaluation = None;
+    for workload_sequence in 2..=config.operation_count {
+        let selection = select_committer(&members, config, workload_sequence)?;
+        let position = member_position(&members, selection.member_index)?;
+        let epoch_before = members[position].group.epoch().as_u64();
+        let started = Instant::now();
+        let (wire, hybrid_metrics) = stage_self_update(&mut members[position])?;
+        let deliveries = deliver_to_receivers(&mut members, position, &wire)?;
+        merge_sender_binary(&mut members[position])?;
+        let epoch_after = converged_epoch(&members)?;
+        ensure_epoch_advance(epoch_before, epoch_after)?;
+        last_current_bytes = u64::try_from(wire.len())
+            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
+        costs.push(ImpactfulCommitByteCosts::new(
+            last_current_bytes,
+            candidate_bytes,
+        ));
+        let record = policy_window
+            .append_accepted(
+                epoch_after,
+                CommitImpactFacts {
+                    path_delivery_changed: true,
+                    recipient_resolution_changed: true,
+                    ..CommitImpactFacts::default()
+                },
+            )
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+            .record;
+        accepted_operations.push(AcceptedExperimentalAdaptiveOperation {
+            sequence,
+            phase: ExperimentalAdaptiveCommitPhase::NormalBinaryUpdate,
+            committer_member_index: selection.member_index,
+            committer_leaf_index: selection.leaf_index,
+            committer_leaf_region: selection.leaf_region,
+            epoch_before,
+            epoch_after,
+            active_member_count: member_count,
+            emitted_commit_bytes: last_current_bytes,
+            direct_commit_delivery_count: deliveries,
+            accepted_lifecycle_elapsed_nanoseconds: started.elapsed().as_nanos(),
+            hybrid_delivery: Some(hybrid_metrics),
+            arity_state: arity_state_from_group(&members[0].group)?,
+            policy_record: Some(record.clone()),
+            transition: None,
+        });
+        sequence = sequence
+            .checked_add(1)
+            .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+        let normal = arity_state_from_group(&members[0].group)?;
+        let savings = PreflightSavings::from_impactful_costs(
+            &costs,
+            normal.policy().transition_preflight_bytes(),
         )
         .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
-    if !evaluation.is_triggered() {
+        let evaluation = TransitionStartEvaluator::new(adaptive_start_config(&normal)?)
+            .evaluate_post_warmup(
+                &record,
+                PolicyTransitionState::Normal,
+                member_count,
+                &policy_window,
+                Some(savings),
+            )
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        if evaluation.is_triggered() {
+            transition_selection = Some(selection);
+            transition_position = Some(position);
+            transition_record = record;
+            transition_savings = Some(savings);
+            transition_evaluation = Some(evaluation);
+            break;
+        }
+    }
+    let normal = arity_state_from_group(&members[0].group)?;
+    let Some(second_selection) = transition_selection else {
         return Err(ExperimentalBinaryWorkloadError::TransitionNotAuthorized {
-            current_binary_update_bytes: current_bytes,
+            current_binary_update_bytes: last_current_bytes,
             quaternary_candidate_bytes: candidate_bytes,
             transition_preflight_bytes: u64::try_from(preflight.estimated_bytes())
                 .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
         });
-    }
+    };
+    let second_position = transition_position.ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+    let _policy_record = transition_record;
+    let savings = transition_savings.ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+    let evaluation = transition_evaluation.ok_or(ExperimentalBinaryWorkloadError::Fork)?;
     let mapping = transition_mapping_from_group(&members[0].group)?;
     let treecover = DeliveryOnlyTreeCover::from_mapping(1, &mapping)
         .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
@@ -1309,7 +1331,7 @@ mod tests {
             group_id: b"task-59-binary-workload".to_vec(),
             initial_member_count: 2,
             maximum_member_count: 2,
-            operation_count: 3,
+            operation_count: 11,
             region_count: 2,
             committer_strategy: simulation::CommitterStrategy::RoundRobin,
             workload_profile: simulation::WorkloadProfile::UpdateOnly,
@@ -1332,7 +1354,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_adaptive_carrier_retains_two_real_observations_before_policy_rejection() {
+    fn compact_adaptive_carrier_retains_real_observations_until_workload_end() {
         let config = simulation::BaselineWorkloadConfig {
             group_id: b"task-61-adaptive-workload".to_vec(),
             initial_member_count: 5,
