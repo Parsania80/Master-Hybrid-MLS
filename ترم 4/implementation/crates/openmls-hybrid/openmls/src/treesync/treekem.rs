@@ -27,7 +27,7 @@ use super::{
 };
 use crate::{
     binary_tree::array_representation::LeafNodeIndex,
-    ciphersuite::{hpke, signable::Verifiable, HpkePublicKey},
+    ciphersuite::{hpke, signable::Verifiable},
     error::LibraryError,
     messages::{proposals::AddProposal, EncryptedGroupSecrets, GroupSecrets, PathSecret},
     schedule::{psk::PreSharedKeyId, CommitSecret, JoinerSecret},
@@ -136,10 +136,20 @@ impl TreeSyncDiff<'_> {
 
         let common_path =
             self.filtered_common_direct_path(own_leaf_index, params.sender_leaf_index);
-        let (derived_path, _plain_update_path, keypairs, commit_secret) =
-            ParentNode::derive_path(crypto, ciphersuite, path_secret, common_path)?;
-        // We now check that the public keys in the update path and in the
-        // derived path match up.
+        let (derived_path, _plain_update_path, keypairs, commit_secret) = ParentNode::derive_path(
+            crypto,
+            ciphersuite,
+            path_secret,
+            common_path,
+            #[cfg(feature = "experimental-hybrid")]
+            params
+                .sender_leaf_encryption_key
+                .experimental_mkyber_key()
+                .map(|key| key.domain()),
+        )?;
+        // We now check that the encryption keys in the update path and in the
+        // derived path match up. In experimental mode this includes the
+        // authenticated domain-bound mKyber public material.
         // ValSem204: Public keys from Path must be verified and match the private keys from the direct path
         for (update_parent_node, (_, derived_parent_node)) in params
             .update_path
@@ -147,7 +157,7 @@ impl TreeSyncDiff<'_> {
             .skip(path_position)
             .zip(derived_path.iter())
         {
-            if update_parent_node.public_key() != derived_parent_node.public_key() {
+            if update_parent_node.encryption_key() != derived_parent_node.encryption_key() {
                 return Err(ApplyUpdatePathError::PathMismatch);
             }
         }
@@ -226,6 +236,9 @@ impl TreeSyncDiff<'_> {
 
 pub(crate) struct DecryptPathParams<'a> {
     pub(crate) update_path: &'a [UpdatePathNode],
+    /// The authenticated new leaf encryption key carried by the UpdatePath.
+    /// Its mKyber domain selects deterministic experimental parent derivation.
+    pub(crate) sender_leaf_encryption_key: &'a EncryptionKey,
     pub(crate) sender_leaf_index: LeafNodeIndex,
     pub(crate) exclusion_list: &'a HashSet<&'a LeafNodeIndex>,
     pub(crate) group_context: &'a [u8],
@@ -260,11 +273,6 @@ impl UpdatePathNode {
     /// Return the `encrypted_path_secrets`.
     fn encrypted_path_secrets(&self, ciphertext_index: usize) -> Option<&HpkeCiphertext> {
         self.encrypted_path_secrets.get(ciphertext_index)
-    }
-
-    /// Return the `public_key`.
-    fn public_key(&self) -> &HpkePublicKey {
-        self.public_key.key()
     }
 
     pub(crate) fn encryption_key(&self) -> &EncryptionKey {

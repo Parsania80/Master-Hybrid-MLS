@@ -12,7 +12,6 @@ use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize, VLBy
 use super::encryption_keys::{EncryptionKey, EncryptionKeyPair};
 use crate::{
     binary_tree::array_representation::{LeafNodeIndex, ParentNodeIndex},
-    ciphersuite::HpkePublicKey,
     error::LibraryError,
     messages::PathSecret,
     schedule::CommitSecret,
@@ -119,6 +118,9 @@ impl ParentNode {
         ciphersuite: Ciphersuite,
         path_secret: PathSecret,
         path_indices: Vec<ParentNodeIndex>,
+        #[cfg(feature = "experimental-hybrid")] experimental_mkyber_domain: Option<
+            mkyber::MkyberDomain,
+        >,
     ) -> Result<PathDerivationResult, LibraryError> {
         let mut next_path_secret = path_secret;
         let mut path_secrets = Vec::with_capacity(path_indices.len());
@@ -148,6 +150,18 @@ impl ParentNode {
                 // Derive a key pair from the path secret. This includes the
                 // intermediate derivation of a node secret.
                 let keypair = path_secret.derive_key_pair(crypto, ciphersuite)?;
+                #[cfg(feature = "experimental-hybrid")]
+                let keypair = match experimental_mkyber_domain {
+                    Some(domain) => keypair.with_experimental_mkyber_keypair(
+                        path_secret.derive_experimental_mkyber_keypair(
+                            crypto,
+                            ciphersuite,
+                            domain,
+                            index.u32(),
+                        )?,
+                    )?,
+                    None => keypair,
+                };
                 let parent_node = ParentNode::from(keypair.public_key().clone());
                 // Store the current path secret and the derived public key for
                 // later encryption.
@@ -171,11 +185,6 @@ impl ParentNode {
 
         let commit_secret = next_path_secret.into();
         Ok((path, update_path_nodes, keypairs, commit_secret))
-    }
-
-    /// Return a reference to the `public_key` of this node.
-    pub(crate) fn public_key(&self) -> &HpkePublicKey {
-        self.encryption_key.key()
     }
 
     /// Return a reference to the `public_key` of this node.

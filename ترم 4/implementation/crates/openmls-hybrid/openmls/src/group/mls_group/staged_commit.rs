@@ -301,7 +301,7 @@ impl MlsGroup {
                     &decryption_keypairs,
                     self.own_leaf_index(),
                     sender_index,
-                    path.nodes(),
+                    &path,
                     &apply_proposals_values.exclusion_list(),
                 )?;
 

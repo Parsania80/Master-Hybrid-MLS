@@ -13,7 +13,7 @@ use hybrid_path_secret::{
 };
 use mkyber::{
     EducationalMkyber512Reference, MkyberDecapsulationKey, MkyberDomain, MkyberEncapsulationKey,
-    ENCAPSULATION_KEY_BYTES,
+    DECAPSULATION_KEY_BYTES, ENCAPSULATION_KEY_BYTES,
 };
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -209,25 +209,71 @@ pub enum ExperimentalNodeKeyError {
 
 /// Private mKyber node material retained only in the local fork lifecycle store.
 ///
-/// It is not debug-formatted. Its byte vector is zeroized when the record is
-/// retired or dropped. A future storage integration may serialize this internal
-/// record only through the existing private key-store boundary.
-struct ExperimentalMkyberNodePrivateKey {
-    domain: MkyberDomain,
-    private_key: Vec<u8>,
+/// It is not debug-formatted. Its fixed-size bytes are zeroized when the record
+/// is retired or dropped. It is crate-visible solely so `EncryptionKeyPair` can
+/// persist a matching private record through the existing private-key store.
+#[derive(Clone, TlsSerialize, TlsDeserialize, TlsDeserializeBytes, TlsSize)]
+pub(crate) struct ExperimentalMkyberNodePrivateKey {
+    domain: [u8; 32],
+    private_key: [u8; DECAPSULATION_KEY_BYTES],
 }
 
 impl ExperimentalMkyberNodePrivateKey {
-    fn from_mkyber_key(private_key: MkyberDecapsulationKey) -> Self {
-        Self {
-            domain: private_key.domain(),
-            private_key: private_key.as_bytes().to_vec(),
-        }
+    pub(crate) fn from_mkyber_key(
+        private_key: MkyberDecapsulationKey,
+    ) -> Result<Self, ExperimentalNodeKeyError> {
+        let domain = *private_key.domain().as_bytes();
+        let private_key = private_key
+            .as_bytes()
+            .try_into()
+            .map_err(|_| ExperimentalNodeKeyError::Mkyber)?;
+        Ok(Self {
+            domain,
+            private_key,
+        })
     }
 
-    fn to_mkyber_key(&self) -> Result<MkyberDecapsulationKey, ExperimentalNodeKeyError> {
-        MkyberDecapsulationKey::from_bytes(self.domain, self.private_key.clone())
-            .map_err(|_| ExperimentalNodeKeyError::Mkyber)
+    pub(crate) fn to_mkyber_key(&self) -> Result<MkyberDecapsulationKey, ExperimentalNodeKeyError> {
+        MkyberDecapsulationKey::from_bytes(
+            MkyberDomain::new(self.domain),
+            self.private_key.to_vec(),
+        )
+        .map_err(|_| ExperimentalNodeKeyError::Mkyber)
+    }
+}
+
+impl Serialize for ExperimentalMkyberNodePrivateKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ExperimentalMkyberNodePrivateKey", 2)?;
+        state.serialize_field("domain", &self.domain)?;
+        state.serialize_field("private_key", self.private_key.as_slice())?;
+        state.end()
+    }
+}
+
+#[derive(Deserialize)]
+struct ExperimentalMkyberNodePrivateKeySerde {
+    domain: [u8; 32],
+    private_key: Vec<u8>,
+}
+
+impl<'de> Deserialize<'de> for ExperimentalMkyberNodePrivateKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ExperimentalMkyberNodePrivateKeySerde::deserialize(deserializer)?;
+        let private_key = wire
+            .private_key
+            .try_into()
+            .map_err(|_| serde::de::Error::custom("invalid mKyber private-key length"))?;
+        Ok(Self {
+            domain: wire.domain,
+            private_key,
+        })
     }
 }
 
@@ -241,7 +287,7 @@ impl fmt::Debug for ExperimentalMkyberNodePrivateKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ExperimentalMkyberNodePrivateKey")
-            .field("domain", &self.domain)
+            .field("domain", &MkyberDomain::new(self.domain))
             .field("private_key", &"<redacted>")
             .finish()
     }
@@ -277,7 +323,7 @@ impl ExperimentalMkyberNodeKeyStore {
         let public_key = ExperimentalMkyberNodePublicKey::from_mkyber_key(&public_key);
         self.private_keys.insert(
             node_id,
-            ExperimentalMkyberNodePrivateKey::from_mkyber_key(private_key),
+            ExperimentalMkyberNodePrivateKey::from_mkyber_key(private_key)?,
         );
         Ok(public_key)
     }
@@ -556,6 +602,13 @@ pub fn mkyber_recipient_capabilities() -> Capabilities {
         None,
         None,
     )
+}
+
+/// Adds the required experimental capabilities without discarding caller configuration.
+pub(crate) fn ensure_mkyber_recipient_capabilities(capabilities: &mut Capabilities) {
+    for extension_type in required_mkyber_recipient_capabilities() {
+        capabilities.add_extension_capability(extension_type);
+    }
 }
 
 /// Returns whether capabilities advertise all extensions required by this fork.

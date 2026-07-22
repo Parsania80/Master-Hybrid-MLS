@@ -215,6 +215,40 @@ impl LeafNode {
         Ok((leaf_node, encryption_key_pair))
     }
 
+    /// Creates a fresh leaf with matching OS-random experimental mKyber material.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn new_with_experimental_mkyber(
+        provider: &impl OpenMlsProvider,
+        signer: &impl Signer,
+        new_leaf_node_params: NewLeafNodeParams,
+        domain: mkyber::MkyberDomain,
+    ) -> Result<(Self, EncryptionKeyPair), LibraryError> {
+        let NewLeafNodeParams {
+            ciphersuite,
+            credential_with_key,
+            leaf_node_source,
+            capabilities,
+            extensions,
+            tree_info_tbs,
+        } = new_leaf_node_params;
+        let encryption_key_pair = EncryptionKeyPair::random_with_experimental_mkyber(
+            provider.rand(),
+            provider.crypto(),
+            ciphersuite,
+            domain,
+        )?;
+        let leaf_node = Self::new_with_key(
+            encryption_key_pair.public_key().clone(),
+            credential_with_key,
+            leaf_node_source,
+            capabilities,
+            extensions,
+            tree_info_tbs,
+            signer,
+        )?;
+        Ok((leaf_node, encryption_key_pair))
+    }
+
     /// Creates a new placeholder [`LeafNode`] that is used to build external
     /// commits.
     ///
@@ -272,8 +306,28 @@ impl LeafNode {
         group_id: GroupId,
         leaf_index: LeafNodeIndex,
         signer: &impl Signer,
+        #[cfg(feature = "experimental-hybrid")] experimental_mkyber_domain: Option<
+            mkyber::MkyberDomain,
+        >,
     ) -> Result<(Self, EncryptionKeyPair), LibraryError> {
-        let encryption_key_pair = EncryptionKeyPair::random(rand, crypto, ciphersuite)?;
+        let encryption_key_pair = {
+            #[cfg(feature = "experimental-hybrid")]
+            {
+                match experimental_mkyber_domain {
+                    Some(domain) => EncryptionKeyPair::random_with_experimental_mkyber(
+                        rand,
+                        crypto,
+                        ciphersuite,
+                        domain,
+                    )?,
+                    None => EncryptionKeyPair::random(rand, crypto, ciphersuite)?,
+                }
+            }
+            #[cfg(not(feature = "experimental-hybrid"))]
+            {
+                EncryptionKeyPair::random(rand, crypto, ciphersuite)?
+            }
+        };
 
         let leaf_node_tbs = LeafNodeTbs::new(
             encryption_key_pair.public_key().clone(),

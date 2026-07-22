@@ -376,6 +376,31 @@ impl PathSecret {
         Ok((HpkePublicKey::from(public), private).into())
     }
 
+    /// Derives deterministic experimental mKyber parent material from this MLS path secret.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn derive_experimental_mkyber_keypair(
+        &self,
+        crypto: &impl OpenMlsCrypto,
+        ciphersuite: Ciphersuite,
+        domain: mkyber::MkyberDomain,
+        parent_node_index: u32,
+    ) -> Result<mkyber::MkyberKeyPair, LibraryError> {
+        let mut context = Vec::with_capacity(36);
+        context.extend_from_slice(domain.as_bytes());
+        context.extend_from_slice(&parent_node_index.to_be_bytes());
+        let seed = self
+            .path_secret
+            .kdf_expand_label(crypto, ciphersuite, "mKyber TreeKEM node", &context, 32)
+            .map_err(LibraryError::unexpected_crypto_error)?;
+        let seed = seed
+            .as_slice()
+            .try_into()
+            .map_err(|_| LibraryError::custom("invalid mKyber TreeKEM seed length"))?;
+        mkyber::EducationalMkyber512Reference
+            .keygen_from_derived_seed(domain, seed)
+            .map_err(|_| LibraryError::custom("experimental mKyber parent key derivation failed"))
+    }
+
     /// Derives a path secret.
     pub(crate) fn derive_path_secret(
         &self,

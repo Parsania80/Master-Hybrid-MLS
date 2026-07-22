@@ -301,6 +301,7 @@ pub fn run_test_vector(test: TreeKemTest, provider: &impl OpenMlsProvider) {
 
             let params = DecryptPathParams {
                 update_path: update_path.nodes(),
+                sender_leaf_encryption_key: update_path.leaf_node().encryption_key(),
                 sender_leaf_index: LeafNodeIndex::new(path_test.sender),
                 exclusion_list: &HashSet::default(),
                 group_context: &group_context.tls_serialize_detached().unwrap(),
@@ -337,6 +338,7 @@ fn apply_update_path(
 ) -> CommitSecret {
     let params = DecryptPathParams {
         update_path: update_path.nodes(),
+        sender_leaf_encryption_key: update_path.leaf_node().encryption_key(),
         sender_leaf_index: LeafNodeIndex::new(sender),
         exclusion_list: &HashSet::default(),
         group_context: &group_context.tls_serialize_detached().unwrap(),

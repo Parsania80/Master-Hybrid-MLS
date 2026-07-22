@@ -117,6 +117,17 @@ impl Capabilities {
         &self.extensions
     }
 
+    /// Adds an extension capability when it is not already advertised.
+    ///
+    /// This preserves caller-provided capabilities while allowing a
+    /// feature-gated construction path to require additional private-use
+    /// extensions.
+    pub(crate) fn add_extension_capability(&mut self, extension_type: ExtensionType) {
+        if !self.extensions.contains(&extension_type) {
+            self.extensions.push(extension_type);
+        }
+    }
+
     /// Get a reference to the list of supported proposals.
     pub fn proposals(&self) -> &[ProposalType] {
         &self.proposals

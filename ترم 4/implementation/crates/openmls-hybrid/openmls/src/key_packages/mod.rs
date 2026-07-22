@@ -88,6 +88,10 @@
 //!
 //! See [`KeyPackage`] for more details on how to use key packages.
 
+#[cfg(feature = "experimental-hybrid")]
+use crate::experimental_hybrid::{
+    ensure_mkyber_recipient_capabilities, ExperimentalNodeKeyError, MkyberRecipientKeyMaterial,
+};
 use crate::{
     ciphersuite::{
         hash_ref::{make_key_package_ref, KeyPackageRef},
@@ -107,6 +111,8 @@ use crate::{
     },
     versions::ProtocolVersion,
 };
+#[cfg(feature = "experimental-hybrid")]
+use mkyber::MkyberDomain;
 use openmls_traits::{
     crypto::OpenMlsCrypto, signatures::Signer, storage::StorageProvider, types::Ciphersuite,
 };
@@ -321,6 +327,52 @@ impl KeyPackage {
         })
     }
 
+    /// Creates a KeyPackage with a signed, domain-bound mKyber recipient key.
+    #[cfg(feature = "experimental-hybrid")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_with_experimental_mkyber(
+        ciphersuite: Ciphersuite,
+        provider: &impl OpenMlsProvider,
+        signer: &impl Signer,
+        credential_with_key: CredentialWithKey,
+        lifetime: Lifetime,
+        extensions: Extensions<KeyPackage>,
+        leaf_node_capabilities: Capabilities,
+        leaf_node_extensions: Extensions<LeafNode>,
+        domain: MkyberDomain,
+    ) -> Result<KeyPackageCreationResult, KeyPackageNewError> {
+        if ciphersuite.signature_algorithm() != signer.signature_scheme() {
+            return Err(KeyPackageNewError::CiphersuiteSignatureSchemeMismatch);
+        }
+
+        let ikm = Secret::random(ciphersuite, provider.rand())
+            .map_err(LibraryError::unexpected_crypto_error)?;
+        let init_key = provider
+            .crypto()
+            .derive_hpke_keypair(ciphersuite.hpke_config(), ikm.as_slice())
+            .map_err(|e| {
+                KeyPackageNewError::LibraryError(LibraryError::unexpected_crypto_error(e))
+            })?;
+        let (key_package, encryption_keypair) = Self::new_from_keys_with_experimental_mkyber(
+            ciphersuite,
+            provider,
+            signer,
+            credential_with_key,
+            lifetime,
+            extensions,
+            leaf_node_capabilities,
+            leaf_node_extensions,
+            init_key.public.into(),
+            domain,
+        )?;
+
+        Ok(KeyPackageCreationResult {
+            key_package,
+            encryption_keypair,
+            init_private_key: init_key.private,
+        })
+    }
+
     /// Create a new key package for the given `ciphersuite` and `identity`.
     ///
     /// The HPKE init key must have been generated before and the private part
@@ -367,6 +419,58 @@ impl KeyPackage {
 
         let key_package = key_package_tbs.sign(signer)?;
 
+        Ok((key_package, encryption_key_pair))
+    }
+
+    /// Builds the signed experimental KeyPackage from generated matched leaf material.
+    #[cfg(feature = "experimental-hybrid")]
+    #[allow(clippy::too_many_arguments)]
+    fn new_from_keys_with_experimental_mkyber(
+        ciphersuite: Ciphersuite,
+        provider: &impl OpenMlsProvider,
+        signer: &impl Signer,
+        credential_with_key: CredentialWithKey,
+        lifetime: Lifetime,
+        mut extensions: Extensions<KeyPackage>,
+        mut capabilities: Capabilities,
+        leaf_node_extensions: Extensions<LeafNode>,
+        init_key: InitKey,
+        domain: MkyberDomain,
+    ) -> Result<(Self, EncryptionKeyPair), KeyPackageNewError> {
+        ensure_mkyber_recipient_capabilities(&mut capabilities);
+        let new_leaf_node_params = NewLeafNodeParams {
+            ciphersuite,
+            leaf_node_source: LeafNodeSource::KeyPackage(lifetime),
+            credential_with_key,
+            capabilities,
+            extensions: leaf_node_extensions,
+            tree_info_tbs: TreeInfoTbs::KeyPackage,
+        };
+        let (leaf_node, encryption_key_pair) =
+            LeafNode::new_with_experimental_mkyber(provider, signer, new_leaf_node_params, domain)?;
+        let mkyber_public_key = encryption_key_pair
+            .public_key()
+            .experimental_mkyber_key()
+            .ok_or_else(|| LibraryError::custom("experimental mKyber leaf key is missing"))?
+            .to_mkyber_key()
+            .map_err(|_| LibraryError::custom("experimental mKyber leaf key is invalid"))?;
+        let material = MkyberRecipientKeyMaterial::new(mkyber_public_key);
+        extensions
+            .add(material.as_key_package_extension())
+            .map_err(|_| {
+                LibraryError::custom(
+                    "experimental mKyber recipient extension is duplicate or invalid",
+                )
+            })?;
+
+        let key_package = KeyPackageTbs {
+            protocol_version: ProtocolVersion::default(),
+            ciphersuite,
+            init_key,
+            leaf_node,
+            extensions,
+        }
+        .sign(signer)?;
         Ok((key_package, encryption_key_pair))
     }
 
@@ -573,6 +677,47 @@ impl KeyPackageBuilder {
 
         Ok(full_kp)
     }
+
+    /// Finalizes a KeyPackage with signed matched mKyber leaf recipient material.
+    ///
+    /// This is thesis-local, feature-gated experimental code and is not
+    /// interoperable with ordinary MLS clients.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn build_with_experimental_mkyber(
+        mut self,
+        ciphersuite: Ciphersuite,
+        provider: &impl OpenMlsProvider,
+        signer: &impl Signer,
+        credential_with_key: CredentialWithKey,
+        domain: MkyberDomain,
+    ) -> Result<KeyPackageBundle, KeyPackageNewError> {
+        self.ensure_last_resort();
+        let KeyPackageCreationResult {
+            key_package,
+            encryption_keypair,
+            init_private_key,
+        } = KeyPackage::create_with_experimental_mkyber(
+            ciphersuite,
+            provider,
+            signer,
+            credential_with_key,
+            self.key_package_lifetime.unwrap_or_default(),
+            self.key_package_extensions.unwrap_or_default(),
+            self.leaf_node_capabilities.unwrap_or_default(),
+            self.leaf_node_extensions.unwrap_or_default(),
+            domain,
+        )?;
+        let full_kp = KeyPackageBundle {
+            key_package,
+            private_init_key: init_private_key,
+            private_encryption_key: encryption_keypair.private_key().clone(),
+        };
+        provider
+            .storage()
+            .write_key_package(&full_kp.key_package.hash_ref(provider.crypto())?, &full_kp)
+            .map_err(|_| KeyPackageNewError::StorageError)?;
+        Ok(full_kp)
+    }
 }
 
 /// A [`KeyPackageBundle`] contains a [`KeyPackage`] and the init and encryption
@@ -597,6 +742,15 @@ impl KeyPackageBundle {
     /// Get a reference to the private init key.
     pub fn init_private_key(&self) -> &HpkePrivateKey {
         &self.private_init_key
+    }
+
+    /// Returns the experimental mKyber private key paired with this bundle's
+    /// signed leaf material for a future hybrid receiver operation.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn experimental_mkyber_private_key(
+        &self,
+    ) -> Result<Option<mkyber::MkyberDecapsulationKey>, ExperimentalNodeKeyError> {
+        self.encryption_key_pair().experimental_mkyber_private_key()
     }
 
     /// Get the encryption key pair.

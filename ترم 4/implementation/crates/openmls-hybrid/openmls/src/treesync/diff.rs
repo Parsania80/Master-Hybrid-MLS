@@ -300,7 +300,18 @@ impl TreeSyncDiff<'_> {
 
         let path_indices = self.filtered_direct_path(leaf_index);
 
-        ParentNode::derive_path(crypto, ciphersuite, path_secret, path_indices)
+        ParentNode::derive_path(
+            crypto,
+            ciphersuite,
+            path_secret,
+            path_indices,
+            #[cfg(feature = "experimental-hybrid")]
+            self.leaf(leaf_index).and_then(|leaf| {
+                leaf.encryption_key()
+                    .experimental_mkyber_key()
+                    .map(|key| key.domain())
+            }),
+        )
     }
 
     /// Given a new [`LeafNode`], use it to create a new path starting from
@@ -355,6 +366,12 @@ impl TreeSyncDiff<'_> {
             group_id,
             leaf_index,
             signer,
+            #[cfg(feature = "experimental-hybrid")]
+            self.leaf(leaf_index).and_then(|leaf| {
+                leaf.encryption_key()
+                    .experimental_mkyber_key()
+                    .map(|key| key.domain())
+            }),
         )?;
 
         // We insert the fresh leaf into the tree.

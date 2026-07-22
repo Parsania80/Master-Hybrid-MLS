@@ -39,9 +39,14 @@ mod tests {
             MkyberRecipientKeyMaterial, MKYBER_RECIPIENT_KEY_MATERIAL_BYTES,
             MKYBER_RECIPIENT_KEY_MATERIAL_VERSION,
         },
-        prelude::{Extension, Extensions, KeyPackage, UnknownExtension},
+        prelude::{
+            BasicCredential, Ciphersuite, CredentialWithKey, Extension, Extensions, KeyPackage,
+            UnknownExtension,
+        },
         treesync::{EncryptionKey, ParentNode},
     };
+    use openmls_hybrid_basic_credential::SignatureKeyPair;
+    use openmls_hybrid_rust_crypto::OpenMlsRustCrypto;
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
     use tls_codec::{Deserialize as TlsDeserializeTrait, Serialize as TlsSerializeTrait};
@@ -305,5 +310,71 @@ mod tests {
             &node_key
         );
         assert_eq!(decoded_parent, parent);
+    }
+
+    #[test]
+    fn experimental_key_package_binds_signed_leaf_and_extension_to_one_mkyber_pair() {
+        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+        let provider = OpenMlsRustCrypto::default();
+        let signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
+            .expect("supported signature key generation");
+        let credential_with_key = CredentialWithKey {
+            credential: BasicCredential::new(b"experimental-key-package".to_vec()).into(),
+            signature_key: signer.public().into(),
+        };
+        let domain = MkyberDomain::new([0x81; 32]);
+        let bundle = KeyPackage::builder()
+            .build_with_experimental_mkyber(
+                ciphersuite,
+                &provider,
+                &signer,
+                credential_with_key,
+                domain,
+            )
+            .expect("experimental KeyPackage build");
+        let signed_material = MkyberRecipientKeyMaterial::from_key_package(bundle.key_package())
+            .expect("signed KeyPackage material");
+        let leaf_material = bundle
+            .key_package()
+            .leaf_node()
+            .encryption_key()
+            .experimental_mkyber_key()
+            .expect("bound leaf material");
+
+        assert_eq!(signed_material.domain(), domain);
+        assert_eq!(
+            signed_material.public_key().as_bytes(),
+            leaf_material
+                .to_mkyber_key()
+                .expect("bound leaf mKyber public key")
+                .as_bytes(),
+        );
+        assert!(supports_mkyber_recipient_capabilities(
+            bundle.key_package().leaf_node().capabilities()
+        ));
+        let recipient = RecipientId::new(12);
+        let recipient_set = RecipientSet::new(
+            domain,
+            vec![RecipientPublicKey {
+                recipient,
+                key: signed_material.public_key().clone(),
+            }],
+        )
+        .expect("single recipient set");
+        let backend = EducationalMkyber512Reference;
+        let encapsulation = backend
+            .encapsulate_with_os_rng(&recipient_set)
+            .expect("signed public key encapsulation");
+        let recovered = backend
+            .decapsulate(
+                &bundle
+                    .experimental_mkyber_private_key()
+                    .expect("private bundle key reconstruction")
+                    .expect("matched private bundle key"),
+                &encapsulation.ciphertext,
+                recipient,
+            )
+            .expect("matched private bundle key decapsulation");
+        assert_eq!(recovered.as_bytes(), encapsulation.shared_secret.as_bytes());
     }
 }

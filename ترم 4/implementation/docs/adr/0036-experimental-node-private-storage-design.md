@@ -48,8 +48,9 @@ used by the current private-key lifecycle.
 - The public-key serialization change is usable for testable TreeSync state,
   but it does not make an ordinary fork tree a valid hybrid tree: `None` is
   still permitted until experimental validation and pair generation arrive.
-- KeyPackage creation, parent-path derivation, replacement, deletion, and
-  staged-commit persistence are the next coupled implementation scope.
+- ADR 0037 implements KeyPackage creation and parent-path derivation. Pair
+  replacement, deletion, and staged-commit persistence remain the next coupled
+  implementation scope.
 - No hybrid UpdatePath ciphertext, Commit acceptance, adaptive transition, or
   Task 57 experimental metric is available through this decision.
 

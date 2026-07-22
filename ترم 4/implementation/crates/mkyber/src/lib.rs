@@ -11,7 +11,8 @@
 use core::fmt;
 
 use rand::rngs::OsRng;
-use rand_core::{CryptoRng, RngCore};
+use rand_chacha::ChaCha20Rng;
+use rand_core::{CryptoRng, RngCore, SeedableRng};
 use sha3::{
     digest::{ExtendableOutput, Update, XofReader},
     Digest, Sha3_256, Shake128, Shake256,
@@ -26,6 +27,8 @@ pub const ENCAPSULATION_KEY_BYTES: usize = 768;
 pub const COMMON_CIPHERTEXT_BYTES: usize = 704;
 /// mKyber512 per-recipient ciphertext-component size in bytes.
 pub const RECIPIENT_CIPHERTEXT_BYTES: usize = 48;
+/// mKyber512 reference-profile decapsulation-key size in bytes.
+pub const DECAPSULATION_KEY_BYTES: usize = ENCAPSULATION_KEY_BYTES * 2 + 32;
 
 /// A secure randomness source accepted by a backend implementation.
 ///
@@ -622,6 +625,20 @@ impl EducationalMkyber512Reference {
         self.keygen(domain, &mut randomness)
     }
 
+    /// Generates a pair from a secret, domain-separated protocol derivation.
+    ///
+    /// This is reserved for a protocol that derives equivalent private tree
+    /// state at multiple members. The seed must come from authenticated secret
+    /// state, never from a public experiment seed or user-provided randomness.
+    pub fn keygen_from_derived_seed(
+        &self,
+        domain: MkyberDomain,
+        seed: [u8; 32],
+    ) -> Result<MkyberKeyPair, MkyberError> {
+        let mut randomness = ChaCha20Rng::from_seed(seed);
+        self.keygen(domain, &mut randomness)
+    }
+
     /// Encapsulates using the operating system's cryptographic RNG.
     ///
     /// This is the normal reference-code entry point. Deterministic entropy is
@@ -655,11 +672,11 @@ impl MultiRecipientKem for EducationalMkyber512Reference {
         let public_key = MkyberEncapsulationKey::from_bytes(domain, &public_bytes)?;
 
         let secret_bytes = Zeroizing::new(pack_polyvec_12(&secret));
-        let mut private_bytes = Vec::with_capacity(REFERENCE_SECRET_KEY_BYTES);
+        let mut private_bytes = Vec::with_capacity(DECAPSULATION_KEY_BYTES);
         private_bytes.extend_from_slice(&secret_bytes[..]);
         private_bytes.extend_from_slice(&public_bytes);
         private_bytes.extend_from_slice(&fallback[..]);
-        debug_assert_eq!(private_bytes.len(), REFERENCE_SECRET_KEY_BYTES);
+        debug_assert_eq!(private_bytes.len(), DECAPSULATION_KEY_BYTES);
 
         let private_key = MkyberDecapsulationKey::from_bytes(domain, private_bytes)?;
         MkyberKeyPair::new(public_key, private_key)
@@ -858,7 +875,6 @@ const ETA2: usize = 2;
 const DU: usize = 11;
 const DV: usize = 3;
 const MESSAGE_BYTES: usize = 16;
-const REFERENCE_SECRET_KEY_BYTES: usize = ENCAPSULATION_KEY_BYTES * 2 + 32;
 
 const TAG_MATRIX: &[u8] = b"mkyber512-thesis-v1/matrix";
 const TAG_KEYGEN_SECRET: &[u8] = b"mkyber512-thesis-v1/keygen-secret";
@@ -1147,7 +1163,7 @@ fn parse_reference_private_key(
     private_key: &MkyberDecapsulationKey,
 ) -> Result<(PolyVec, PolyVec, [u8; 32]), MkyberError> {
     let bytes = private_key.as_bytes();
-    if bytes.len() != REFERENCE_SECRET_KEY_BYTES {
+    if bytes.len() != DECAPSULATION_KEY_BYTES {
         return Err(MkyberError::BackendRejected);
     }
     let secret = unpack_polyvec_12(&bytes[..ENCAPSULATION_KEY_BYTES])?;
@@ -1688,7 +1704,7 @@ mod tests {
         let backend = EducationalMkyber512Reference;
         let (alice, _, encapsulation) = deterministic_two_recipient_encapsulation(8);
         let malformed =
-            MkyberDecapsulationKey::from_bytes(DOMAIN, vec![0; REFERENCE_SECRET_KEY_BYTES - 1])
+            MkyberDecapsulationKey::from_bytes(DOMAIN, vec![0; DECAPSULATION_KEY_BYTES - 1])
                 .expect("non-empty malformed private material must construct");
 
         assert!(matches!(

@@ -28,7 +28,7 @@ use crate::{
             encryption_keys::EncryptionKeyPair, leaf_node::LeafNode,
             parent_node::PlainUpdatePathNode,
         },
-        treekem::{DecryptPathParams, UpdatePath, UpdatePathNode},
+        treekem::{DecryptPathParams, UpdatePath},
         RatchetTree, TreeSync,
     },
 };
@@ -129,11 +129,12 @@ impl<'a> PublicGroupDiff<'a> {
         owned_keys: &[&EncryptionKeyPair],
         own_leaf_index: LeafNodeIndex,
         sender_leaf_index: LeafNodeIndex,
-        update_path: &[UpdatePathNode],
+        update_path: &UpdatePath,
         exclusion_list: &HashSet<&LeafNodeIndex>,
     ) -> Result<(Vec<EncryptionKeyPair>, CommitSecret), ApplyUpdatePathError> {
         let params = DecryptPathParams {
-            update_path,
+            update_path: update_path.nodes(),
+            sender_leaf_encryption_key: update_path.leaf_node().encryption_key(),
             sender_leaf_index,
             exclusion_list,
             group_context: &self

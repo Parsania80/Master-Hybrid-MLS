@@ -10,12 +10,16 @@ use serde::{Deserialize, Serialize};
 use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize, VLBytes};
 
 #[cfg(feature = "experimental-hybrid")]
-use crate::experimental_hybrid::ExperimentalMkyberNodePublicKey;
+use crate::experimental_hybrid::{
+    ExperimentalMkyberNodePrivateKey, ExperimentalMkyberNodePublicKey, ExperimentalNodeKeyError,
+};
 use crate::{
     ciphersuite::{hpke, HpkePrivateKey, HpkePublicKey, Secret},
     error::LibraryError,
     storage::{OpenMlsProvider, StorageProvider},
 };
+#[cfg(feature = "experimental-hybrid")]
+use mkyber::{EducationalMkyber512Reference, MkyberDomain, MkyberKeyPair};
 
 /// [`EncryptionKey`] contains an HPKE public key that allows the encryption of
 /// path secrets in MLS commits.
@@ -105,6 +109,8 @@ impl From<Vec<u8>> for EncryptionKey {
 #[cfg_attr(any(test, feature = "test-utils"), derive(PartialEq, Eq))]
 pub struct EncryptionPrivateKey {
     key: HpkePrivateKey,
+    #[cfg(feature = "experimental-hybrid")]
+    experimental_mkyber_key: Option<ExperimentalMkyberNodePrivateKey>,
 }
 
 impl Debug for EncryptionPrivateKey {
@@ -116,19 +122,30 @@ impl Debug for EncryptionPrivateKey {
         #[cfg(not(feature = "crypto-debug"))]
         ds.field("key", &"***");
 
+        #[cfg(feature = "experimental-hybrid")]
+        ds.field("experimental_mkyber_key", &self.experimental_mkyber_key);
+
         ds.finish()
     }
 }
 
 impl From<Vec<u8>> for EncryptionPrivateKey {
     fn from(key: Vec<u8>) -> Self {
-        Self { key: key.into() }
+        Self {
+            key: key.into(),
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_mkyber_key: None,
+        }
     }
 }
 
 impl From<HpkePrivateKey> for EncryptionPrivateKey {
     fn from(key: HpkePrivateKey) -> Self {
-        Self { key }
+        Self {
+            key,
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_mkyber_key: None,
+        }
     }
 }
 
@@ -237,6 +254,47 @@ impl EncryptionKeyPair {
         &self.private_key
     }
 
+    /// Generates a classical and mKyber key pair for a fresh experimental leaf.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn random_with_experimental_mkyber(
+        rand: &impl OpenMlsRand,
+        crypto: &impl OpenMlsCrypto,
+        ciphersuite: Ciphersuite,
+        domain: MkyberDomain,
+    ) -> Result<Self, LibraryError> {
+        let mkyber_keypair = EducationalMkyber512Reference
+            .keygen_with_os_rng(domain)
+            .map_err(|_| LibraryError::custom("experimental mKyber key generation failed"))?;
+        Self::random(rand, crypto, ciphersuite)?.with_experimental_mkyber_keypair(mkyber_keypair)
+    }
+
+    /// Adds matching experimental mKyber material to an existing classical pair.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn with_experimental_mkyber_keypair(
+        mut self,
+        mkyber_keypair: MkyberKeyPair,
+    ) -> Result<Self, LibraryError> {
+        let (public_key, private_key) = mkyber_keypair.into_parts();
+        let public_key = ExperimentalMkyberNodePublicKey::from_mkyber_key(&public_key);
+        let private_key = ExperimentalMkyberNodePrivateKey::from_mkyber_key(private_key)
+            .map_err(|_| LibraryError::custom("experimental mKyber private key is invalid"))?;
+        self.public_key.experimental_mkyber_key = Some(public_key);
+        self.private_key.experimental_mkyber_key = Some(private_key);
+        Ok(self)
+    }
+
+    /// Returns the local mKyber private key only for a future hybrid receiver.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_mkyber_private_key(
+        &self,
+    ) -> Result<Option<mkyber::MkyberDecapsulationKey>, ExperimentalNodeKeyError> {
+        self.private_key
+            .experimental_mkyber_key
+            .as_ref()
+            .map(ExperimentalMkyberNodePrivateKey::to_mkyber_key)
+            .transpose()
+    }
+
     pub(crate) fn random(
         rand: &impl OpenMlsRand,
         crypto: &impl OpenMlsCrypto,
@@ -286,6 +344,8 @@ impl EncryptionKeyPair {
             },
             private_key: EncryptionPrivateKey {
                 key: private_key.into(),
+                #[cfg(feature = "experimental-hybrid")]
+                experimental_mkyber_key: None,
             },
         }
     }
