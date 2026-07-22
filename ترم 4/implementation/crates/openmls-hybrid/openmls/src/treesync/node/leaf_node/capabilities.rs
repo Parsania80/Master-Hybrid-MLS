@@ -122,6 +122,7 @@ impl Capabilities {
     /// This preserves caller-provided capabilities while allowing a
     /// feature-gated construction path to require additional private-use
     /// extensions.
+    #[cfg(feature = "experimental-hybrid")]
     pub(crate) fn add_extension_capability(&mut self, extension_type: ExtensionType) {
         if !self.extensions.contains(&extension_type) {
             self.extensions.push(extension_type);

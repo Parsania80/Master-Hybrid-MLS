@@ -42,9 +42,12 @@ private key and break TreeSync convergence.
   construction.
 - The ordinary non-experimental fork path stays unchanged when no mKyber domain
   is present.
-- This does not yet replace the HPKE UpdatePath payload, stage hybrid private
-  material atomically, or make an experimental Commit executable. Gate 57.5
-  and Gate 57.6 remain required before measurements may become numeric.
+- A secret-free status check confirms that stored epoch key pairs contain
+  matched public/private mKyber material. A pending self-update leaves the old
+  set intact; a successful merge installs the new complete set and removes the
+  old epoch record.
+- This does not provide storage-failure atomicity or a measurement client.
+  Gate 57.6 remains required before measurements may become numeric.
 
 ## Verification Criteria
 
@@ -53,5 +56,7 @@ private key and break TreeSync convergence.
   private key.
 - Sender and receiver binary parent derivation agree for each affected parent
   path index and reject an `EncryptionKey` mismatch.
+- A real member self-update retains its old stored mKyber pairs while pending,
+  then replaces the leaf and epoch set on merge without exposing private bytes.
 - Existing baseline behavior, format, strict lint, and locked-offline adapter
   tests remain passing.

@@ -48,9 +48,9 @@ used by the current private-key lifecycle.
 - The public-key serialization change is usable for testable TreeSync state,
   but it does not make an ordinary fork tree a valid hybrid tree: `None` is
   still permitted until experimental validation and pair generation arrive.
-- ADR 0037 implements KeyPackage creation and parent-path derivation. Pair
-  replacement, deletion, and staged-commit persistence remain the next coupled
-  implementation scope.
+- ADR 0037 implements KeyPackage creation, parent-path derivation, and the
+  successful pair replacement/deletion lifecycle. ADR 0039 stages the complete
+  lifecycle in an atomic in-memory transaction and proves failure rollback.
 - No hybrid UpdatePath ciphertext, Commit acceptance, adaptive transition, or
   Task 57 experimental metric is available through this decision.
 
@@ -64,5 +64,5 @@ used by the current private-key lifecycle.
   `EncryptionKey` public values.
 - Parent-path generation creates matching public/private pairs for each parent
   resolution node, with no fallback leaf key.
-- Failed staged application leaves both public TreeSync state and private
-  storage unchanged.
+- ADR 0039 fault injection proves that each failed staged mutation leaves both
+  public TreeSync state and private storage unchanged.

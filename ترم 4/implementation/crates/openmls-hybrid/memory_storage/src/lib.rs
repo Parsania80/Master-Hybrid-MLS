@@ -2,6 +2,12 @@ use openmls_traits::storage::*;
 use serde::Serialize;
 use std::{collections::HashMap, sync::RwLock};
 
+#[cfg(feature = "transaction-test-utils")]
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+
 #[cfg(feature = "test-utils")]
 use std::io::Write as _;
 
@@ -15,6 +21,12 @@ pub mod persistence;
 #[derive(Debug, Default)]
 pub struct MemoryStorage {
     pub values: RwLock<HashMap<Vec<u8>, Vec<u8>>>,
+    #[cfg(feature = "transaction-test-utils")]
+    transaction_failure_at: RwLock<Option<usize>>,
+    #[cfg(feature = "transaction-test-utils")]
+    transaction_mutations: Arc<AtomicUsize>,
+    #[cfg(feature = "transaction-test-utils")]
+    is_transaction: bool,
 }
 
 // For testing we want to clone.
@@ -24,6 +36,12 @@ impl Clone for MemoryStorage {
         let values = self.values.read().unwrap();
         Self {
             values: RwLock::new(values.clone()),
+            #[cfg(feature = "transaction-test-utils")]
+            transaction_failure_at: RwLock::new(*self.transaction_failure_at.read().unwrap()),
+            #[cfg(feature = "transaction-test-utils")]
+            transaction_mutations: Arc::clone(&self.transaction_mutations),
+            #[cfg(feature = "transaction-test-utils")]
+            is_transaction: self.is_transaction,
         }
     }
 }
@@ -80,11 +98,50 @@ impl MemoryStorage {
 
         Ok(Self {
             values: RwLock::new(map),
+            #[cfg(feature = "transaction-test-utils")]
+            transaction_failure_at: RwLock::new(None),
+            #[cfg(feature = "transaction-test-utils")]
+            transaction_mutations: Arc::new(AtomicUsize::new(0)),
+            #[cfg(feature = "transaction-test-utils")]
+            is_transaction: false,
         })
     }
 }
 
+#[cfg(feature = "transaction-test-utils")]
 impl MemoryStorage {
+    /// Injects a failure at the zero-based mutation index of the next
+    /// transaction. `None` disables injection.
+    pub fn set_transaction_failure_at(&self, mutation: Option<usize>) {
+        *self.transaction_failure_at.write().unwrap() = mutation;
+    }
+
+    /// Returns the number of writes/deletes attempted by the latest
+    /// transaction snapshot.
+    pub fn last_transaction_mutation_count(&self) -> usize {
+        self.transaction_mutations.load(Ordering::SeqCst)
+    }
+}
+
+impl MemoryStorage {
+    #[cfg(feature = "transaction-test-utils")]
+    fn before_mutation(&self) -> Result<(), MemoryStorageError> {
+        if !self.is_transaction {
+            return Ok(());
+        }
+
+        let mutation = self.transaction_mutations.fetch_add(1, Ordering::SeqCst);
+        if *self.transaction_failure_at.read().unwrap() == Some(mutation) {
+            return Err(MemoryStorageError::InjectedTransactionFailure(mutation));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "transaction-test-utils"))]
+    fn before_mutation(&self) -> Result<(), MemoryStorageError> {
+        Ok(())
+    }
+
     /// Internal helper to abstract write operations.
     #[inline(always)]
     fn write<const VERSION: u16>(
@@ -93,6 +150,7 @@ impl MemoryStorage {
         key: &[u8],
         value: Vec<u8>,
     ) -> Result<(), <Self as StorageProvider<CURRENT_VERSION>>::Error> {
+        self.before_mutation()?;
         let mut values = self.values.write().unwrap();
         let storage_key = build_key_from_vec::<VERSION>(label, key.to_vec());
 
@@ -110,6 +168,7 @@ impl MemoryStorage {
         key: &[u8],
         value: Vec<u8>,
     ) -> Result<(), <Self as StorageProvider<CURRENT_VERSION>>::Error> {
+        self.before_mutation()?;
         let mut values = self.values.write().unwrap();
         let storage_key = build_key_from_vec::<VERSION>(label, key.to_vec());
 
@@ -137,6 +196,7 @@ impl MemoryStorage {
         key: &[u8],
         value: Vec<u8>,
     ) -> Result<(), <Self as StorageProvider<CURRENT_VERSION>>::Error> {
+        self.before_mutation()?;
         let mut values = self.values.write().unwrap();
         let storage_key = build_key_from_vec::<VERSION>(label, key.to_vec());
 
@@ -221,6 +281,7 @@ impl MemoryStorage {
         label: &[u8],
         key: &[u8],
     ) -> Result<(), <Self as StorageProvider<CURRENT_VERSION>>::Error> {
+        self.before_mutation()?;
         let mut values = self.values.write().unwrap();
 
         let mut storage_key = label.to_vec();
@@ -246,6 +307,10 @@ pub enum MemoryStorageError {
     UnsupportedMethod,
     #[error("Error serializing value.")]
     SerializationError,
+    /// A test-only transaction mutation failed before changing its snapshot.
+    #[cfg(feature = "transaction-test-utils")]
+    #[error("Injected transaction failure at mutation {0}.")]
+    InjectedTransactionFailure(usize),
 }
 
 const KEY_PACKAGE_LABEL: &[u8] = b"KeyPackage";
@@ -1025,6 +1090,33 @@ impl StorageProvider<CURRENT_VERSION> for MemoryStorage {
             APPLICATION_EXPORT_TREE_LABEL,
             &serde_json::to_vec(group_id).unwrap(),
         )
+    }
+}
+
+impl TransactionalStorageProvider<CURRENT_VERSION> for MemoryStorage {
+    type Transaction = Self;
+
+    fn begin_transaction(&self) -> Result<Self::Transaction, Self::Error> {
+        let values = self.values.read().unwrap().clone();
+
+        #[cfg(feature = "transaction-test-utils")]
+        self.transaction_mutations.store(0, Ordering::SeqCst);
+
+        Ok(Self {
+            values: RwLock::new(values),
+            #[cfg(feature = "transaction-test-utils")]
+            transaction_failure_at: RwLock::new(*self.transaction_failure_at.read().unwrap()),
+            #[cfg(feature = "transaction-test-utils")]
+            transaction_mutations: Arc::clone(&self.transaction_mutations),
+            #[cfg(feature = "transaction-test-utils")]
+            is_transaction: true,
+        })
+    }
+
+    fn commit_transaction(&self, transaction: Self::Transaction) -> Result<(), Self::Error> {
+        let staged_values = transaction.values.into_inner().unwrap();
+        *self.values.write().unwrap() = staged_values;
+        Ok(())
     }
 }
 

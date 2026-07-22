@@ -41,4 +41,5 @@ delivery, non-member rejection, ciphertext tampering, malformed wire, replay,
 and a validly signed sender UpdatePath leaf without the required experimental
 capabilities. Every rejected receiver case retains epoch and ratchet-tree
 state. Atomic storage replacement/removal and full staged failure non-mutation
-remain Gate 57.6 work.
+are implemented separately by ADR 0039; experimental workloads and metrics
+remain unavailable.

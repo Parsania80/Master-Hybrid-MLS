@@ -13,6 +13,13 @@ use crate::{
     tree::sender_ratchet::SenderRatchetConfiguration,
 };
 
+#[cfg(feature = "experimental-hybrid")]
+use crate::storage::TransactionalStorageProvider;
+#[cfg(feature = "experimental-hybrid")]
+use arity_state::{ArityLifecycle, ArityState};
+#[cfg(feature = "experimental-hybrid")]
+use openmls_traits::storage::CURRENT_VERSION;
+
 #[cfg(feature = "extensions-draft-08")]
 use crate::{
     component::{ComponentData, ComponentId},
@@ -267,38 +274,78 @@ impl MlsGroup {
         provider: &Provider,
         staged_commit: StagedCommit,
     ) -> Result<(), MergeCommitError<Provider::StorageError>> {
+        self.merge_staged_commit_with_storage(provider.storage(), staged_commit)
+    }
+
+    fn merge_staged_commit_with_storage<Storage: StorageProvider>(
+        &mut self,
+        storage: &Storage,
+        staged_commit: StagedCommit,
+    ) -> Result<(), MergeCommitError<Storage::Error>> {
         // Check if we were removed from the group
         if staged_commit.self_removed() {
             self.group_state = MlsGroupState::Inactive;
         }
-        provider
-            .storage()
+        storage
             .write_group_state(self.group_id(), &self.group_state)
             .map_err(MergeCommitError::StorageError)?;
 
         // Merge staged commit
-        self.merge_commit(provider, staged_commit)?;
+        self.merge_commit(storage, staged_commit)?;
 
         // Extract and store the resumption psk for the current epoch
         let resumption_psk = self.group_epoch_secrets().resumption_psk();
         self.resumption_psk_store
             .add(self.context().epoch(), resumption_psk.clone());
-        provider
-            .storage()
+        storage
             .write_resumption_psk_store(self.group_id(), &self.resumption_psk_store)
             .map_err(MergeCommitError::StorageError)?;
 
         // Delete own KeyPackageBundles
         self.own_leaf_nodes.clear();
-        provider
-            .storage()
+        storage
             .delete_own_leaf_nodes(self.group_id())
             .map_err(MergeCommitError::StorageError)?;
 
         // Delete a potential pending commit
-        self.clear_pending_commit(provider.storage())
+        self.clear_pending_commit(storage)
             .map_err(MergeCommitError::StorageError)?;
 
+        Ok(())
+    }
+
+    /// Atomically applies one validated binary hybrid staged commit to an
+    /// isolated storage snapshot and publishes memory only after storage
+    /// publication succeeds.
+    ///
+    /// The authenticated GroupContext must carry a canonical normal binary
+    /// `ArityState` before and after the merge. Transitioning/quaternary state
+    /// is intentionally deferred to the dedicated transition implementation.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn merge_staged_commit_experimental_atomic<Provider>(
+        &mut self,
+        provider: &Provider,
+        staged_commit: StagedCommit,
+    ) -> Result<(), MergeCommitError<Provider::StorageError>>
+    where
+        Provider: OpenMlsProvider,
+        Provider::Storage: TransactionalStorageProvider<CURRENT_VERSION>,
+    {
+        self.validate_experimental_binary_arity_state()?;
+        let storage = provider.storage();
+        let transaction = storage
+            .begin_transaction()
+            .map_err(MergeCommitError::StorageError)?;
+        let mut candidate = Self::load(&transaction, self.group_id())
+            .map_err(MergeCommitError::StorageError)?
+            .ok_or_else(|| LibraryError::custom("experimental group is missing from storage"))?;
+        candidate.aad.clone_from(&self.aad);
+        candidate.merge_staged_commit_with_storage(&transaction, staged_commit)?;
+        candidate.validate_experimental_binary_arity_state()?;
+        storage
+            .commit_transaction(transaction)
+            .map_err(MergeCommitError::StorageError)?;
+        *self = candidate;
         Ok(())
     }
 
@@ -308,17 +355,83 @@ impl MlsGroup {
         &mut self,
         provider: &Provider,
     ) -> Result<(), MergePendingCommitError<Provider::StorageError>> {
+        self.merge_pending_commit_with_storage(provider.storage())
+    }
+
+    fn merge_pending_commit_with_storage<Storage: StorageProvider>(
+        &mut self,
+        storage: &Storage,
+    ) -> Result<(), MergePendingCommitError<Storage::Error>> {
         match &self.group_state {
             MlsGroupState::PendingCommit(_) => {
                 let old_state = mem::replace(&mut self.group_state, MlsGroupState::Operational);
                 if let MlsGroupState::PendingCommit(pending_commit_state) = old_state {
-                    self.merge_staged_commit(provider, (*pending_commit_state).into())?;
+                    self.merge_staged_commit_with_storage(storage, (*pending_commit_state).into())?;
                 }
                 Ok(())
             }
             MlsGroupState::Inactive => Err(MlsGroupStateError::UseAfterEviction)?,
             MlsGroupState::Operational => Ok(()),
         }
+    }
+
+    /// Atomically applies this member's pending binary hybrid commit.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn merge_pending_commit_experimental_atomic<Provider>(
+        &mut self,
+        provider: &Provider,
+    ) -> Result<(), MergePendingCommitError<Provider::StorageError>>
+    where
+        Provider: OpenMlsProvider,
+        Provider::Storage: TransactionalStorageProvider<CURRENT_VERSION>,
+    {
+        self.validate_experimental_binary_arity_state()
+            .map_err(MlsGroupStateError::from)?;
+        let storage = provider.storage();
+        let transaction = storage.begin_transaction().map_err(|error| {
+            MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+        })?;
+        let mut candidate = Self::load(&transaction, self.group_id())
+            .map_err(|error| {
+                MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+            })?
+            .ok_or_else(|| {
+                MlsGroupStateError::LibraryError(LibraryError::custom(
+                    "experimental group is missing from storage",
+                ))
+            })?;
+        candidate.aad.clone_from(&self.aad);
+        candidate.merge_pending_commit_with_storage(&transaction)?;
+        candidate
+            .validate_experimental_binary_arity_state()
+            .map_err(MlsGroupStateError::from)?;
+        storage.commit_transaction(transaction).map_err(|error| {
+            MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+        })?;
+        *self = candidate;
+        Ok(())
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    fn validate_experimental_binary_arity_state(&self) -> Result<(), LibraryError> {
+        let extension = self
+            .extensions()
+            .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
+            .ok_or_else(|| {
+                LibraryError::custom("experimental group has no authenticated ArityState")
+            })?;
+        let state = ArityState::from_extension_value(&extension.0)
+            .map_err(|_| LibraryError::custom("experimental group has invalid ArityState"))?;
+        if state.active_arity() != 2
+            || state.candidate_arity() != 4
+            || state.tree_version() != 0
+            || !matches!(state.lifecycle(), ArityLifecycle::Normal)
+        {
+            return Err(LibraryError::custom(
+                "experimental atomic binary merge requires normal 2-to-4 ArityState",
+            ));
+        }
+        Ok(())
     }
 
     /// Helper function to read decryption keypairs.

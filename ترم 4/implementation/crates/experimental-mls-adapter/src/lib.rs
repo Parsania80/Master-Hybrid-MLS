@@ -17,6 +17,7 @@ pub fn fork_ciphersuite_type_name() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use arity_state::{ArityPolicySnapshot, ArityState, TransitionEvaluationState};
     use hybrid_path_secret::{
         open_hybrid_path_level_with_provider, seal_hybrid_path_level_with_provider,
         ClassicalHpkeKeyPair, HybridPathCiphertext, HybridPathLevelContext,
@@ -41,10 +42,10 @@ mod tests {
         },
         prelude::{
             ApplyUpdatePathError, BasicCredential, Capabilities, Ciphersuite, CredentialWithKey,
-            Extension, Extensions, KeyPackage, LeafNodeParameters, MlsGroup, MlsGroupCreateConfig,
-            MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageBodyOut, MlsMessageIn, OpenMlsProvider,
-            ProcessMessageError, ProcessedMessageContent, StageCommitError, StagedWelcome,
-            UnknownExtension,
+            Extension, Extensions, GroupContext, KeyPackage, LeafNodeParameters, MlsGroup,
+            MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageBodyOut,
+            MlsMessageIn, OpenMlsProvider, ProcessMessageError, ProcessedMessageContent,
+            StageCommitError, StagedCommit, StagedWelcome, UnknownExtension,
         },
         treesync::{EncryptionKey, ParentNode},
     };
@@ -53,6 +54,10 @@ mod tests {
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
     use tls_codec::{Deserialize as TlsDeserializeTrait, Serialize as TlsSerializeTrait};
+    use transition_policy::{
+        DeltaThreshold, PolicyWindowConfig, TransitionByteComponent, TransitionByteRange,
+        TransitionPreflightMeasurement, TransitionStartConfig,
+    };
 
     use super::{fork_ciphersuite_type_name, OPENMLS_HYBRID_UPSTREAM_REVISION};
 
@@ -408,6 +413,7 @@ mod tests {
         let config = MlsGroupCreateConfig::builder()
             .ciphersuite(ciphersuite)
             .use_ratchet_tree_extension(true)
+            .with_group_context_extensions(normal_binary_arity_extensions())
             .build();
         let mut alice = MlsGroup::new_with_group_id_experimental_mkyber(
             &alice_provider,
@@ -435,7 +441,7 @@ mod tests {
             )
             .expect("experimental add");
         alice
-            .merge_pending_commit(&alice_provider)
+            .merge_pending_commit_experimental_atomic(&alice_provider)
             .expect("Alice merges add");
         let welcome = match MlsMessageIn::tls_deserialize_exact(
             welcome
@@ -469,6 +475,37 @@ mod tests {
         )
     }
 
+    fn normal_binary_arity_extensions() -> Extensions<GroupContext> {
+        let window = PolicyWindowConfig::new(20, 2, 1).expect("valid policy window");
+        let preflight = TransitionPreflightMeasurement::from_serialized_outer_message(
+            &[0_u8; 100],
+            &[TransitionByteRange::new(
+                TransitionByteComponent::BaseCommit,
+                0,
+                100,
+            )],
+        )
+        .expect("valid transition preflight");
+        let resolved = DeltaThreshold::PercentOfTransitionMicro(25_000_000)
+            .resolve_for_preflight(preflight)
+            .expect("resolved test threshold");
+        let start = TransitionStartConfig::new(2, 4, 128, 1, resolved.resolved_bytes())
+            .expect("valid transition controls");
+        let policy = ArityPolicySnapshot::from_policy_inputs(window, start, resolved)
+            .expect("self-consistent policy snapshot");
+        let state = ArityState::normal(2, 4, 0, policy, TransitionEvaluationState::new(0, 0, 0))
+            .expect("valid normal binary state");
+        Extensions::single(Extension::Unknown(
+            state.extension_type(),
+            UnknownExtension(
+                state
+                    .extension_value_bytes()
+                    .expect("canonical ArityState encoding"),
+            ),
+        ))
+        .expect("unique ArityState extension")
+    }
+
     fn hybrid_self_update_wire(
         bob: &mut MlsGroup,
         bob_provider: &OpenMlsRustCrypto,
@@ -482,6 +519,24 @@ mod tests {
         update_commit
             .tls_serialize_detached()
             .expect("update serialization")
+    }
+
+    fn staged_commit_from_wire(
+        group: &mut MlsGroup,
+        provider: &OpenMlsRustCrypto,
+        wire: &[u8],
+    ) -> StagedCommit {
+        let protocol_message = MlsMessageIn::tls_deserialize_exact(wire)
+            .expect("Commit parsing")
+            .try_into_protocol_message()
+            .expect("protocol message");
+        let processed = group
+            .process_message(provider, protocol_message)
+            .expect("hybrid Commit processing");
+        let ProcessedMessageContent::StagedCommitMessage(staged) = processed.into_content() else {
+            panic!("expected staged Commit");
+        };
+        *staged
     }
 
     #[test]
@@ -505,9 +560,9 @@ mod tests {
             panic!("expected staged Commit");
         };
         alice
-            .merge_staged_commit(&alice_provider, *staged)
+            .merge_staged_commit_experimental_atomic(&alice_provider, *staged)
             .expect("Alice merges hybrid self-update");
-        bob.merge_pending_commit(&bob_provider)
+        bob.merge_pending_commit_experimental_atomic(&bob_provider)
             .expect("Bob merges self-update");
 
         assert_eq!(alice.epoch(), bob.epoch());
@@ -535,6 +590,218 @@ mod tests {
             _ => panic!("expected Bob GroupInfo"),
         };
         assert_eq!(alice_context, bob_context);
+    }
+
+    #[test]
+    fn experimental_atomic_binary_commit_converges_three_members_and_reloads() {
+        let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair();
+        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+        let domain = MkyberDomain::new([0x91; 32]);
+        let charlie_provider = OpenMlsRustCrypto::default();
+        let charlie_signer =
+            SignatureKeyPair::new(ciphersuite.signature_algorithm()).expect("Charlie signer");
+        let charlie_credential = CredentialWithKey {
+            credential: BasicCredential::new(b"experimental-charlie".to_vec()).into(),
+            signature_key: charlie_signer.public().into(),
+        };
+        let charlie_bundle = KeyPackage::builder()
+            .build_with_experimental_mkyber(
+                ciphersuite,
+                &charlie_provider,
+                &charlie_signer,
+                charlie_credential,
+                domain,
+            )
+            .expect("Charlie experimental KeyPackage");
+        let (add_commit, welcome, _) = alice
+            .add_members(
+                &alice_provider,
+                &alice_signer,
+                core::slice::from_ref(charlie_bundle.key_package()),
+            )
+            .expect("Alice adds Charlie");
+        let add_wire = add_commit
+            .tls_serialize_detached()
+            .expect("add Commit serialization");
+        let bob_staged = staged_commit_from_wire(&mut bob, &bob_provider, &add_wire);
+        alice
+            .merge_pending_commit_experimental_atomic(&alice_provider)
+            .expect("Alice atomically merges Charlie add");
+        bob.merge_staged_commit_experimental_atomic(&bob_provider, bob_staged)
+            .expect("Bob atomically merges Charlie add");
+
+        let welcome = match MlsMessageIn::tls_deserialize_exact(
+            welcome
+                .tls_serialize_detached()
+                .expect("Charlie Welcome serialization"),
+        )
+        .expect("Charlie Welcome parsing")
+        .extract()
+        {
+            MlsMessageBodyIn::Welcome(welcome) => welcome,
+            _ => panic!("expected Charlie Welcome"),
+        };
+        let mut charlie = StagedWelcome::new_from_welcome(
+            &charlie_provider,
+            &MlsGroupJoinConfig::builder()
+                .use_ratchet_tree_extension(true)
+                .build(),
+            welcome,
+            None,
+        )
+        .expect("Charlie staged Welcome")
+        .into_group(&charlie_provider)
+        .expect("Charlie joins");
+
+        let update_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        let alice_staged = staged_commit_from_wire(&mut alice, &alice_provider, &update_wire);
+        let charlie_staged = staged_commit_from_wire(&mut charlie, &charlie_provider, &update_wire);
+        alice
+            .merge_staged_commit_experimental_atomic(&alice_provider, alice_staged)
+            .expect("Alice atomically merges Bob update");
+        charlie
+            .merge_staged_commit_experimental_atomic(&charlie_provider, charlie_staged)
+            .expect("Charlie atomically merges Bob update");
+        bob.merge_pending_commit_experimental_atomic(&bob_provider)
+            .expect("Bob atomically merges own update");
+
+        assert_eq!(alice.epoch(), bob.epoch());
+        assert_eq!(bob.epoch(), charlie.epoch());
+        assert_eq!(alice.export_ratchet_tree(), bob.export_ratchet_tree());
+        assert_eq!(bob.export_ratchet_tree(), charlie.export_ratchet_tree());
+        assert_eq!(alice.extensions(), bob.extensions());
+        assert_eq!(bob.extensions(), charlie.extensions());
+
+        for (provider, group) in [
+            (&alice_provider, &alice),
+            (&bob_provider, &bob),
+            (&charlie_provider, &charlie),
+        ] {
+            let reloaded = MlsGroup::load(provider.storage(), group.group_id())
+                .expect("group reload storage access")
+                .expect("stored group");
+            assert_eq!(reloaded.epoch(), group.epoch());
+            assert_eq!(reloaded.export_ratchet_tree(), group.export_ratchet_tree());
+            assert_eq!(reloaded.extensions(), group.extensions());
+        }
+    }
+
+    #[test]
+    fn experimental_atomic_receiver_merge_rolls_back_every_storage_mutation() {
+        let (control_provider, _alice_signer, mut control, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair();
+        let control_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        let control_staged =
+            staged_commit_from_wire(&mut control, &control_provider, &control_wire);
+        control_provider.storage().set_transaction_failure_at(None);
+        control
+            .merge_staged_commit_experimental_atomic(&control_provider, control_staged)
+            .expect("control receiver merge");
+        let mutation_count = control_provider.storage().last_transaction_mutation_count();
+        assert!(mutation_count > 0);
+
+        for failure_at in 0..mutation_count {
+            let (alice_provider, _alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+                experimental_binary_pair();
+            let update_wire = hybrid_self_update_wire(
+                &mut bob,
+                &bob_provider,
+                &bob_signer,
+                LeafNodeParameters::default(),
+            );
+            let staged = staged_commit_from_wire(&mut alice, &alice_provider, &update_wire);
+            let before_epoch = alice.epoch();
+            let before_tree = alice.export_ratchet_tree();
+            let before_extensions = alice.extensions().clone();
+            let before_storage = alice_provider.storage().values.read().unwrap().clone();
+            alice_provider
+                .storage()
+                .set_transaction_failure_at(Some(failure_at));
+
+            assert!(alice
+                .merge_staged_commit_experimental_atomic(&alice_provider, staged)
+                .is_err());
+            assert_eq!(alice.epoch(), before_epoch);
+            assert_eq!(alice.export_ratchet_tree(), before_tree);
+            assert_eq!(alice.extensions(), &before_extensions);
+            assert_eq!(
+                *alice_provider.storage().values.read().unwrap(),
+                before_storage
+            );
+            let reloaded = MlsGroup::load(alice_provider.storage(), alice.group_id())
+                .expect("failed transaction remains loadable")
+                .expect("stored pre-merge group");
+            assert_eq!(reloaded.epoch(), before_epoch);
+            assert_eq!(reloaded.export_ratchet_tree(), before_tree);
+            assert_eq!(reloaded.extensions(), &before_extensions);
+        }
+    }
+
+    #[test]
+    fn experimental_atomic_pending_merge_rolls_back_every_storage_mutation() {
+        let (_alice_provider, _alice_signer, _alice, control_provider, control_signer, mut control) =
+            experimental_binary_pair();
+        let _control_wire = hybrid_self_update_wire(
+            &mut control,
+            &control_provider,
+            &control_signer,
+            LeafNodeParameters::default(),
+        );
+        control_provider.storage().set_transaction_failure_at(None);
+        control
+            .merge_pending_commit_experimental_atomic(&control_provider)
+            .expect("control pending merge");
+        let mutation_count = control_provider.storage().last_transaction_mutation_count();
+        assert!(mutation_count > 0);
+
+        for failure_at in 0..mutation_count {
+            let (_alice_provider, _alice_signer, _alice, bob_provider, bob_signer, mut bob) =
+                experimental_binary_pair();
+            let _update_wire = hybrid_self_update_wire(
+                &mut bob,
+                &bob_provider,
+                &bob_signer,
+                LeafNodeParameters::default(),
+            );
+            let before_epoch = bob.epoch();
+            let before_tree = bob.export_ratchet_tree();
+            let before_extensions = bob.extensions().clone();
+            let before_storage = bob_provider.storage().values.read().unwrap().clone();
+            assert!(bob.pending_commit().is_some());
+            bob_provider
+                .storage()
+                .set_transaction_failure_at(Some(failure_at));
+
+            assert!(bob
+                .merge_pending_commit_experimental_atomic(&bob_provider)
+                .is_err());
+            assert_eq!(bob.epoch(), before_epoch);
+            assert_eq!(bob.export_ratchet_tree(), before_tree);
+            assert_eq!(bob.extensions(), &before_extensions);
+            assert!(bob.pending_commit().is_some());
+            assert_eq!(
+                *bob_provider.storage().values.read().unwrap(),
+                before_storage
+            );
+            let reloaded = MlsGroup::load(bob_provider.storage(), bob.group_id())
+                .expect("failed pending transaction remains loadable")
+                .expect("stored pending group");
+            assert_eq!(reloaded.epoch(), before_epoch);
+            assert_eq!(reloaded.export_ratchet_tree(), before_tree);
+            assert_eq!(reloaded.extensions(), &before_extensions);
+            assert!(reloaded.pending_commit().is_some());
+        }
     }
 
     #[test]
@@ -606,6 +873,7 @@ mod tests {
             &MlsGroupCreateConfig::builder()
                 .ciphersuite(ciphersuite)
                 .use_ratchet_tree_extension(true)
+                .with_group_context_extensions(normal_binary_arity_extensions())
                 .build(),
             openmls_hybrid::prelude::GroupId::from_slice(b"non-member-receiver"),
             mallory_credential,
@@ -647,9 +915,9 @@ mod tests {
             panic!("expected staged Commit");
         };
         alice
-            .merge_staged_commit(&alice_provider, *staged)
+            .merge_staged_commit_experimental_atomic(&alice_provider, *staged)
             .expect("Alice merges hybrid self-update");
-        bob.merge_pending_commit(&bob_provider)
+        bob.merge_pending_commit_experimental_atomic(&bob_provider)
             .expect("Bob merges self-update");
         let before_epoch = alice.epoch();
         let before_tree = alice.export_ratchet_tree();
@@ -672,7 +940,13 @@ mod tests {
             &bob_provider,
             &bob_signer,
             LeafNodeParameters::builder()
-                .with_capabilities(Capabilities::default())
+                .with_capabilities(Capabilities::new(
+                    None,
+                    None,
+                    Some(&[required_mkyber_recipient_capabilities()[0]]),
+                    None,
+                    None,
+                ))
                 .build(),
         );
         let before_epoch = alice.epoch();
@@ -692,5 +966,55 @@ mod tests {
         ));
         assert_eq!(alice.epoch(), before_epoch);
         assert_eq!(alice.export_ratchet_tree(), before_tree);
+    }
+
+    #[test]
+    fn experimental_mkyber_epoch_keypairs_replace_only_when_self_update_merges() {
+        let (_alice_provider, _alice_signer, _alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair();
+        let old_epoch = bob.epoch();
+        let old_leaf_key = bob
+            .own_leaf_node()
+            .expect("Bob own leaf")
+            .encryption_key()
+            .clone();
+        let old_mkyber_keypair_count = bob
+            .experimental_mkyber_epoch_keypair_count(&bob_provider, old_epoch)
+            .expect("old epoch mKyber key-pair status");
+        assert!(old_mkyber_keypair_count > 0);
+
+        let _update_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        assert_eq!(bob.epoch(), old_epoch);
+        assert_eq!(
+            bob.experimental_mkyber_epoch_keypair_count(&bob_provider, old_epoch)
+                .expect("pending self-update retains old epoch key pairs"),
+            old_mkyber_keypair_count
+        );
+
+        bob.merge_pending_commit_experimental_atomic(&bob_provider)
+            .expect("Bob merges self-update");
+        let new_epoch = bob.epoch();
+        let new_leaf_key = bob
+            .own_leaf_node()
+            .expect("Bob updated own leaf")
+            .encryption_key();
+
+        assert_ne!(new_epoch, old_epoch);
+        assert_ne!(new_leaf_key, &old_leaf_key);
+        assert_eq!(
+            bob.experimental_mkyber_epoch_keypair_count(&bob_provider, old_epoch)
+                .expect("retired epoch key-pair status"),
+            0
+        );
+        assert!(
+            bob.experimental_mkyber_epoch_keypair_count(&bob_provider, new_epoch)
+                .expect("new epoch mKyber key-pair status")
+                > 0
+        );
     }
 }

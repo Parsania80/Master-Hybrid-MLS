@@ -25,9 +25,10 @@ zeroize = "1.8.1"
 serde_bytes = "0.11.17"
 mkyber = { path = "../../mkyber", optional = true }
 hybrid-path-secret = { path = "../../hybrid-path-secret", optional = true }
+arity-state = { path = "../../arity-state", optional = true }
 
 [features]
-experimental-hybrid = ["dep:hybrid-path-secret", "dep:mkyber"]
+experimental-hybrid = ["dep:arity-state", "dep:hybrid-path-secret", "dep:mkyber"]
 test-utils = []
 backtrace = []
 libcrux-provider = []

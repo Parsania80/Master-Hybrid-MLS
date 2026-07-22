@@ -2,7 +2,6 @@ use core::fmt::Debug;
 use std::mem;
 
 use openmls_traits::crypto::OpenMlsCrypto;
-use openmls_traits::storage::StorageProvider as _;
 use serde::{Deserialize, Serialize};
 use tls_codec::Serialize as _;
 
@@ -20,6 +19,7 @@ use crate::group::GroupEpoch;
 use crate::prelude::{Commit, LeafNodeIndex};
 #[cfg(feature = "extensions-draft-08")]
 use crate::schedule::application_export_tree::ApplicationExportTree;
+use crate::storage::StorageProvider;
 
 use crate::treesync::errors::TreeSyncFromNodesError;
 use crate::treesync::RatchetTree;
@@ -431,21 +431,21 @@ impl MlsGroup {
     ///
     /// This function should not fail and only returns a [`Result`], because it
     /// might throw a `LibraryError`.
-    pub(crate) fn merge_commit<Provider: OpenMlsProvider>(
+    pub(crate) fn merge_commit<Storage: StorageProvider>(
         &mut self,
-        provider: &Provider,
+        storage: &Storage,
         staged_commit: StagedCommit,
-    ) -> Result<(), MergeCommitError<Provider::StorageError>> {
+    ) -> Result<(), MergeCommitError<Storage::Error>> {
         // Get all keypairs from the old epoch, so we can later store the ones
         // that are still relevant in the new epoch.
         let old_epoch_keypairs = self
-            .read_epoch_keypairs(provider.storage())
+            .read_epoch_keypairs(storage)
             .map_err(MergeCommitError::StorageError)?;
         match staged_commit.state {
             StagedCommitState::PublicState(staged_state) => {
                 self.public_group
                     .merge_diff(staged_state.into_staged_diff());
-                self.store(provider.storage())
+                self.store(storage)
                     .map_err(MergeCommitError::StorageError)?;
                 Ok(())
             }
@@ -477,8 +477,7 @@ impl MlsGroup {
                         // Overwrite the existing exporter tree in the storage.
 
                         use openmls_traits::storage::StorageProvider as _;
-                        provider
-                            .storage()
+                        storage
                             .write_application_export_tree(
                                 self.group_id(),
                                 &application_export_tree,
@@ -519,7 +518,6 @@ impl MlsGroup {
                 }
 
                 // Store the updated group state
-                let storage = provider.storage();
                 let group_id = self.group_id();
 
                 self.public_group

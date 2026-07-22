@@ -9,6 +9,9 @@
 
 use openmls_traits::storage::{traits, Entity, Key, CURRENT_VERSION};
 
+#[cfg(feature = "experimental-hybrid")]
+pub use openmls_traits::storage::TransactionalStorageProvider;
+
 use crate::binary_tree::LeafNodeIndex;
 use crate::group::proposal_store::QueuedProposal;
 use crate::group::{MlsGroupJoinConfig, MlsGroupState};

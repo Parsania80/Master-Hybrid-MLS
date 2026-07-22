@@ -412,6 +412,7 @@ dependencies = [
 name = "experimental-mls-adapter"
 version = "0.1.0"
 dependencies = [
+ "arity-state",
  "hybrid-path-secret",
  "mkyber",
  "openmls-hybrid",
@@ -420,6 +421,7 @@ dependencies = [
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "tls_codec",
+ "transition-policy",
 ]
 
 [[package]]
@@ -1085,6 +1087,7 @@ dependencies = [
 name = "openmls-hybrid"
 version = "0.8.1"
 dependencies = [
+ "arity-state",
  "hybrid-path-secret",
  "log",
  "mkyber",

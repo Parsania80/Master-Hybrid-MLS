@@ -19,5 +19,6 @@ log = { version = "0.4" }
 
 [features]
 test-utils = []
+transaction-test-utils = []
 persistence = []
 extensions-draft-08 = []

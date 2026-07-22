@@ -20,6 +20,9 @@ use crate::{
     versions::ProtocolVersion,
 };
 
+#[cfg(feature = "experimental-hybrid")]
+use crate::experimental_hybrid::ensure_mkyber_recipient_capabilities;
+
 #[derive(Debug)]
 pub(crate) struct TempBuilderPG1 {
     group_id: GroupId,
@@ -89,6 +92,14 @@ impl TempBuilderPG1 {
             required_proposals,
             required_credentials,
         ));
+        #[cfg(feature = "experimental-hybrid")]
+        let capabilities = {
+            let mut capabilities = capabilities;
+            if self.experimental_mkyber_domain.is_some() {
+                ensure_mkyber_recipient_capabilities(&mut capabilities);
+            }
+            capabilities
+        };
         let (treesync, commit_secret, leaf_keypair) = {
             #[cfg(feature = "experimental-hybrid")]
             if let Some(domain) = self.experimental_mkyber_domain {

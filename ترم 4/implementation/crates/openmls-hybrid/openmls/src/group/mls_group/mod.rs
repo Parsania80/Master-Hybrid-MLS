@@ -342,6 +342,46 @@ impl MlsGroup {
         self.public_group.group_context().epoch()
     }
 
+    /// Counts stored epoch key pairs that retain matched experimental mKyber
+    /// material, without exposing any private bytes.
+    ///
+    /// This thesis-local diagnostic validates that public and private mKyber
+    /// presence and domains agree for every stored key pair in `epoch`.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn experimental_mkyber_epoch_keypair_count<Provider: OpenMlsProvider>(
+        &self,
+        provider: &Provider,
+        epoch: GroupEpoch,
+    ) -> Result<usize, LibraryError> {
+        let keypairs: Vec<EncryptionKeyPair> = provider
+            .storage()
+            .encryption_epoch_key_pairs(self.group_id(), &epoch, self.own_leaf_index().u32())
+            .map_err(|_| LibraryError::custom("unable to read experimental epoch key pairs"))?;
+        let mut matched_keypair_count = 0;
+
+        for keypair in keypairs {
+            let public_key = keypair.public_key().experimental_mkyber_key();
+            let private_key = keypair
+                .experimental_mkyber_private_key()
+                .map_err(|_| LibraryError::custom("invalid experimental epoch private key"))?;
+            match (public_key, private_key) {
+                (Some(public_key), Some(private_key))
+                    if public_key.domain() == private_key.domain() =>
+                {
+                    matched_keypair_count += 1;
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(LibraryError::custom(
+                        "experimental epoch key pair has unmatched mKyber material",
+                    ));
+                }
+            }
+        }
+
+        Ok(matched_keypair_count)
+    }
+
     /// Returns an `Iterator` over pending proposals.
     pub fn pending_proposals(&self) -> impl Iterator<Item = &QueuedProposal> {
         self.proposal_store().proposals()

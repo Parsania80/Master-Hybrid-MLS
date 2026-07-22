@@ -35,3 +35,4 @@ serde = { version = "^1.0", features = ["derive"] }
 
 [features]
 test-utils = ["openmls_memory_storage/test-utils"]
+transaction-test-utils = ["openmls_memory_storage/transaction-test-utils"]

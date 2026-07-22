@@ -584,6 +584,28 @@ pub trait StorageProvider<const VERSION: u16> {
     ) -> Result<(), Self::Error>;
 }
 
+/// A storage provider that can stage a complete set of writes and publish them
+/// as one atomic replacement.
+///
+/// The returned transaction must start as an isolated snapshot of the
+/// provider. Writes to it must not be visible through `self` until
+/// [`commit_transaction`](Self::commit_transaction) succeeds. A failed begin,
+/// staged operation, or commit must leave `self` unchanged.
+///
+/// This fork-local capability is intentionally separate from
+/// [`StorageProvider`], so unchanged OpenMLS users and storage backends do not
+/// silently receive a false atomicity guarantee.
+pub trait TransactionalStorageProvider<const VERSION: u16>: StorageProvider<VERSION> {
+    /// Isolated storage snapshot used while staging one transaction.
+    type Transaction: StorageProvider<VERSION, Error = Self::Error>;
+
+    /// Creates an isolated snapshot of the current storage state.
+    fn begin_transaction(&self) -> Result<Self::Transaction, Self::Error>;
+
+    /// Atomically replaces the current storage state with `transaction`.
+    fn commit_transaction(&self, transaction: Self::Transaction) -> Result<(), Self::Error>;
+}
+
 // base traits for keys and values
 
 // ANCHOR: key_trait
