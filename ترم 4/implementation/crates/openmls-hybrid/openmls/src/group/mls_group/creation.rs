@@ -75,6 +75,27 @@ impl MlsGroup {
             )
     }
 
+    /// Creates a thesis-local experimental group with a domain-bound mKyber creator leaf.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn new_with_group_id_experimental_mkyber<Provider: OpenMlsProvider>(
+        provider: &Provider,
+        signer: &impl Signer,
+        mls_group_create_config: &MlsGroupCreateConfig,
+        group_id: GroupId,
+        credential_with_key: CredentialWithKey,
+        domain: mkyber::MkyberDomain,
+    ) -> Result<Self, NewGroupError<Provider::StorageError>> {
+        MlsGroupBuilder::new()
+            .with_group_id(group_id)
+            .with_experimental_mkyber_domain(domain)
+            .build_internal(
+                provider,
+                signer,
+                credential_with_key,
+                Some(mls_group_create_config.clone()),
+            )
+    }
+
     /// Join an existing group through an External Commit.
     /// The resulting [`MlsGroup`] instance starts off with a pending
     /// commit (the external commit, which adds this client to the group).

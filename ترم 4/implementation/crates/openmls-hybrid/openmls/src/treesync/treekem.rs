@@ -13,7 +13,7 @@ use openmls_traits::{
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize};
+use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize, VLBytes};
 
 use super::{
     diff::TreeSyncDiff,
@@ -25,6 +25,12 @@ use super::{
     },
     ApplyUpdatePathError, LeafNode,
 };
+#[cfg(feature = "experimental-hybrid")]
+use crate::ciphersuite::Secret;
+#[cfg(feature = "experimental-hybrid")]
+use crate::experimental_hybrid::{
+    binary_hybrid_context, ExperimentalHybridPathDelivery, ForkClassicalHpkeProvider,
+};
 use crate::{
     binary_tree::array_representation::LeafNodeIndex,
     ciphersuite::{hpke, signable::Verifiable},
@@ -33,6 +39,13 @@ use crate::{
     schedule::{psk::PreSharedKeyId, CommitSecret, JoinerSecret},
     treesync::node::NodeReference,
 };
+#[cfg(feature = "experimental-hybrid")]
+use hybrid_path_secret::{
+    open_hybrid_path_level_with_provider, ClassicalHpkePrivateKey, HybridPathRecipientPrivate,
+    RecipientNodeIndex,
+};
+#[cfg(feature = "experimental-hybrid")]
+use mkyber::EducationalMkyber512Reference;
 
 impl TreeSyncDiff<'_> {
     /// Encrypt the given `path` to the nodes in the copath resolution of the
@@ -58,13 +71,17 @@ impl TreeSyncDiff<'_> {
             .map(|resolution| {
                 resolution
                     .into_iter()
-                    .map(|(_, node_ref)| match node_ref {
-                        NodeReference::Leaf(leaf) => leaf.encryption_key().clone(),
-                        NodeReference::Parent(parent) => parent.encryption_key().clone(),
+                    .map(|(node_index, node_ref)| match node_ref {
+                        NodeReference::Leaf(leaf) => {
+                            (node_index.u32(), leaf.encryption_key().clone())
+                        }
+                        NodeReference::Parent(parent) => {
+                            (node_index.u32(), parent.encryption_key().clone())
+                        }
                     })
-                    .collect::<Vec<EncryptionKey>>()
+                    .collect::<Vec<(u32, EncryptionKey)>>()
             })
-            .collect::<Vec<Vec<EncryptionKey>>>();
+            .collect::<Vec<Vec<(u32, EncryptionKey)>>>();
 
         // There should be as many copath resolutions.
         debug_assert_eq!(copath_resolutions.len(), path.len());
@@ -110,7 +127,7 @@ impl TreeSyncDiff<'_> {
             // We know the update path has the right length through validation, therefore there must be an element at this position
             .ok_or(ApplyUpdatePathError::PathLengthMismatch)?;
 
-        let (decryption_key, resolution_position) = self
+        let (decryption_key, resolution_position, recipient_node_index) = self
             .decryption_key(
                 params.sender_leaf_index,
                 params.exclusion_list,
@@ -119,20 +136,96 @@ impl TreeSyncDiff<'_> {
             )
             .map_err(|_| ApplyUpdatePathError::MissingSender)?;
 
-        let ciphertext = update_path_node
-            .encrypted_path_secrets(resolution_position)
-            // We know the update path has the right length through validation, therefore there must be a ciphertext at this position
-            .ok_or(ApplyUpdatePathError::MissingCiphertext)?;
-
-        // ValSem203: Path secrets must decrypt correctly
-        let path_secret = PathSecret::decrypt(
-            crypto,
-            ciphersuite,
-            ciphertext,
-            decryption_key,
-            params.group_context,
-        )
-        .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+        #[cfg(feature = "experimental-hybrid")]
+        let path_secret =
+            if let Some(delivery_bytes) = update_path_node.experimental_hybrid_delivery() {
+                if update_path_node
+                    .encryption_key()
+                    .experimental_mkyber_key()
+                    .is_none()
+                    || !update_path_node.encrypted_path_secrets.is_empty()
+                {
+                    return Err(ApplyUpdatePathError::UnableToDecrypt);
+                }
+                let path_node_index =
+                    self.filtered_direct_path(params.sender_leaf_index)[path_position].u32();
+                let delivery = ExperimentalHybridPathDelivery::from_canonical_bytes(
+                    path_node_index,
+                    delivery_bytes.to_vec(),
+                )
+                .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+                let ciphertext =
+                    hybrid_path_secret::HybridPathCiphertext::from_commit_authenticated_bytes(
+                        delivery.canonical_bytes(),
+                    )
+                    .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+                let domain = params
+                    .sender_leaf_encryption_key
+                    .experimental_mkyber_key()
+                    .ok_or(ApplyUpdatePathError::UnableToDecrypt)?
+                    .domain();
+                let context = binary_hybrid_context(
+                    crypto,
+                    ciphersuite,
+                    params.group_context,
+                    path_node_index,
+                    domain,
+                )
+                .map_err(ApplyUpdatePathError::LibraryError)?;
+                let private_mkyber_key = decryption_key
+                    .experimental_mkyber_private_key()
+                    .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?
+                    .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+                let classical_private_key =
+                    ClassicalHpkePrivateKey::from_bytes(decryption_key.classical_private_key())
+                        .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+                let secret = open_hybrid_path_level_with_provider(
+                    &ForkClassicalHpkeProvider::default(),
+                    &EducationalMkyber512Reference,
+                    &context,
+                    &ciphertext,
+                    &HybridPathRecipientPrivate::new(
+                        RecipientNodeIndex::new(recipient_node_index),
+                        private_mkyber_key,
+                        classical_private_key,
+                    ),
+                )
+                .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+                PathSecret::from(Secret::from_slice(secret.as_bytes()))
+            } else {
+                if update_path_node
+                    .encryption_key()
+                    .experimental_mkyber_key()
+                    .is_some()
+                {
+                    return Err(ApplyUpdatePathError::UnableToDecrypt);
+                }
+                let ciphertext = update_path_node
+                    .encrypted_path_secrets(resolution_position)
+                    .ok_or(ApplyUpdatePathError::MissingCiphertext)?;
+                PathSecret::decrypt(
+                    crypto,
+                    ciphersuite,
+                    ciphertext,
+                    decryption_key,
+                    params.group_context,
+                )
+                .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?
+            };
+        #[cfg(not(feature = "experimental-hybrid"))]
+        let path_secret = {
+            let ciphertext = update_path_node
+                .encrypted_path_secrets(resolution_position)
+                .ok_or(ApplyUpdatePathError::MissingCiphertext)?;
+            PathSecret::decrypt(
+                crypto,
+                ciphersuite,
+                ciphertext,
+                decryption_key,
+                params.group_context,
+            )
+            .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?
+        };
 
         let common_path =
             self.filtered_common_direct_path(own_leaf_index, params.sender_leaf_index);
@@ -267,6 +360,8 @@ pub(crate) struct DecryptPathParams<'a> {
 pub struct UpdatePathNode {
     pub(super) public_key: EncryptionKey,
     pub(super) encrypted_path_secrets: Vec<HpkeCiphertext>,
+    #[cfg(feature = "experimental-hybrid")]
+    pub(super) experimental_hybrid_delivery: Option<VLBytes>,
 }
 
 impl UpdatePathNode {
@@ -277,6 +372,13 @@ impl UpdatePathNode {
 
     pub(crate) fn encryption_key(&self) -> &EncryptionKey {
         &self.public_key
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    fn experimental_hybrid_delivery(&self) -> Option<&[u8]> {
+        self.experimental_hybrid_delivery
+            .as_ref()
+            .map(AsRef::as_ref)
     }
 
     /// Flip the last byte of every `encrypted_path_secret` in this node.

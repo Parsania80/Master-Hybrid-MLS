@@ -23,12 +23,15 @@ use zeroize::Zeroize;
 
 use crate::prelude::{Ciphersuite, OpenMlsCrypto, OpenMlsProvider};
 use crate::{
+    error::LibraryError,
     extensions::{
         errors::InvalidExtensionError, Extension, ExtensionType, Extensions, UnknownExtension,
     },
+    group::GroupContext,
     key_packages::KeyPackage,
     treesync::node::leaf_node::Capabilities,
 };
+use tls_codec::Deserialize as TlsDeserializeTrait;
 
 /// Private-use GroupContext extension carrying authenticated adaptive-tree state.
 ///
@@ -387,6 +390,44 @@ pub struct ExperimentalHybridPathDelivery {
 /// local provider or trait objects to the upstream hybrid-wire crate.
 #[derive(Debug, Default)]
 pub struct ForkClassicalHpkeProvider(openmls_rust_crypto::OpenMlsRustCrypto);
+
+/// Builds the fixed binary-tree hybrid context from authenticated GroupContext bytes.
+#[cfg(feature = "experimental-hybrid")]
+pub(crate) fn binary_hybrid_context(
+    crypto: &impl OpenMlsCrypto,
+    ciphersuite: Ciphersuite,
+    serialized_group_context: &[u8],
+    path_node_index: u32,
+    domain: MkyberDomain,
+) -> Result<hybrid_path_secret::HybridPathLevelContext, LibraryError> {
+    if ciphersuite != Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 {
+        return Err(LibraryError::custom(
+            "unsupported experimental hybrid ciphersuite",
+        ));
+    }
+    let group_context = GroupContext::tls_deserialize_exact(serialized_group_context)
+        .map_err(|_| LibraryError::custom("invalid experimental hybrid GroupContext"))?;
+    if group_context.ciphersuite() != ciphersuite {
+        return Err(LibraryError::custom(
+            "experimental hybrid GroupContext ciphersuite mismatch",
+        ));
+    }
+    let group_context_hash = crypto
+        .hash(ciphersuite.hash_algorithm(), serialized_group_context)
+        .map_err(LibraryError::unexpected_crypto_error)?;
+    let group_context_hash = group_context_hash.as_slice().try_into().map_err(|_| {
+        LibraryError::custom("invalid experimental hybrid GroupContext hash length")
+    })?;
+    Ok(hybrid_path_secret::HybridPathLevelContext::new(
+        group_context.group_id().as_slice().to_vec(),
+        group_context.epoch().as_u64(),
+        0,
+        hybrid_path_secret::TreeArity::Binary,
+        hybrid_path_secret::PathNodeIndex::new(path_node_index),
+        domain,
+        group_context_hash,
+    ))
+}
 
 impl ClassicalHpkeProvider for ForkClassicalHpkeProvider {
     fn setup_sender_and_export(

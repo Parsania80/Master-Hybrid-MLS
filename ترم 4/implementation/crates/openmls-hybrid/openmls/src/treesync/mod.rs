@@ -421,6 +421,47 @@ impl TreeSync {
         Ok((tree_sync, commit_secret, encryption_key_pair))
     }
 
+    /// Creates the initial experimental tree with a matched mKyber creator leaf.
+    #[cfg(feature = "experimental-hybrid")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_experimental_mkyber(
+        provider: &impl OpenMlsProvider,
+        signer: &impl Signer,
+        ciphersuite: Ciphersuite,
+        credential_with_key: CredentialWithKey,
+        life_time: Lifetime,
+        capabilities: Capabilities,
+        extensions: Extensions<LeafNode>,
+        domain: mkyber::MkyberDomain,
+    ) -> Result<(Self, CommitSecret, EncryptionKeyPair), LibraryError> {
+        let new_leaf_node_params = NewLeafNodeParams {
+            ciphersuite,
+            credential_with_key,
+            leaf_node_source: LeafNodeSource::KeyPackage(life_time),
+            capabilities,
+            extensions,
+            tree_info_tbs: TreeInfoTbs::KeyPackage,
+        };
+        let (leaf, encryption_key_pair) =
+            LeafNode::new_with_experimental_mkyber(provider, signer, new_leaf_node_params, domain)?;
+        let node = Node::leaf_node(leaf);
+        let path_secret: PathSecret = Secret::random(ciphersuite, provider.rand())
+            .map_err(LibraryError::unexpected_crypto_error)?
+            .into();
+        let commit_secret: CommitSecret = path_secret
+            .derive_path_secret(provider.crypto(), ciphersuite)?
+            .into();
+        let nodes = vec![TreeSyncNode::from(node).into()];
+        let tree = MlsBinaryTree::new(nodes)
+            .map_err(|_| LibraryError::custom("Unexpected error creating the binary tree."))?;
+        let mut tree_sync = Self {
+            tree,
+            tree_hash: vec![],
+        };
+        tree_sync.populate_parent_hashes(provider.crypto(), ciphersuite)?;
+        Ok((tree_sync, commit_secret, encryption_key_pair))
+    }
+
     /// Return the full tree
     pub(crate) fn tree(&self) -> &MlsBinaryTree<TreeSyncLeafNode, TreeSyncParentNode> {
         &self.tree
@@ -718,6 +759,18 @@ impl TreeSync {
                 // then we should have the secret for this node.
                 if !parent_node.unmerged_leaves().contains(&leaf_index) {
                     let keypair = path_secret.derive_key_pair(crypto, ciphersuite)?;
+                    #[cfg(feature = "experimental-hybrid")]
+                    let keypair = match parent_node.encryption_key().experimental_mkyber_key() {
+                        Some(mkyber_key) => keypair.with_experimental_mkyber_keypair(
+                            path_secret.derive_experimental_mkyber_keypair(
+                                crypto,
+                                ciphersuite,
+                                mkyber_key.domain(),
+                                parent_index.u32(),
+                            )?,
+                        )?,
+                        None => keypair,
+                    };
                     // The derived public key should match the one in the node.
                     // If not, the tree is corrupt.
                     if parent_node.encryption_key() != keypair.public_key() {

@@ -29,6 +29,8 @@ pub(crate) struct TempBuilderPG1 {
     capabilities: Option<Capabilities>,
     leaf_node_extensions: Extensions<LeafNode>,
     group_context_extensions: Extensions<GroupContext>,
+    #[cfg(feature = "experimental-hybrid")]
+    experimental_mkyber_domain: Option<mkyber::MkyberDomain>,
 }
 
 impl TempBuilderPG1 {
@@ -52,6 +54,12 @@ impl TempBuilderPG1 {
 
     pub(crate) fn with_leaf_node_extensions(mut self, extensions: Extensions<LeafNode>) -> Self {
         self.leaf_node_extensions = extensions;
+        self
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn with_experimental_mkyber_domain(mut self, domain: mkyber::MkyberDomain) -> Self {
+        self.experimental_mkyber_domain = Some(domain);
         self
     }
 
@@ -81,15 +89,41 @@ impl TempBuilderPG1 {
             required_proposals,
             required_credentials,
         ));
-        let (treesync, commit_secret, leaf_keypair) = TreeSync::new(
-            provider,
-            signer,
-            self.ciphersuite,
-            self.credential_with_key,
-            self.lifetime.unwrap_or_default(),
-            capabilities,
-            self.leaf_node_extensions,
-        )?;
+        let (treesync, commit_secret, leaf_keypair) = {
+            #[cfg(feature = "experimental-hybrid")]
+            if let Some(domain) = self.experimental_mkyber_domain {
+                TreeSync::new_with_experimental_mkyber(
+                    provider,
+                    signer,
+                    self.ciphersuite,
+                    self.credential_with_key,
+                    self.lifetime.unwrap_or_default(),
+                    capabilities,
+                    self.leaf_node_extensions,
+                    domain,
+                )?
+            } else {
+                TreeSync::new(
+                    provider,
+                    signer,
+                    self.ciphersuite,
+                    self.credential_with_key,
+                    self.lifetime.unwrap_or_default(),
+                    capabilities,
+                    self.leaf_node_extensions,
+                )?
+            }
+            #[cfg(not(feature = "experimental-hybrid"))]
+            TreeSync::new(
+                provider,
+                signer,
+                self.ciphersuite,
+                self.credential_with_key,
+                self.lifetime.unwrap_or_default(),
+                capabilities,
+                self.leaf_node_extensions,
+            )?
+        };
 
         let group_context = GroupContext::create_initial_group_context(
             self.ciphersuite,
@@ -159,6 +193,8 @@ impl PublicGroup {
             capabilities: None,
             leaf_node_extensions: Extensions::empty(),
             group_context_extensions: Extensions::empty(),
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_mkyber_domain: None,
         }
     }
 }

@@ -834,37 +834,39 @@ impl TreeSyncDiff<'_> {
         excluded_indices: &HashSet<&LeafNodeIndex>,
         owned_keys: &'private_key [&EncryptionKeyPair],
         leaf_index: LeafNodeIndex,
-    ) -> Result<(&'private_key EncryptionPrivateKey, usize), TreeSyncDiffError> {
+    ) -> Result<(&'private_key EncryptionPrivateKey, usize, u32), TreeSyncDiffError> {
         // Get the copath node of the sender that is in our direct path, as well
         // as its position in our direct path.
         let subtree_root_copath_node_id = self
             .diff
             .subtree_root_copath_node(sender_leaf_index, leaf_index);
 
-        let sender_copath_resolution: Vec<EncryptionKey> = self
+        let sender_copath_resolution: Vec<(u32, EncryptionKey)> = self
             .resolution(subtree_root_copath_node_id, excluded_indices)
             .into_iter()
-            .map(|(_, node_ref)| match node_ref {
-                NodeReference::Leaf(leaf) => leaf.encryption_key().clone(),
-                NodeReference::Parent(parent) => parent.encryption_key().clone(),
+            .map(|(node_index, node_ref)| match node_ref {
+                NodeReference::Leaf(leaf) => (node_index.u32(), leaf.encryption_key().clone()),
+                NodeReference::Parent(parent) => {
+                    (node_index.u32(), parent.encryption_key().clone())
+                }
             })
             .collect();
 
-        if let Some((keypair, resolution_position)) = sender_copath_resolution
+        if let Some((keypair, resolution_position, node_index)) = sender_copath_resolution
             .iter()
             .enumerate()
-            .find_map(|(position, pk)| {
+            .find_map(|(position, (node_index, pk))| {
                 owned_keys
                     .iter()
                     .find(|&owned_keypair| owned_keypair.public_key() == pk)
-                    .map(|keypair| (keypair, position))
+                    .map(|keypair| (keypair, position, *node_index))
             })
         {
             debug!("Found fitting keypair in the filtered resolution:");
             debug!("* private key: {:x?}", keypair.private_key());
             debug!("* public key: {:x?}", keypair.public_key());
 
-            return Ok((keypair.private_key(), resolution_position));
+            return Ok((keypair.private_key(), resolution_position, node_index));
         };
         Err(TreeSyncDiffError::NoPrivateKeyFound)
     }

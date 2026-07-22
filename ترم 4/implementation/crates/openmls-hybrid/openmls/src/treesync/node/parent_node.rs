@@ -10,6 +10,10 @@ use thiserror::*;
 use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize, VLBytes};
 
 use super::encryption_keys::{EncryptionKey, EncryptionKeyPair};
+#[cfg(feature = "experimental-hybrid")]
+use crate::experimental_hybrid::{
+    binary_hybrid_context, ExperimentalHybridPathDelivery, ForkClassicalHpkeProvider,
+};
 use crate::{
     binary_tree::array_representation::{LeafNodeIndex, ParentNodeIndex},
     error::LibraryError,
@@ -17,6 +21,13 @@ use crate::{
     schedule::CommitSecret,
     treesync::{hashes::ParentHashInput, treekem::UpdatePathNode},
 };
+#[cfg(feature = "experimental-hybrid")]
+use hybrid_path_secret::{
+    seal_hybrid_path_level_with_provider, ClassicalHpkePublicKey, HybridPathRecipientPublic,
+    HybridPathSecret, RecipientNodeIndex,
+};
+#[cfg(feature = "experimental-hybrid")]
+use mkyber::EducationalMkyber512Reference;
 
 /// This struct implements the MLS parent node. It contains its public key,
 /// parent hash and unmerged leaves. Additionally, it may contain the private
@@ -53,6 +64,7 @@ impl From<EncryptionKey> for ParentNode {
 #[cfg_attr(test, derive(Clone))]
 #[derive(Debug)]
 pub(crate) struct PlainUpdatePathNode {
+    node_index: u32,
     public_key: EncryptionKey,
     path_secret: PathSecret,
 }
@@ -63,16 +75,88 @@ impl PlainUpdatePathNode {
         &self,
         crypto: &impl OpenMlsCrypto,
         ciphersuite: Ciphersuite,
-        public_keys: &[EncryptionKey],
+        public_keys: &[(u32, EncryptionKey)],
         group_context: &[u8],
     ) -> Result<UpdatePathNode, LibraryError> {
+        #[cfg(feature = "experimental-hybrid")]
+        if let Some(node_mkyber_key) = self.public_key.experimental_mkyber_key() {
+            if !public_keys.is_empty() {
+                let context = binary_hybrid_context(
+                    crypto,
+                    ciphersuite,
+                    group_context,
+                    self.node_index,
+                    node_mkyber_key.domain(),
+                )?;
+                let recipients = public_keys
+                    .iter()
+                    .map(|(node_index, public_key)| {
+                        let mkyber_public_key = public_key
+                            .experimental_mkyber_key()
+                            .ok_or_else(|| {
+                                LibraryError::custom(
+                                    "experimental hybrid recipient lacks mKyber key",
+                                )
+                            })?
+                            .to_mkyber_key()
+                            .map_err(|_| {
+                                LibraryError::custom(
+                                    "invalid experimental hybrid recipient mKyber key",
+                                )
+                            })?;
+                        let classical_public_key = ClassicalHpkePublicKey::from_bytes(
+                            public_key.as_slice(),
+                        )
+                        .map_err(|_| {
+                            LibraryError::custom("invalid experimental hybrid recipient HPKE key")
+                        })?;
+                        Ok(HybridPathRecipientPublic::new(
+                            RecipientNodeIndex::new(*node_index),
+                            mkyber_public_key,
+                            classical_public_key,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, LibraryError>>()?;
+                let path_secret =
+                    HybridPathSecret::from_bytes(self.path_secret.path_secret.as_slice()).map_err(
+                        |_| LibraryError::custom("invalid experimental hybrid path secret length"),
+                    )?;
+                let mut randomness = rand::rngs::OsRng;
+                let ciphertext = seal_hybrid_path_level_with_provider(
+                    &ForkClassicalHpkeProvider::default(),
+                    &EducationalMkyber512Reference,
+                    &mut randomness,
+                    &context,
+                    &path_secret,
+                    &recipients,
+                )
+                .map_err(|_| {
+                    LibraryError::custom("experimental hybrid UpdatePath encryption failed")
+                })?;
+                let delivery = ExperimentalHybridPathDelivery::from_canonical_bytes(
+                    self.node_index,
+                    ciphertext.commit_authenticated_bytes().map_err(|_| {
+                        LibraryError::custom("experimental hybrid UpdatePath encoding failed")
+                    })?,
+                )
+                .map_err(|_| {
+                    LibraryError::custom("invalid experimental hybrid UpdatePath delivery")
+                })?;
+                return Ok(UpdatePathNode {
+                    public_key: self.public_key.clone(),
+                    encrypted_path_secrets: Vec::new(),
+                    experimental_hybrid_delivery: Some(delivery.canonical_bytes().to_vec().into()),
+                });
+            }
+        }
+
         #[cfg(target_arch = "wasm32")]
         let public_keys = public_keys.iter();
         #[cfg(not(target_arch = "wasm32"))]
         let public_keys = public_keys.par_iter();
 
         public_keys
-            .map(|pk| {
+            .map(|(_, pk)| {
                 self.path_secret
                     .encrypt(crypto, ciphersuite, pk, group_context)
             })
@@ -80,6 +164,8 @@ impl PlainUpdatePathNode {
             .map(|encrypted_path_secrets| UpdatePathNode {
                 public_key: self.public_key.clone(),
                 encrypted_path_secrets,
+                #[cfg(feature = "experimental-hybrid")]
+                experimental_hybrid_delivery: None,
             })
     }
 
@@ -166,6 +252,7 @@ impl ParentNode {
                 // Store the current path secret and the derived public key for
                 // later encryption.
                 let update_path_node = PlainUpdatePathNode {
+                    node_index: index.u32(),
                     public_key: keypair.public_key().clone(),
                     path_secret,
                 };

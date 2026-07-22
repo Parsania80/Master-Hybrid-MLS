@@ -143,7 +143,7 @@ impl TreeNodeIndex {
     }
 
     /// Return the inner value as `u32`.
-    fn u32(&self) -> u32 {
+    pub(crate) fn u32(&self) -> u32 {
         match self {
             TreeNodeIndex::Leaf(index) => index.to_tree_index(),
             TreeNodeIndex::Parent(index) => index.to_tree_index(),

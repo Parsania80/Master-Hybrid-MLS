@@ -150,6 +150,25 @@ impl From<HpkePrivateKey> for EncryptionPrivateKey {
 }
 
 impl EncryptionPrivateKey {
+    /// Returns the classical private key only to the local hybrid TreeKEM receiver.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn classical_private_key(&self) -> &HpkePrivateKey {
+        &self.key
+    }
+
+    /// Returns the local experimental mKyber private key for hybrid TreeKEM receive.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_mkyber_private_key(
+        &self,
+    ) -> Result<Option<mkyber::MkyberDecapsulationKey>, ExperimentalNodeKeyError> {
+        self.experimental_mkyber_key
+            .as_ref()
+            .map(ExperimentalMkyberNodePrivateKey::to_mkyber_key)
+            .transpose()
+    }
+}
+
+impl EncryptionPrivateKey {
     /// Decrypt a given `HpkeCiphertext` using this [`EncryptionPrivateKey`] and
     /// `group_context`.
     ///
@@ -288,11 +307,7 @@ impl EncryptionKeyPair {
     pub(crate) fn experimental_mkyber_private_key(
         &self,
     ) -> Result<Option<mkyber::MkyberDecapsulationKey>, ExperimentalNodeKeyError> {
-        self.private_key
-            .experimental_mkyber_key
-            .as_ref()
-            .map(ExperimentalMkyberNodePrivateKey::to_mkyber_key)
-            .transpose()
+        self.private_key.experimental_mkyber_private_key()
     }
 
     pub(crate) fn random(

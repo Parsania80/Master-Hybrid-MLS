@@ -33,6 +33,8 @@ pub struct MlsGroupBuilder {
     mls_group_create_config_builder: MlsGroupCreateConfigBuilder,
     replace_old_group: bool,
     psk_ids: Vec<PreSharedKeyId>,
+    #[cfg(feature = "experimental-hybrid")]
+    experimental_mkyber_domain: Option<mkyber::MkyberDomain>,
 }
 
 impl MlsGroupBuilder {
@@ -49,6 +51,13 @@ impl MlsGroupBuilder {
     /// Instruct the builder to replace any existing group with the same ID.
     pub fn replace_old_group(mut self) -> Self {
         self.replace_old_group = true;
+        self
+    }
+
+    /// Enables thesis-local mKyber material for the creator leaf.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn with_experimental_mkyber_domain(mut self, domain: mkyber::MkyberDomain) -> Self {
+        self.experimental_mkyber_domain = Some(domain);
         self
     }
 
@@ -92,19 +101,22 @@ impl MlsGroupBuilder {
             return Err(NewGroupError::GroupAlreadyExists);
         }
 
-        let (public_group_builder, commit_secret, leaf_keypair) =
-            PublicGroup::builder(group_id, ciphersuite, credential_with_key)
-                .with_group_context_extensions(
-                    mls_group_create_config.group_context_extensions.clone(),
-                )
-                .with_leaf_node_extensions(mls_group_create_config.leaf_node_extensions.clone())
-                .with_lifetime(*mls_group_create_config.lifetime())
-                .with_capabilities(mls_group_create_config.capabilities.clone())
-                .get_secrets(provider, signer)
-                .map_err(|e| match e {
-                    PublicGroupBuildError::LibraryError(e) => NewGroupError::LibraryError(e),
-                    PublicGroupBuildError::InvalidExtensions(e) => e.into(),
-                })?;
+        let public_group_builder = PublicGroup::builder(group_id, ciphersuite, credential_with_key)
+            .with_group_context_extensions(mls_group_create_config.group_context_extensions.clone())
+            .with_leaf_node_extensions(mls_group_create_config.leaf_node_extensions.clone())
+            .with_lifetime(*mls_group_create_config.lifetime())
+            .with_capabilities(mls_group_create_config.capabilities.clone());
+        #[cfg(feature = "experimental-hybrid")]
+        let public_group_builder = match self.experimental_mkyber_domain {
+            Some(domain) => public_group_builder.with_experimental_mkyber_domain(domain),
+            None => public_group_builder,
+        };
+        let (public_group_builder, commit_secret, leaf_keypair) = public_group_builder
+            .get_secrets(provider, signer)
+            .map_err(|e| match e {
+                PublicGroupBuildError::LibraryError(e) => NewGroupError::LibraryError(e),
+                PublicGroupBuildError::InvalidExtensions(e) => e.into(),
+            })?;
 
         let serialized_group_context = public_group_builder
             .group_context()

@@ -16,7 +16,7 @@
 
 ## Architecture
 
-- Current state: stable-Rust workspace with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, a validated public configuration schema, a paper-based educational mKyber512 reference backend, a standalone reference timing smoke benchmark, and an experimental hybrid path-level delivery boundary. It creates a single mKyber encapsulation per co-path set, derives per-recipient classical HPKE exporter secrets, builds the canonical hybrid input, AES-GCM wraps the path secret, emits public KDF-exclusion provenance from real canonical wire fields, and rejects tested ciphertext tampering, non-recipients, and context replays. ADR 0030 imports and compiles the exact separately named OpenMLS fork through an isolated adapter; ADR 0032 adds its strict signed public mKyber recipient-key KeyPackage extension and capability gate, ADR 0033 adds its validated canonical hybrid-delivery byte bridge, ADR 0034 supplies fork-local provider-neutral hybrid execution, ADR 0035 binds optional public mKyber material to fork TreeSync encryption keys, ADR 0036 defines the matching private storage design, and ADR 0037 implements authenticated domain-bound KeyPackage leaf pairs plus deterministic binary parent-pair derivation. Hybrid UpdatePath replacement, staged private lifecycle replacement/removal, authenticated ArityState application, adaptive transition, experimental execution, and generated experimental results remain unimplemented.
+- Current state: stable-Rust workspace with a Phase 2-gated maintained-library baseline MLS adapter, independent baseline regression coverage, a validated public configuration schema, a paper-based educational mKyber512 reference backend, a standalone reference timing smoke benchmark, and an experimental hybrid path-level delivery boundary. It creates a single mKyber encapsulation per co-path set, derives per-recipient classical HPKE exporter secrets, builds the canonical hybrid input, AES-GCM wraps the path secret, emits public KDF-exclusion provenance from real canonical wire fields, and rejects tested ciphertext tampering, non-recipients, and context replays. ADR 0030 imports and compiles the exact separately named OpenMLS fork through an isolated adapter; ADR 0032 adds its strict signed public mKyber recipient-key KeyPackage extension and capability gate, ADR 0033 adds its validated canonical hybrid-delivery byte bridge, ADR 0034 supplies fork-local provider-neutral hybrid execution, ADR 0035 binds optional public mKyber material to fork TreeSync encryption keys, ADR 0036 defines the matching private storage design, ADR 0037 implements authenticated domain-bound KeyPackage leaf pairs plus deterministic binary parent-pair derivation, and ADR 0038 wires feature-gated binary hybrid UpdatePath sender/receiver delivery. One real two-member experimental Commit round-trip now converges; atomic staged lifecycle application, rejection coverage, authenticated nonzero ArityState, experimental workloads, and generated experimental results remain unimplemented.
 - `/agent.md`: Human-agent operating protocol and documentation rules.
 - `/PROJECT.md`: Single source of truth for scope, architecture, dependency lock, and progress.
 - `/SESSION-LOG.md`: Append-only audit trail for actions, commands, results, decisions, and limitations.
@@ -192,16 +192,46 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 | 57.1 | Keep the baseline dependency isolated; compile the named local fork with an opt-in feature boundary. | ✅ Done | ADR 0030; isolated adapter and baseline regressions compile with distinct package identities. |
 | 57.2 | Admit an experimental member only when its signed KeyPackage advertises `0xF001`/`0xF002` and carries strict versioned mKyber public material. | ✅ Done | ADR 0032; canonical key extension/capability tests. |
 | 57.3 | Validate canonical hybrid-delivery bytes at the fork boundary and execute the hybrid HPKE/mKyber/KDF/AEAD primitive with fork-local provider types. | ✅ Done | ADRs 0033/0034; matching-node and fork-provider seal/open tests. |
-| 57.4 | Bind a matching public mKyber key and private decapsulation material to every binary TreeKEM resolution node, including parent nodes; serialize public state and stage local private-key lifecycle safely. | ⬜ Todo | Partial: ADR 0037 adds matched OS-random KeyPackage leaf pairs, signed `0xF002`/leaf equality, persisted private decapsulation, deterministic parent derivation from the MLS path secret/domain/index, and complete-key receiver matching. Remaining: exercise sender/receiver parent convergence, existing epoch-keypair replacement/removal, and resolution-binding lifecycle through a hybrid UpdatePath/atomic stage. |
-| 57.5 | Replace binary experimental `UpdatePathNode` delivery with canonical hybrid bytes, enforce capabilities and context binding, and implement sender plus receiver together. | ⬜ Todo | Real fork Commit wire round-trip; recipient/non-recipient, tamper, replay, and malformed-wire rejection tests. |
+| 57.4 | Bind a matching public mKyber key and private decapsulation material to every binary TreeKEM resolution node, including parent nodes; serialize public state and stage local private-key lifecycle safely. | ⬜ Todo | Partial: ADR 0037 adds matched OS-random KeyPackage leaf pairs, signed `0xF002`/leaf equality, persisted private decapsulation, deterministic parent derivation from the MLS path secret/domain/index, complete-key receiver matching, and real two-member parent-path convergence. Remaining: existing epoch-keypair replacement/removal and resolution-binding lifecycle through an atomic stage. |
+| 57.5 | Replace binary experimental `UpdatePathNode` delivery with canonical hybrid bytes, enforce capabilities and context binding, and implement sender plus receiver together. | ⬜ Todo | Partial: ADR 0038 adds the feature-gated sender/receiver path, indexed resolution binding, GroupContext-derived binary context, fail-closed no-fallback checks, and one real fork Commit wire round-trip. Remaining: recipient/non-recipient, tamper, replay, malformed-wire, and capability rejection tests. |
 | 57.6 | Apply binary hybrid Commit state atomically: TreeSync, secret state, and authenticated normal `ArityState` must converge or remain unchanged on every failure. | ⬜ Todo | Multi-member accepted-Commit convergence and failure non-mutation tests. |
 | 57.7 | Expose a real binary-with-mKyber client/workload path and attach measured bytes, crypto counts, timing, and availability facts to Task 54 records. | ⬜ Todo | At least one accepted binary hybrid workload produces non-null typed metrics from real fork commits. |
 | 57.8 | Implement authenticated `2 -> 4` transition Commit handling: GroupContext `ArityState`, deterministic mapping, active quaternary state, TreeCover, hybrid delivery, and atomic rejection semantics. | ⬜ Todo | Multi-member transition convergence plus divergent-state/tamper/replay rejection tests. |
 | 57.9 | Expose the real adaptive client/workload path and regenerate the three-mode comparison from equivalent configurations. | ⬜ Todo | Create-new comparison artifacts contain real observed values for baseline, binary-with-mKyber, and adaptive modes. |
 | 57.10 | Review the completed run for configuration equivalence, seed policy, lockfile/toolchain provenance, and prohibited secret output before declaring Task 57 done. | ⬜ Todo | Reproducible release acceptance report and explicit complete/unsupported checklist. |
 
+### Task 57 Implementation Subtasks
+
+This ledger decomposes the execution gates without adding another active-task
+marker. `Partial` means code exists but its required end-to-end acceptance
+evidence is still missing; it is never sufficient for numeric experimental
+results.
+
+| Subtask | Progress | Concrete outcome / remaining evidence |
+|---|---|---|
+| 57.4.1 | ✅ Done | Feature-gated `EncryptionKey` public mKyber material serializes through leaf, parent, ratchet-tree, and UpdatePath state. |
+| 57.4.2 | ✅ Done | `EncryptionKeyPair`/KeyPackage bundle retain fixed-size, zeroized matched mKyber private material; a signed `0xF002` leaf public key decapsulates through its persisted bundle private key. |
+| 57.4.3 | ✅ Done | Parent pairs derive deterministically from MLS `PathSecret`, domain, and parent index; receiver parent comparison includes the full `EncryptionKey`. |
+| 57.4.4 | ✅ Done | A real two-member fork flow adds and joins an experimental member, then delivers Bob's hybrid self-update to Alice; both merge and converge on parent public state and GroupContext. |
+| 57.4.5 | ⬜ Todo | Prove existing epoch-keypair replacement/removal retires the associated mKyber private material without partial state. |
+| 57.5.1 | ✅ Done | Sender selects indexed co-path resolution keys and emits one canonical hybrid delivery for an mKyber-bound parent node. |
+| 57.5.2 | ✅ Done | Receiver validates canonical bytes/index/context, selects its matching indexed private pair, opens the hybrid path secret, and rejects hybrid/classical fallback ambiguity. |
+| 57.5.3 | ✅ Done | Adapter integration test serializes Bob's real hybrid self-update Commit, processes and merges it at Alice, then merges Bob's pending Commit and proves epoch, ratchet-tree, and GroupContext convergence. |
+| 57.5.4 | ⬜ Todo | Add recipient/non-recipient, ciphertext tamper, group/epoch/path-index replay, malformed-wire, and capability rejection tests through the real Commit path. |
+| 57.6.1 | ⬜ Todo | Design one staged binary hybrid application envelope covering TreeSync, epoch secrets, keypair persistence, and normal authenticated `ArityState`. |
+| 57.6.2 | ⬜ Todo | Prove accepted multi-member binary hybrid Commit convergence and no observable mutation after every staged failure. |
+| 57.7.1 | ⬜ Todo | Expose an isolated binary-with-mKyber client/workload adapter that invokes only accepted fork commits. |
+| 57.7.2 | ⬜ Todo | Attach real Commit/Welcome bytes, mKyber/classical operation counts, timing, and availability facts to Task 54 records. |
+| 57.8.1 | ⬜ Todo | Bind validated `ArityState` to authenticated GroupContext Commit processing and enforce normal/transitioning lifecycle. |
+| 57.8.2 | ⬜ Todo | Apply deterministic `2 -> 4` mapping, active quaternary state, TreeCover, hybrid delivery, and staged rejection semantics in the fork. |
+| 57.8.3 | ⬜ Todo | Prove multi-member transition convergence and divergent-state/tamper/replay non-mutation. |
+| 57.9.1 | ⬜ Todo | Expose the adaptive client/workload path and collect real Task 54 observations. |
+| 57.9.2 | ⬜ Todo | Regenerate create-new three-mode artifacts from equivalent configurations with all three modes observed. |
+| 57.10.1 | ⬜ Todo | Review controls, public seed policy, toolchain/lock provenance, and secret-output redaction from a clean run. |
+| 57.10.2 | ⬜ Todo | Publish the explicit complete/partial/unsupported checklist, then mark Task 57 Done only if every required gate has evidence. |
+
 ---
 
 **Current:** Part 10, Task 57 — Compare baseline, binary-with-mKyber, and adaptive 2-to-4 modes under reproducible configurations.
 
-**Next:** Part 10, Task 58 — Complete unit, integration, property, regression, strict Clippy, format, test, and release-experiment acceptance gates.
+**Next:** Part 10, Task 57.5.4 — Add real-Commit recipient/non-recipient, tamper, replay, malformed-wire, and capability rejection tests.

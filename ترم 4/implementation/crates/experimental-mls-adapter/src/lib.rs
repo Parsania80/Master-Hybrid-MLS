@@ -41,7 +41,9 @@ mod tests {
         },
         prelude::{
             BasicCredential, Ciphersuite, CredentialWithKey, Extension, Extensions, KeyPackage,
-            UnknownExtension,
+            LeafNodeParameters, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig,
+            MlsMessageBodyIn, MlsMessageBodyOut, MlsMessageIn, OpenMlsProvider,
+            ProcessedMessageContent, StagedWelcome, UnknownExtension,
         },
         treesync::{EncryptionKey, ParentNode},
     };
@@ -376,5 +378,128 @@ mod tests {
             )
             .expect("matched private bundle key decapsulation");
         assert_eq!(recovered.as_bytes(), encapsulation.shared_secret.as_bytes());
+    }
+
+    #[test]
+    fn experimental_binary_self_update_round_trips_through_tree_sync() {
+        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+        let domain = MkyberDomain::new([0x91; 32]);
+        let alice_provider = OpenMlsRustCrypto::default();
+        let bob_provider = OpenMlsRustCrypto::default();
+        let alice_signer =
+            SignatureKeyPair::new(ciphersuite.signature_algorithm()).expect("Alice signer");
+        let bob_signer =
+            SignatureKeyPair::new(ciphersuite.signature_algorithm()).expect("Bob signer");
+        let alice_credential = CredentialWithKey {
+            credential: BasicCredential::new(b"experimental-alice".to_vec()).into(),
+            signature_key: alice_signer.public().into(),
+        };
+        let bob_credential = CredentialWithKey {
+            credential: BasicCredential::new(b"experimental-bob".to_vec()).into(),
+            signature_key: bob_signer.public().into(),
+        };
+        let config = MlsGroupCreateConfig::builder()
+            .ciphersuite(ciphersuite)
+            .use_ratchet_tree_extension(true)
+            .build();
+        let mut alice = MlsGroup::new_with_group_id_experimental_mkyber(
+            &alice_provider,
+            &alice_signer,
+            &config,
+            openmls_hybrid::prelude::GroupId::from_slice(b"experimental-round-trip"),
+            alice_credential,
+            domain,
+        )
+        .expect("experimental group creation");
+        let bob_bundle = KeyPackage::builder()
+            .build_with_experimental_mkyber(
+                ciphersuite,
+                &bob_provider,
+                &bob_signer,
+                bob_credential,
+                domain,
+            )
+            .expect("Bob experimental KeyPackage");
+        let (add_commit, welcome, _) = alice
+            .add_members(
+                &alice_provider,
+                &alice_signer,
+                core::slice::from_ref(bob_bundle.key_package()),
+            )
+            .expect("experimental add");
+        alice
+            .merge_pending_commit(&alice_provider)
+            .expect("Alice merges add");
+        let welcome = match MlsMessageIn::tls_deserialize_exact(
+            welcome
+                .tls_serialize_detached()
+                .expect("welcome serialization"),
+        )
+        .expect("welcome parsing")
+        .extract()
+        {
+            MlsMessageBodyIn::Welcome(welcome) => welcome,
+            _ => panic!("expected Welcome"),
+        };
+        let mut bob = StagedWelcome::new_from_welcome(
+            &bob_provider,
+            &MlsGroupJoinConfig::builder()
+                .use_ratchet_tree_extension(true)
+                .build(),
+            welcome,
+            None,
+        )
+        .expect("Bob staged Welcome")
+        .into_group(&bob_provider)
+        .expect("Bob joins");
+        let update = bob
+            .self_update(&bob_provider, &bob_signer, LeafNodeParameters::default())
+            .expect("Bob stages hybrid self-update");
+        let (update_commit, _, _) = update.into_contents();
+        let update_wire = update_commit
+            .tls_serialize_detached()
+            .expect("update serialization");
+        let protocol_message = MlsMessageIn::tls_deserialize_exact(&update_wire)
+            .expect("update parsing")
+            .try_into_protocol_message()
+            .expect("protocol message");
+        let staged = alice
+            .process_message(&alice_provider, protocol_message)
+            .expect("Alice processes hybrid self-update");
+        let ProcessedMessageContent::StagedCommitMessage(staged) = staged.into_content() else {
+            panic!("expected staged Commit");
+        };
+        alice
+            .merge_staged_commit(&alice_provider, *staged)
+            .expect("Alice merges hybrid self-update");
+        bob.merge_pending_commit(&bob_provider)
+            .expect("Bob merges self-update");
+
+        assert_eq!(alice.epoch(), bob.epoch());
+        assert_eq!(alice.export_ratchet_tree(), bob.export_ratchet_tree());
+        let alice_context = match alice
+            .export_group_info(alice_provider.crypto(), &alice_signer, false)
+            .expect("Alice GroupInfo")
+            .body()
+        {
+            MlsMessageBodyOut::GroupInfo(group_info) => group_info
+                .group_context()
+                .tls_serialize_detached()
+                .expect("Alice GroupContext serialization"),
+            _ => panic!("expected Alice GroupInfo"),
+        };
+        let bob_context = match bob
+            .export_group_info(bob_provider.crypto(), &bob_signer, false)
+            .expect("Bob GroupInfo")
+            .body()
+        {
+            MlsMessageBodyOut::GroupInfo(group_info) => group_info
+                .group_context()
+                .tls_serialize_detached()
+                .expect("Bob GroupContext serialization"),
+            _ => panic!("expected Bob GroupInfo"),
+        };
+        assert_eq!(alice_context, bob_context);
+        let _ = add_commit;
     }
 }
