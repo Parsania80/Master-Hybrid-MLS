@@ -12,14 +12,18 @@ use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize, VLBy
 use super::encryption_keys::{EncryptionKey, EncryptionKeyPair};
 #[cfg(feature = "experimental-hybrid")]
 use crate::experimental_hybrid::{
-    binary_hybrid_context, ExperimentalHybridPathDelivery, ForkClassicalHpkeProvider,
+    binary_hybrid_context, quaternary_hybrid_context, ExperimentalHybridPathDelivery,
+    ForkClassicalHpkeProvider,
 };
 use crate::{
     binary_tree::array_representation::{LeafNodeIndex, ParentNodeIndex},
     error::LibraryError,
     messages::PathSecret,
     schedule::CommitSecret,
-    treesync::{hashes::ParentHashInput, treekem::UpdatePathNode},
+    treesync::{
+        hashes::ParentHashInput,
+        treekem::{ExperimentalQuaternaryParentPath, UpdatePathNode},
+    },
 };
 #[cfg(feature = "experimental-hybrid")]
 use hybrid_path_secret::{
@@ -167,6 +171,99 @@ impl PlainUpdatePathNode {
                 #[cfg(feature = "experimental-hybrid")]
                 experimental_hybrid_delivery: None,
             })
+    }
+
+    /// Encrypts the authenticated experimental quaternary root-parent secret
+    /// to every non-committer MLS leaf. The payload is intentionally a
+    /// feature-gated UpdatePath field, so the enclosing Commit signature
+    /// authenticates both the public parent key and recipient ciphertext.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn encrypt_experimental_quaternary_root(
+        &self,
+        crypto: &impl OpenMlsCrypto,
+        ciphersuite: Ciphersuite,
+        recipient_leaf_keys: &[(u32, EncryptionKey)],
+        group_context: &[u8],
+        tree_version: u32,
+        domain: mkyber::MkyberDomain,
+    ) -> Result<ExperimentalQuaternaryParentPath, LibraryError> {
+        if recipient_leaf_keys.is_empty() {
+            return Err(LibraryError::custom(
+                "experimental quaternary root has no recipient leaves",
+            ));
+        }
+        let parent_keypair = self
+            .path_secret
+            .derive_experimental_quaternary_parent_keypair(
+                crypto,
+                ciphersuite,
+                domain,
+                tree_version,
+                0,
+                0,
+            )?;
+        let context = quaternary_hybrid_context(
+            crypto,
+            ciphersuite,
+            group_context,
+            tree_version,
+            0,
+            0,
+            domain,
+        )?;
+        let recipients = recipient_leaf_keys
+            .iter()
+            .map(|(leaf_index, public_key)| {
+                let mkyber_public_key = public_key
+                    .experimental_mkyber_key()
+                    .ok_or_else(|| {
+                        LibraryError::custom("experimental quaternary recipient lacks mKyber key")
+                    })?
+                    .to_mkyber_key()
+                    .map_err(|_| {
+                        LibraryError::custom("invalid experimental quaternary recipient mKyber key")
+                    })?;
+                let classical_public_key =
+                    ClassicalHpkePublicKey::from_bytes(public_key.as_slice()).map_err(|_| {
+                        LibraryError::custom("invalid experimental quaternary recipient HPKE key")
+                    })?;
+                Ok(HybridPathRecipientPublic::new(
+                    RecipientNodeIndex::new(*leaf_index),
+                    mkyber_public_key,
+                    classical_public_key,
+                ))
+            })
+            .collect::<Result<Vec<_>, LibraryError>>()?;
+        let path_secret = HybridPathSecret::from_bytes(self.path_secret.path_secret.as_slice())
+            .map_err(|_| {
+                LibraryError::custom("invalid experimental quaternary path secret length")
+            })?;
+        let mut randomness = rand::rngs::OsRng;
+        let ciphertext = seal_hybrid_path_level_with_provider(
+            &ForkClassicalHpkeProvider::default(),
+            &EducationalMkyber512Reference,
+            &mut randomness,
+            &context,
+            &path_secret,
+            &recipients,
+        )
+        .map_err(|_| {
+            LibraryError::custom("experimental quaternary UpdatePath encryption failed")
+        })?;
+        let delivery = ExperimentalHybridPathDelivery::from_canonical_bytes(
+            0,
+            ciphertext.commit_authenticated_bytes().map_err(|_| {
+                LibraryError::custom("experimental quaternary UpdatePath encoding failed")
+            })?,
+        )
+        .map_err(|_| LibraryError::custom("invalid experimental quaternary UpdatePath delivery"))?;
+        Ok(ExperimentalQuaternaryParentPath::new(
+            tree_version,
+            0,
+            0,
+            parent_keypair.public_key().clone(),
+            delivery.canonical_bytes().to_vec(),
+        ))
     }
 
     /// Return a reference to the `path_secret` of this node.

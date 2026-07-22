@@ -401,6 +401,65 @@ impl PathSecret {
             .map_err(|_| LibraryError::custom("experimental mKyber parent key derivation failed"))
     }
 
+    /// Derives one matched classical/mKyber key pair for the experimental
+    /// quaternary root parent. This is deliberately domain-separated from the
+    /// ordinary binary TreeKEM parent material.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn derive_experimental_quaternary_parent_keypair(
+        &self,
+        crypto: &impl OpenMlsCrypto,
+        ciphersuite: Ciphersuite,
+        domain: mkyber::MkyberDomain,
+        tree_version: u32,
+        parent_depth: u8,
+        parent_ordinal: u32,
+    ) -> Result<EncryptionKeyPair, LibraryError> {
+        if tree_version == 0 || parent_depth != 0 || parent_ordinal != 0 {
+            return Err(LibraryError::custom(
+                "unsupported experimental quaternary parent position",
+            ));
+        }
+        let mut context = Vec::with_capacity(41);
+        context.extend_from_slice(domain.as_bytes());
+        context.extend_from_slice(&tree_version.to_be_bytes());
+        context.push(parent_depth);
+        context.extend_from_slice(&parent_ordinal.to_be_bytes());
+        let node_secret = self
+            .path_secret
+            .kdf_expand_label(
+                crypto,
+                ciphersuite,
+                "quaternary TreeKEM node",
+                &context,
+                ciphersuite.hash_length(),
+            )
+            .map_err(LibraryError::unexpected_crypto_error)?;
+        let HpkeKeyPair { public, private } = crypto
+            .derive_hpke_keypair(ciphersuite.hpke_config(), node_secret.as_slice())
+            .map_err(LibraryError::unexpected_crypto_error)?;
+        let mkyber_seed = self
+            .path_secret
+            .kdf_expand_label(
+                crypto,
+                ciphersuite,
+                "mKyber quaternary TreeKEM node",
+                &context,
+                32,
+            )
+            .map_err(LibraryError::unexpected_crypto_error)?;
+        let mkyber_seed = mkyber_seed
+            .as_slice()
+            .try_into()
+            .map_err(|_| LibraryError::custom("invalid mKyber quaternary seed length"))?;
+        let mkyber_keypair = mkyber::EducationalMkyber512Reference
+            .keygen_from_derived_seed(domain, mkyber_seed)
+            .map_err(|_| {
+                LibraryError::custom("experimental mKyber quaternary parent key derivation failed")
+            })?;
+        EncryptionKeyPair::from((HpkePublicKey::from(public), private))
+            .with_experimental_mkyber_keypair(mkyber_keypair)
+    }
+
     /// Derives a path secret.
     pub(crate) fn derive_path_secret(
         &self,

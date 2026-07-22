@@ -20,6 +20,8 @@ use crate::{
         treekem::UpdatePath,
     },
 };
+#[cfg(feature = "experimental-hybrid")]
+use arity_state::{ArityLifecycle, ArityState};
 
 use super::PublicGroupDiff;
 
@@ -139,7 +141,49 @@ impl PublicGroupDiff<'_> {
             .leaf(leaf_index)
             .ok_or_else(|| LibraryError::custom("Couldn't find own leaf"))?
             .clone();
-        let encrypted_path = UpdatePath::new(leaf_node, encrypted_path);
+        let mut encrypted_path = UpdatePath::new(leaf_node, encrypted_path);
+
+        #[cfg(feature = "experimental-hybrid")]
+        if let Some(extension) = self
+            .group_context()
+            .extensions()
+            .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
+        {
+            let arity_state = ArityState::from_extension_value(&extension.0).map_err(|_| {
+                LibraryError::custom("invalid authenticated experimental ArityState")
+            })?;
+            if matches!(arity_state.lifecycle(), ArityLifecycle::Transitioning(_)) {
+                let domain = encrypted_path
+                    .leaf_node()
+                    .encryption_key()
+                    .experimental_mkyber_key()
+                    .ok_or_else(|| {
+                        LibraryError::custom("experimental quaternary sender lacks mKyber leaf key")
+                    })?
+                    .domain();
+                let recipient_leaf_keys = self
+                    .full_leaf_encryption_keys()
+                    .into_iter()
+                    .filter(|(recipient_leaf_index, _)| *recipient_leaf_index != leaf_index)
+                    .map(|(recipient_leaf_index, key)| (recipient_leaf_index.u32(), key))
+                    .collect::<Vec<_>>();
+                let root_path = plain_path.last().ok_or_else(|| {
+                    LibraryError::custom(
+                        "experimental quaternary authority requires a non-empty MLS UpdatePath",
+                    )
+                })?;
+                encrypted_path.set_experimental_quaternary_parent_path(
+                    root_path.encrypt_experimental_quaternary_root(
+                        crypto,
+                        ciphersuite,
+                        &recipient_leaf_keys,
+                        &serialized_group_context,
+                        arity_state.tree_version(),
+                        domain,
+                    )?,
+                );
+            }
+        }
         Ok(PathComputationResult {
             commit_secret: Some(commit_secret),
             encrypted_path: Some(encrypted_path),

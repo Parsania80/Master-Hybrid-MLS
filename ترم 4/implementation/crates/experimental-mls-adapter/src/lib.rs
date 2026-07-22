@@ -1198,7 +1198,8 @@ mod tests {
     }
 
     #[test]
-    fn experimental_transition_commit_authenticates_mapping_and_treecover_atomically() {
+    fn experimental_transition_commit_authenticates_mapping_treecover_and_quaternary_root_delivery()
+    {
         let (alice_provider, alice_signer, mut alice, bob_provider, _bob_signer, mut bob) =
             experimental_binary_pair_with_policy_controls(2, 0);
         let next_state = triggered_transition_state(&alice);
@@ -1213,7 +1214,7 @@ mod tests {
         let staged = staged_commit_from_wire(&mut bob, &bob_provider, &wire);
 
         bob.merge_staged_commit_experimental_transition_atomic(&bob_provider, staged)
-            .expect("receiver atomically merges transition Commit");
+            .expect("receiver opens and atomically merges quaternary root delivery");
         alice
             .merge_pending_commit_experimental_transition_atomic(&alice_provider)
             .expect("sender atomically merges transition Commit");

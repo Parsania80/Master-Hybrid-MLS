@@ -48,6 +48,19 @@ also derives an experimental quaternary authority from a later MLS epoch.
    rotates this authority. Sender and receiver derive the same redacted public
    status from the accepted candidate, and dedicated atomic APIs reject a
    missing, stale, or GroupContext/mapping/TreeCover-mismatched authority.
+9. Carry one feature-gated, fork-local quaternary **root** parent record inside
+   the authenticated MLS `UpdatePath`. The record contains its version,
+   adaptive tree version, `(depth=0, ordinal=0)`, matched public
+   classical/mKyber parent key, and canonical hybrid recipient delivery. The
+   record is covered by the surrounding Commit signature; it is explicitly not
+   an RFC MLS encoding.
+10. Derive the quaternary root pair from the ordinary binary root path secret
+    with separate classical and mKyber labels bound to domain, tree version,
+    depth, and ordinal. Deliver that root secret to every non-committer MLS
+    leaf through the quaternary GroupContext-bound hybrid context. Each
+    receiver opens it with its own matched leaf pair, derives the root pair,
+    compares its complete public key and secret with the MLS UpdatePath root,
+    and only then permits the existing atomic Commit merge.
 
 ## Failure Semantics
 
@@ -60,6 +73,10 @@ also derives an experimental quaternary authority from a later MLS epoch.
 - The persisted authority secret is never returned. Its status contains only
   epoch, tree version, and mapping digest, and reloads only through the existing
   `GroupEpochSecrets` storage lifecycle.
+- A transitioning receiver rejects a missing root-parent record, unsupported
+  parent position/version/tree version, malformed delivery, wrong recipient,
+  failed hybrid open, a public-key mismatch, or a secret mismatch before the
+  staged Commit reaches the atomic merge boundary.
 - As with ADR 0039, message-ratchet effects of receiving and staging a Commit
   occur before the merge API and are outside the storage transaction.
 
@@ -72,15 +89,19 @@ also derives an experimental quaternary authority from a later MLS epoch.
   without changing the receiver epoch, ratchet tree, or authenticated state.
 - A subsequent real hybrid MLS self-update rotates the stored authority at both
   members; the public status converges and survives a storage reload.
+- The transition Commit and subsequent self-update both carry the authenticated
+  quaternary root-parent record; the receiver opens it and proves it agrees
+  with the normal MLS root path secret and complete derived parent key.
 - Locked/offline adapter tests cover the round trip and rejection boundary.
 
 ## Explicit Non-Claims and Remaining Work
 
-This decision now derives, persists, and rotates a fork-local quaternary epoch
-authority, but its delivery carrier and public TreeKEM remain binary MLS. It is
-therefore not yet a quaternary-parent UpdatePath or a replacement for the MLS
-application/message key schedule; `ActiveQuaternaryTree` remains a public
-topology model. Task 60 remains current until quaternary parent-path delivery,
-multi-member transition convergence, full rejection coverage, and
-transition-specific storage-fault coverage exist. No adaptive workload or
-three-mode measurement is available from this boundary.
+This decision now has an authenticated, receiver-validated **root-only**
+quaternary parent delivery, while its MLS carrier, public TreeKEM, and private
+epoch-keypair lifecycle remain binary. It does not yet persist a separate
+quaternary parent private-key set, populate every quaternary parent in
+`ActiveQuaternaryTree`, or replace the MLS application/message key schedule.
+Task 60 remains current until those parent-path/storage steps, multi-member
+transition convergence, full rejection coverage, and transition-specific
+storage-fault coverage exist. No adaptive workload or three-mode measurement
+is available from this boundary.

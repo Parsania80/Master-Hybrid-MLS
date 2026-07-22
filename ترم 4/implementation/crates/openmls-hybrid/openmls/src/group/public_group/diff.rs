@@ -25,13 +25,16 @@ use crate::{
         diff::{StagedTreeSyncDiff, TreeSyncDiff},
         errors::{ApplyUpdatePathError, TreeSyncFromNodesError},
         node::{
-            encryption_keys::EncryptionKeyPair, leaf_node::LeafNode,
+            encryption_keys::{EncryptionKey, EncryptionKeyPair},
+            leaf_node::LeafNode,
             parent_node::PlainUpdatePathNode,
         },
         treekem::{DecryptPathParams, UpdatePath},
         RatchetTree, TreeSync,
     },
 };
+#[cfg(feature = "experimental-hybrid")]
+use arity_state::{ArityLifecycle, ArityState};
 
 pub(crate) mod apply_proposals;
 pub(crate) mod compute_path;
@@ -132,11 +135,33 @@ impl<'a> PublicGroupDiff<'a> {
         update_path: &UpdatePath,
         exclusion_list: &HashSet<&LeafNodeIndex>,
     ) -> Result<(Vec<EncryptionKeyPair>, CommitSecret), ApplyUpdatePathError> {
+        #[cfg(feature = "experimental-hybrid")]
+        let expected_quaternary_tree_version = self
+            .group_context()
+            .extensions()
+            .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
+            .map(|extension| {
+                let state = ArityState::from_extension_value(&extension.0).map_err(|_| {
+                    ApplyUpdatePathError::LibraryError(LibraryError::custom(
+                        "invalid authenticated experimental ArityState",
+                    ))
+                })?;
+                Ok::<Option<u32>, ApplyUpdatePathError>(
+                    matches!(state.lifecycle(), ArityLifecycle::Transitioning(_))
+                        .then_some(state.tree_version()),
+                )
+            })
+            .transpose()?
+            .flatten();
         let params = DecryptPathParams {
             update_path: update_path.nodes(),
             sender_leaf_encryption_key: update_path.leaf_node().encryption_key(),
             #[cfg(feature = "experimental-hybrid")]
             sender_leaf_capabilities: update_path.leaf_node().capabilities(),
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_quaternary_parent_path: update_path.experimental_quaternary_parent_path(),
+            #[cfg(feature = "experimental-hybrid")]
+            expected_quaternary_tree_version,
             sender_leaf_index,
             exclusion_list,
             group_context: &self
@@ -156,6 +181,13 @@ impl<'a> PublicGroupDiff<'a> {
     /// Return a reference to the leaf with the given index.
     pub(crate) fn leaf(&self, index: LeafNodeIndex) -> Option<&LeafNode> {
         self.diff.leaf(index)
+    }
+
+    /// Returns the prospective occupied MLS leaves for the feature-gated
+    /// quaternary-root delivery.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn full_leaf_encryption_keys(&self) -> Vec<(LeafNodeIndex, EncryptionKey)> {
+        self.diff.full_leaf_encryption_keys()
     }
 
     /// Set the given path as the direct path of the `sender_leaf_index` and

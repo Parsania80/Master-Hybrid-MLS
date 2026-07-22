@@ -29,8 +29,8 @@ use super::{
 use crate::ciphersuite::Secret;
 #[cfg(feature = "experimental-hybrid")]
 use crate::experimental_hybrid::{
-    binary_hybrid_context, supports_mkyber_recipient_capabilities, ExperimentalHybridPathDelivery,
-    ForkClassicalHpkeProvider,
+    binary_hybrid_context, quaternary_hybrid_context, supports_mkyber_recipient_capabilities,
+    ExperimentalHybridPathDelivery, ForkClassicalHpkeProvider,
 };
 #[cfg(feature = "experimental-hybrid")]
 use crate::treesync::node::leaf_node::Capabilities;
@@ -235,7 +235,7 @@ impl TreeSyncDiff<'_> {
 
         let common_path =
             self.filtered_common_direct_path(own_leaf_index, params.sender_leaf_index);
-        let (derived_path, _plain_update_path, keypairs, commit_secret) = ParentNode::derive_path(
+        let (derived_path, plain_update_path, keypairs, commit_secret) = ParentNode::derive_path(
             crypto,
             ciphersuite,
             path_secret,
@@ -259,6 +259,102 @@ impl TreeSyncDiff<'_> {
             if update_parent_node.encryption_key() != derived_parent_node.encryption_key() {
                 return Err(ApplyUpdatePathError::PathMismatch);
             }
+        }
+
+        #[cfg(feature = "experimental-hybrid")]
+        match (
+            params.expected_quaternary_tree_version,
+            params.experimental_quaternary_parent_path,
+        ) {
+            (None, None) => {}
+            (Some(expected_tree_version), Some(parent_path)) => {
+                parent_path
+                    .validate_version()
+                    .map_err(ApplyUpdatePathError::LibraryError)?;
+                if parent_path.tree_version() != expected_tree_version
+                    || parent_path.parent_depth() != 0
+                    || parent_path.parent_ordinal() != 0
+                {
+                    return Err(ApplyUpdatePathError::UnableToDecrypt);
+                }
+                let recipient_leaf_key = self
+                    .leaf(own_leaf_index)
+                    .ok_or(ApplyUpdatePathError::MissingOwnLeaf)?
+                    .encryption_key();
+                let recipient_keypair = owned_keys
+                    .iter()
+                    .find(|keypair| keypair.public_key() == recipient_leaf_key)
+                    .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+                let private_mkyber_key = recipient_keypair
+                    .experimental_mkyber_private_key()
+                    .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?
+                    .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+                let classical_private_key = ClassicalHpkePrivateKey::from_bytes(
+                    recipient_keypair.private_key().classical_private_key(),
+                )
+                .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+                let parent_mkyber_key = parent_path
+                    .public_key()
+                    .experimental_mkyber_key()
+                    .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+                let context = quaternary_hybrid_context(
+                    crypto,
+                    ciphersuite,
+                    params.group_context,
+                    expected_tree_version,
+                    0,
+                    0,
+                    parent_mkyber_key.domain(),
+                )
+                .map_err(ApplyUpdatePathError::LibraryError)?;
+                let delivery = ExperimentalHybridPathDelivery::from_canonical_bytes(
+                    0,
+                    parent_path.delivery().to_vec(),
+                )
+                .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+                let ciphertext =
+                    hybrid_path_secret::HybridPathCiphertext::from_commit_authenticated_bytes(
+                        delivery.canonical_bytes(),
+                    )
+                    .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+                let root_path_secret = open_hybrid_path_level_with_provider(
+                    &ForkClassicalHpkeProvider::default(),
+                    &EducationalMkyber512Reference,
+                    &context,
+                    &ciphertext,
+                    &HybridPathRecipientPrivate::new(
+                        RecipientNodeIndex::new(own_leaf_index.u32()),
+                        private_mkyber_key,
+                        classical_private_key,
+                    ),
+                )
+                .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+                let root_path_secret =
+                    PathSecret::from(Secret::from_slice(root_path_secret.as_bytes()));
+                let derived_parent_keypair = root_path_secret
+                    .derive_experimental_quaternary_parent_keypair(
+                        crypto,
+                        ciphersuite,
+                        parent_mkyber_key.domain(),
+                        expected_tree_version,
+                        0,
+                        0,
+                    )
+                    .map_err(ApplyUpdatePathError::LibraryError)?;
+                if derived_parent_keypair.public_key() != parent_path.public_key() {
+                    return Err(ApplyUpdatePathError::PathMismatch);
+                }
+                let binary_root_path_secret = plain_update_path
+                    .last()
+                    .ok_or(ApplyUpdatePathError::PathLengthMismatch)?
+                    .path_secret();
+                if binary_root_path_secret.path_secret.as_slice()
+                    != root_path_secret.path_secret.as_slice()
+                {
+                    return Err(ApplyUpdatePathError::PathMismatch);
+                }
+            }
+            _ => return Err(ApplyUpdatePathError::UnableToDecrypt),
         }
 
         Ok((keypairs, commit_secret))
@@ -341,6 +437,12 @@ pub(crate) struct DecryptPathParams<'a> {
     /// Capabilities authenticated in the incoming UpdatePath leaf.
     #[cfg(feature = "experimental-hybrid")]
     pub(crate) sender_leaf_capabilities: &'a Capabilities,
+    /// Authenticated quaternary-root delivery from the enclosing UpdatePath.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) experimental_quaternary_parent_path: Option<&'a ExperimentalQuaternaryParentPath>,
+    /// Quaternary tree version authenticated in the prospective GroupContext.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) expected_quaternary_tree_version: Option<u32>,
     pub(crate) sender_leaf_index: LeafNodeIndex,
     pub(crate) exclusion_list: &'a HashSet<&'a LeafNodeIndex>,
     pub(crate) group_context: &'a [u8],
@@ -371,6 +473,84 @@ pub struct UpdatePathNode {
     pub(super) encrypted_path_secrets: Vec<HpkeCiphertext>,
     #[cfg(feature = "experimental-hybrid")]
     pub(super) experimental_hybrid_delivery: Option<VLBytes>,
+}
+
+/// Feature-gated authenticated quaternary root-parent delivery carried by an
+/// experimental MLS UpdatePath.
+///
+/// The parent public key and hybrid ciphertext are covered by the surrounding
+/// Commit signature. This is intentionally a fork-local non-RFC wire field.
+#[cfg(feature = "experimental-hybrid")]
+#[derive(
+    Debug,
+    Eq,
+    PartialEq,
+    Clone,
+    Serialize,
+    Deserialize,
+    TlsDeserialize,
+    TlsDeserializeBytes,
+    TlsSerialize,
+    TlsSize,
+)]
+pub(crate) struct ExperimentalQuaternaryParentPath {
+    version: u16,
+    tree_version: u32,
+    parent_depth: u8,
+    parent_ordinal: u32,
+    public_key: EncryptionKey,
+    delivery: VLBytes,
+}
+
+#[cfg(feature = "experimental-hybrid")]
+impl ExperimentalQuaternaryParentPath {
+    pub(crate) const VERSION: u16 = 1;
+
+    pub(crate) fn new(
+        tree_version: u32,
+        parent_depth: u8,
+        parent_ordinal: u32,
+        public_key: EncryptionKey,
+        delivery: Vec<u8>,
+    ) -> Self {
+        Self {
+            version: Self::VERSION,
+            tree_version,
+            parent_depth,
+            parent_ordinal,
+            public_key,
+            delivery: delivery.into(),
+        }
+    }
+
+    pub(crate) const fn tree_version(&self) -> u32 {
+        self.tree_version
+    }
+
+    pub(crate) const fn parent_depth(&self) -> u8 {
+        self.parent_depth
+    }
+
+    pub(crate) const fn parent_ordinal(&self) -> u32 {
+        self.parent_ordinal
+    }
+
+    pub(crate) fn public_key(&self) -> &EncryptionKey {
+        &self.public_key
+    }
+
+    pub(crate) fn delivery(&self) -> &[u8] {
+        self.delivery.as_ref()
+    }
+
+    pub(crate) fn validate_version(&self) -> Result<(), LibraryError> {
+        if self.version != Self::VERSION || self.tree_version == 0 {
+            return Err(LibraryError::custom(
+                "invalid experimental quaternary parent path version",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl UpdatePathNode {
@@ -438,12 +618,19 @@ impl UpdatePathNode {
 pub struct UpdatePath {
     leaf_node: LeafNode,
     nodes: Vec<UpdatePathNode>,
+    #[cfg(feature = "experimental-hybrid")]
+    experimental_quaternary_parent_path: Option<ExperimentalQuaternaryParentPath>,
 }
 
 impl UpdatePath {
     /// Generate a new update path.
     pub(crate) fn new(leaf_node: LeafNode, nodes: Vec<UpdatePathNode>) -> Self {
-        Self { leaf_node, nodes }
+        Self {
+            leaf_node,
+            nodes,
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_quaternary_parent_path: None,
+        }
     }
 
     /// Return the `leaf_node` of this [`UpdatePath`].
@@ -454,6 +641,21 @@ impl UpdatePath {
     /// Return the `nodes` of this [`UpdatePath`].
     pub(crate) fn nodes(&self) -> &[UpdatePathNode] {
         &self.nodes
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn set_experimental_quaternary_parent_path(
+        &mut self,
+        parent_path: ExperimentalQuaternaryParentPath,
+    ) {
+        self.experimental_quaternary_parent_path = Some(parent_path);
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_quaternary_parent_path(
+        &self,
+    ) -> Option<&ExperimentalQuaternaryParentPath> {
+        self.experimental_quaternary_parent_path.as_ref()
     }
 
     #[cfg(test)]
@@ -505,6 +707,8 @@ impl UpdatePath {
 pub struct UpdatePathIn {
     leaf_node: LeafNodeIn,
     nodes: Vec<UpdatePathNode>,
+    #[cfg(feature = "experimental-hybrid")]
+    experimental_quaternary_parent_path: Option<ExperimentalQuaternaryParentPath>,
 }
 
 impl UpdatePathIn {
@@ -537,6 +741,8 @@ impl UpdatePathIn {
                 Ok(UpdatePath {
                     leaf_node,
                     nodes: self.nodes,
+                    #[cfg(feature = "experimental-hybrid")]
+                    experimental_quaternary_parent_path: self.experimental_quaternary_parent_path,
                 })
             }
             VerifiableLeafNode::Update(_) | VerifiableLeafNode::KeyPackage(_) => {
@@ -554,6 +760,8 @@ impl From<UpdatePathIn> for UpdatePath {
         Self {
             leaf_node: update_path_in.leaf_node.into(),
             nodes: update_path_in.nodes,
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_quaternary_parent_path: update_path_in.experimental_quaternary_parent_path,
         }
     }
 }
@@ -563,6 +771,8 @@ impl From<UpdatePath> for UpdatePathIn {
         Self {
             leaf_node: update_path.leaf_node.into(),
             nodes: update_path.nodes,
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_quaternary_parent_path: update_path.experimental_quaternary_parent_path,
         }
     }
 }

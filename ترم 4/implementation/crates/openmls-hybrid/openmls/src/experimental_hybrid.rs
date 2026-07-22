@@ -487,6 +487,54 @@ pub(crate) fn binary_hybrid_context(
     ))
 }
 
+/// Builds the domain-separated quaternary-root hybrid context from an
+/// authenticated GroupContext. The current experimental carrier remains the
+/// binary MLS UpdatePath, but this context commits the delivered secret to the
+/// target quaternary parent and adaptive tree version.
+#[cfg(feature = "experimental-hybrid")]
+pub(crate) fn quaternary_hybrid_context(
+    crypto: &impl OpenMlsCrypto,
+    ciphersuite: Ciphersuite,
+    serialized_group_context: &[u8],
+    tree_version: u32,
+    parent_depth: u8,
+    parent_ordinal: u32,
+    domain: MkyberDomain,
+) -> Result<hybrid_path_secret::HybridPathLevelContext, LibraryError> {
+    if tree_version == 0 || parent_depth != 0 || parent_ordinal != 0 {
+        return Err(LibraryError::custom(
+            "unsupported experimental quaternary parent position",
+        ));
+    }
+    if ciphersuite != Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 {
+        return Err(LibraryError::custom(
+            "unsupported experimental hybrid ciphersuite",
+        ));
+    }
+    let group_context = GroupContext::tls_deserialize_exact(serialized_group_context)
+        .map_err(|_| LibraryError::custom("invalid experimental hybrid GroupContext"))?;
+    if group_context.ciphersuite() != ciphersuite {
+        return Err(LibraryError::custom(
+            "experimental hybrid GroupContext ciphersuite mismatch",
+        ));
+    }
+    let group_context_hash = crypto
+        .hash(ciphersuite.hash_algorithm(), serialized_group_context)
+        .map_err(LibraryError::unexpected_crypto_error)?;
+    let group_context_hash = group_context_hash.as_slice().try_into().map_err(|_| {
+        LibraryError::custom("invalid experimental hybrid GroupContext hash length")
+    })?;
+    Ok(hybrid_path_secret::HybridPathLevelContext::new(
+        group_context.group_id().as_slice().to_vec(),
+        group_context.epoch().as_u64(),
+        tree_version,
+        hybrid_path_secret::TreeArity::Quaternary,
+        hybrid_path_secret::PathNodeIndex::new(parent_ordinal),
+        domain,
+        group_context_hash,
+    ))
+}
+
 impl ClassicalHpkeProvider for ForkClassicalHpkeProvider {
     fn setup_sender_and_export(
         &self,
