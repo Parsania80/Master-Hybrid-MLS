@@ -112,8 +112,33 @@ pub struct LoadedPsks {
     /// The GroupInfo creation config
     group_info_config: GroupInfoConfig,
 
+    /// Test-only mutation applied after experimental path construction and
+    /// before the enclosing Commit is signed.
+    #[cfg(all(
+        feature = "experimental-hybrid",
+        any(test, feature = "experimental-test-utils")
+    ))]
+    experimental_update_path_test_mutation: Option<ExperimentalUpdatePathTestMutation>,
+
     #[cfg(feature = "extensions-draft-08")]
     app_data_dictionary_updates: Option<AppDataUpdates>,
+}
+
+/// Signed real-Commit fixtures for experimental UpdatePath rejection tests.
+///
+/// This type is available only with `experimental-test-utils`; production callers cannot
+/// construct malformed experimental Commit payloads through this API.
+#[cfg(all(
+    feature = "experimental-hybrid",
+    any(test, feature = "experimental-test-utils")
+))]
+#[derive(Clone, Copy, Debug)]
+pub enum ExperimentalUpdatePathTestMutation {
+    /// Replace the first quaternary parent delivery's recipient ID with an
+    /// unassigned value, leaving the intended receiver without a record.
+    WrongFirstQuaternaryRecipient,
+    /// Change the first quaternary parent coordinate after path derivation.
+    WrongFirstQuaternaryParentOrdinal,
 }
 
 /// This stage is after we validated the data, ready for staging and exporting the messages
@@ -365,6 +390,11 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, Initial, G> {
                         consume_proposal_store: stage.consume_proposal_store,
                         group_info_config,
                         external_commit_info: stage.external_commit_info,
+                        #[cfg(all(
+                            feature = "experimental-hybrid",
+                            any(test, feature = "experimental-test-utils")
+                        ))]
+                        experimental_update_path_test_mutation: None,
                         #[cfg(feature = "extensions-draft-08")]
                         app_data_dictionary_updates: None,
                     },
@@ -375,6 +405,19 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, Initial, G> {
 }
 
 impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
+    /// Configures a test-only, signed experimental UpdatePath mutation.
+    #[cfg(all(
+        feature = "experimental-hybrid",
+        any(test, feature = "experimental-test-utils")
+    ))]
+    pub fn with_experimental_update_path_test_mutation(
+        mut self,
+        mutation: ExperimentalUpdatePathTestMutation,
+    ) -> Self {
+        self.stage.experimental_update_path_test_mutation = Some(mutation);
+        self
+    }
+
     /// Sets whether or not a [`GroupInfo`] should be created when the commit is staged. Defaults to
     /// the value of the [`MlsGroup`]s [`MlsGroupJoinConfig`].
     pub fn create_group_info(mut self, create_group_info: bool) -> Self {
@@ -633,6 +676,25 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
                 diff.update_group_context(crypto, apply_proposals_values.extensions.clone())?;
                 PathComputationResult::default()
             };
+
+        #[cfg(all(
+            feature = "experimental-hybrid",
+            any(test, feature = "experimental-test-utils")
+        ))]
+        if let Some(mutation) = cur_stage.experimental_update_path_test_mutation {
+            if let Some(update_path) = path_computation_result.encrypted_path.as_mut() {
+                match mutation {
+                    ExperimentalUpdatePathTestMutation::WrongFirstQuaternaryRecipient => {
+                        update_path
+                            .test_replace_first_quaternary_recipient()
+                            .map_err(CreateCommitError::LibraryError)?;
+                    }
+                    ExperimentalUpdatePathTestMutation::WrongFirstQuaternaryParentOrdinal => {
+                        update_path.test_increment_first_quaternary_parent_ordinal();
+                    }
+                }
+            }
+        }
 
         let update_path_leaf_node = path_computation_result
             .encrypted_path

@@ -18,6 +18,7 @@ transition-policy = { path = "../transition-policy" }
 [dev-dependencies]
 adaptive-tree = { path = "../adaptive-tree" }
 hybrid-path-secret = { path = "../hybrid-path-secret" }
+openmls-hybrid = { workspace = true, features = ["experimental-test-utils"] }
 openmls_hybrid_rust_crypto = { package = "openmls_rust_crypto", path = "../openmls-hybrid/openmls_rust_crypto", features = ["transaction-test-utils"] }
 rand_chacha.workspace = true
 rand_core.workspace = true

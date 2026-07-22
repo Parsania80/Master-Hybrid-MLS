@@ -551,11 +551,11 @@ mod tests {
         },
         prelude::{
             ApplyUpdatePathError, BasicCredential, Capabilities, Ciphersuite, CredentialWithKey,
-            Extension, ExtensionType, Extensions, GroupContext, KeyPackage, LeafNodeParameters,
-            MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn,
-            MlsMessageBodyOut, MlsMessageIn, OpenMlsProvider, ProcessMessageError,
-            ProcessedMessageContent, RequiredCapabilitiesExtension, StageCommitError, StagedCommit,
-            StagedWelcome, UnknownExtension,
+            ExperimentalUpdatePathTestMutation, Extension, ExtensionType, Extensions, GroupContext,
+            KeyPackage, LeafNodeParameters, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig,
+            MlsMessageBodyIn, MlsMessageBodyOut, MlsMessageIn, OpenMlsProvider,
+            ProcessMessageError, ProcessedMessageContent, RequiredCapabilitiesExtension,
+            StageCommitError, StagedCommit, StagedWelcome, UnknownExtension,
         },
         treesync::{EncryptionKey, ParentNode},
     };
@@ -1230,6 +1230,33 @@ mod tests {
             .expect("update serialization")
     }
 
+    fn hybrid_self_update_wire_with_test_mutation(
+        bob: &mut MlsGroup,
+        bob_provider: &OpenMlsRustCrypto,
+        bob_signer: &SignatureKeyPair,
+        mutation: ExperimentalUpdatePathTestMutation,
+    ) -> Vec<u8> {
+        let update = bob
+            .commit_builder()
+            .leaf_node_parameters(LeafNodeParameters::default())
+            .load_psks(bob_provider.storage())
+            .expect("Bob loads self-update PSKs")
+            .with_experimental_update_path_test_mutation(mutation)
+            .build(
+                bob_provider.rand(),
+                bob_provider.crypto(),
+                bob_signer,
+                |_| true,
+            )
+            .expect("Bob builds signed mutated hybrid self-update")
+            .stage_commit(bob_provider)
+            .expect("Bob stages signed mutated hybrid self-update");
+        let (update_commit, _, _) = update.into_contents();
+        update_commit
+            .tls_serialize_detached()
+            .expect("mutated update serialization")
+    }
+
     fn staged_commit_from_wire(
         group: &mut MlsGroup,
         provider: &OpenMlsRustCrypto,
@@ -1443,6 +1470,224 @@ mod tests {
                 .root_public_key_hash(),
             alice_authority.root_public_key_hash(),
             "the persisted root key pair must survive reload without exposing private bytes"
+        );
+    }
+
+    #[test]
+    fn signed_quaternary_commit_rejects_wrong_parent_metadata_and_recipient_without_mutation() {
+        for mutation in [
+            ExperimentalUpdatePathTestMutation::WrongFirstQuaternaryRecipient,
+            ExperimentalUpdatePathTestMutation::WrongFirstQuaternaryParentOrdinal,
+        ] {
+            let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+                experimental_binary_pair_with_policy_controls(2, 0);
+            let transition_state = triggered_transition_state(&alice);
+            let (transition_commit, _, _) = alice
+                .begin_experimental_transition(&alice_provider, &alice_signer, transition_state)
+                .expect("Alice stages transition");
+            let transition_wire = transition_commit
+                .tls_serialize_detached()
+                .expect("transition wire");
+            let staged_transition =
+                staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+            bob.merge_staged_commit_experimental_transition_atomic(
+                &bob_provider,
+                staged_transition,
+            )
+            .expect("Bob merges transition");
+            alice
+                .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+                .expect("Alice merges transition");
+
+            let wire = hybrid_self_update_wire_with_test_mutation(
+                &mut bob,
+                &bob_provider,
+                &bob_signer,
+                mutation,
+            );
+            let epoch_before = alice.epoch();
+            let tree_before = alice.export_ratchet_tree();
+            let state_before = arity_state_from_group(&alice);
+            let authority_before = alice.experimental_quaternary_epoch_secret_status();
+            let protocol_message = MlsMessageIn::tls_deserialize_exact(&wire)
+                .expect("signed mutated Commit parsing")
+                .try_into_protocol_message()
+                .expect("signed mutated protocol message");
+
+            assert!(matches!(
+                alice.process_message(&alice_provider, protocol_message),
+                Err(ProcessMessageError::InvalidCommit(
+                    StageCommitError::UpdatePathError(
+                        ApplyUpdatePathError::UnableToDecrypt | ApplyUpdatePathError::PathMismatch
+                    )
+                ))
+            ));
+            assert_eq!(alice.epoch(), epoch_before);
+            assert_eq!(alice.export_ratchet_tree(), tree_before);
+            assert_eq!(arity_state_from_group(&alice), state_before);
+            assert_eq!(
+                alice.experimental_quaternary_epoch_secret_status(),
+                authority_before
+            );
+        }
+    }
+
+    #[test]
+    fn signed_quaternary_commit_rejects_missing_capabilities_without_mutation() {
+        let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair_with_policy_controls(2, 0);
+        let transition_state = triggered_transition_state(&alice);
+        let (transition_commit, _, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, transition_state)
+            .expect("Alice stages transition");
+        let transition_wire = transition_commit
+            .tls_serialize_detached()
+            .expect("transition wire");
+        let staged_transition = staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+        bob.merge_staged_commit_experimental_transition_atomic(&bob_provider, staged_transition)
+            .expect("Bob merges transition");
+        alice
+            .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+            .expect("Alice merges transition");
+
+        let wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::builder()
+                .with_capabilities(Capabilities::new(
+                    None,
+                    None,
+                    Some(&[required_mkyber_recipient_capabilities()[0]]),
+                    None,
+                    None,
+                ))
+                .build(),
+        );
+        let epoch_before = alice.epoch();
+        let tree_before = alice.export_ratchet_tree();
+        let state_before = arity_state_from_group(&alice);
+        let authority_before = alice.experimental_quaternary_epoch_secret_status();
+        let protocol_message = MlsMessageIn::tls_deserialize_exact(&wire)
+            .expect("capability Commit parsing")
+            .try_into_protocol_message()
+            .expect("capability protocol message");
+
+        assert!(matches!(
+            alice.process_message(&alice_provider, protocol_message),
+            Err(ProcessMessageError::InvalidCommit(
+                StageCommitError::UpdatePathError(
+                    ApplyUpdatePathError::MissingExperimentalCapability
+                )
+            ))
+        ));
+        assert_eq!(alice.epoch(), epoch_before);
+        assert_eq!(alice.export_ratchet_tree(), tree_before);
+        assert_eq!(arity_state_from_group(&alice), state_before);
+        assert_eq!(
+            alice.experimental_quaternary_epoch_secret_status(),
+            authority_before
+        );
+    }
+
+    #[test]
+    fn signed_quaternary_commit_rejects_tamper_without_mutation() {
+        let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair_with_policy_controls(2, 0);
+        let transition_state = triggered_transition_state(&alice);
+        let (transition_commit, _, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, transition_state)
+            .expect("Alice stages transition");
+        let transition_wire = transition_commit
+            .tls_serialize_detached()
+            .expect("transition wire");
+        let staged_transition = staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+        bob.merge_staged_commit_experimental_transition_atomic(&bob_provider, staged_transition)
+            .expect("Bob merges transition");
+        alice
+            .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+            .expect("Alice merges transition");
+
+        let wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        let mut tampered_wire = wire.clone();
+        let last_byte = tampered_wire
+            .last_mut()
+            .expect("serialized quaternary Commit is non-empty");
+        *last_byte ^= 0x01;
+        let epoch_before = alice.epoch();
+        let tree_before = alice.export_ratchet_tree();
+        let state_before = arity_state_from_group(&alice);
+        let authority_before = alice.experimental_quaternary_epoch_secret_status();
+        let tampered_message = MlsMessageIn::tls_deserialize_exact(&tampered_wire)
+            .expect("tampered quaternary Commit remains syntactically valid")
+            .try_into_protocol_message()
+            .expect("tampered quaternary protocol message");
+
+        assert!(alice
+            .process_message(&alice_provider, tampered_message)
+            .is_err());
+        assert_eq!(alice.epoch(), epoch_before);
+        assert_eq!(alice.export_ratchet_tree(), tree_before);
+        assert_eq!(arity_state_from_group(&alice), state_before);
+        assert_eq!(
+            alice.experimental_quaternary_epoch_secret_status(),
+            authority_before
+        );
+    }
+
+    #[test]
+    fn signed_quaternary_commit_replay_is_rejected_without_group_state_mutation() {
+        let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair_with_policy_controls(2, 0);
+        let transition_state = triggered_transition_state(&alice);
+        let (transition_commit, _, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, transition_state)
+            .expect("Alice stages transition");
+        let transition_wire = transition_commit
+            .tls_serialize_detached()
+            .expect("transition wire");
+        let staged_transition = staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+        bob.merge_staged_commit_experimental_transition_atomic(&bob_provider, staged_transition)
+            .expect("Bob merges transition");
+        alice
+            .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+            .expect("Alice merges transition");
+
+        let wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        let staged = staged_commit_from_wire(&mut alice, &alice_provider, &wire);
+        alice
+            .merge_staged_commit_experimental_quaternary_atomic(&alice_provider, staged)
+            .expect("Alice merges valid quaternary Commit");
+        bob.merge_pending_commit_experimental_quaternary_atomic(&bob_provider)
+            .expect("Bob merges valid quaternary Commit");
+        let epoch_before = alice.epoch();
+        let tree_before = alice.export_ratchet_tree();
+        let state_before = arity_state_from_group(&alice);
+        let authority_before = alice.experimental_quaternary_epoch_secret_status();
+        let replay_message = MlsMessageIn::tls_deserialize_exact(&wire)
+            .expect("replay quaternary Commit parsing")
+            .try_into_protocol_message()
+            .expect("replay quaternary protocol message");
+
+        assert!(alice
+            .process_message(&alice_provider, replay_message)
+            .is_err());
+        assert_eq!(alice.epoch(), epoch_before);
+        assert_eq!(alice.export_ratchet_tree(), tree_before);
+        assert_eq!(arity_state_from_group(&alice), state_before);
+        assert_eq!(
+            alice.experimental_quaternary_epoch_secret_status(),
+            authority_before
         );
     }
 

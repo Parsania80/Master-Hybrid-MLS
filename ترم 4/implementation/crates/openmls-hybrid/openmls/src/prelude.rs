@@ -10,6 +10,12 @@ pub use crate::group::{
     Member, *,
 };
 
+#[cfg(all(
+    feature = "experimental-hybrid",
+    any(test, feature = "experimental-test-utils")
+))]
+pub use crate::group::commit_builder::ExperimentalUpdatePathTestMutation;
+
 pub use crate::group::public_group::{errors::*, PublicGroup};
 
 // Ciphersuite

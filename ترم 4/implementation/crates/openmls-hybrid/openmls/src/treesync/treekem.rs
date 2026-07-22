@@ -47,6 +47,11 @@ use hybrid_path_secret::{
     open_hybrid_path_level_with_provider, ClassicalHpkePrivateKey, HybridPathRecipientPrivate,
     RecipientNodeIndex,
 };
+#[cfg(all(
+    feature = "experimental-hybrid",
+    any(test, feature = "experimental-test-utils")
+))]
+use hybrid_path_secret::{HybridPathCiphertext, HybridRecipientCiphertext};
 #[cfg(feature = "experimental-hybrid")]
 use mkyber::EducationalMkyber512Reference;
 
@@ -711,6 +716,77 @@ impl UpdatePath {
         &self,
     ) -> &[ExperimentalQuaternaryParentPath] {
         &self.experimental_quaternary_parent_paths
+    }
+
+    /// Replaces the first parent delivery recipient in a signed-real-Commit
+    /// rejection fixture. This is unavailable outside test utilities.
+    #[cfg(all(
+        feature = "experimental-hybrid",
+        any(test, feature = "experimental-test-utils")
+    ))]
+    pub(crate) fn test_replace_first_quaternary_recipient(&mut self) -> Result<(), LibraryError> {
+        let parent_path = self
+            .experimental_quaternary_parent_paths
+            .first_mut()
+            .ok_or_else(|| LibraryError::custom("missing experimental quaternary parent path"))?;
+        let node_index = crate::experimental_hybrid::quaternary_parent_node_index(
+            parent_path.parent_depth,
+            parent_path.parent_ordinal,
+        )?;
+        let delivery = ExperimentalHybridPathDelivery::from_canonical_bytes(
+            node_index,
+            parent_path.delivery.as_ref().to_vec(),
+        )
+        .map_err(|_| LibraryError::custom("invalid experimental quaternary parent delivery"))?;
+        let ciphertext =
+            HybridPathCiphertext::from_commit_authenticated_bytes(delivery.canonical_bytes())
+                .map_err(|_| LibraryError::custom("invalid experimental quaternary ciphertext"))?;
+        let mut replaced = false;
+        let recipients = ciphertext
+            .recipients()
+            .iter()
+            .map(|record| {
+                if !replaced {
+                    replaced = true;
+                    HybridRecipientCiphertext::new(
+                        RecipientNodeIndex::new(u32::MAX),
+                        *record.classical_encapsulation(),
+                        record.mkyber_recipient().clone(),
+                        *record.encrypted_path_secret(),
+                    )
+                } else {
+                    record.clone()
+                }
+            })
+            .collect();
+        let ciphertext = HybridPathCiphertext::new(
+            ciphertext.path_node_index(),
+            ciphertext.mkyber_domain(),
+            ciphertext.mkyber_common().clone(),
+            recipients,
+        )
+        .map_err(|_| LibraryError::custom("invalid experimental quaternary recipient fixture"))?;
+        let delivery = ExperimentalHybridPathDelivery::from_canonical_bytes(
+            node_index,
+            ciphertext.commit_authenticated_bytes().map_err(|_| {
+                LibraryError::custom("experimental quaternary fixture encoding failed")
+            })?,
+        )
+        .map_err(|_| LibraryError::custom("invalid experimental quaternary recipient fixture"))?;
+        parent_path.delivery = delivery.canonical_bytes().to_vec().into();
+        Ok(())
+    }
+
+    /// Changes the first parent coordinate after path derivation in a signed
+    /// real-Commit rejection fixture.
+    #[cfg(all(
+        feature = "experimental-hybrid",
+        any(test, feature = "experimental-test-utils")
+    ))]
+    pub(crate) fn test_increment_first_quaternary_parent_ordinal(&mut self) {
+        if let Some(parent_path) = self.experimental_quaternary_parent_paths.first_mut() {
+            parent_path.parent_ordinal = parent_path.parent_ordinal.saturating_add(1);
+        }
     }
 
     #[cfg(test)]

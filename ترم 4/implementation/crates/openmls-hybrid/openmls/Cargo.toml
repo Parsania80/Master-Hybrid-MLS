@@ -31,6 +31,7 @@ transition-tree = { path = "../../transition-tree", optional = true }
 
 [features]
 experimental-hybrid = ["dep:adaptive-tree", "dep:arity-state", "dep:hybrid-path-secret", "dep:mkyber", "dep:transition-tree"]
+experimental-test-utils = []
 test-utils = []
 backtrace = []
 libcrux-provider = []

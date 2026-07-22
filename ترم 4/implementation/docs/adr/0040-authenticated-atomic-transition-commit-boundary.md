@@ -108,6 +108,11 @@ also derives an experimental quaternary authority from a later MLS epoch.
   root-secret equality check.
 - Three members converge through the root-only mapped path; five members
   converge through root plus a depth-1 parent, with both pairs persisted.
+- Signed real-Commit fixtures reject an absent mapped recipient and wrong
+  parent metadata after Commit signing; separately signed capability omission,
+  tamper, and replay cases preserve public group state and quaternary authority.
+  Inbound message-ratchet state can advance before rejection and remains
+  outside this assertion.
 - Locked/offline adapter tests cover the round trip and rejection boundary.
 
 ## Explicit Non-Claims and Remaining Work
@@ -115,8 +120,7 @@ also derives an experimental quaternary authority from a later MLS epoch.
 This decision now has authenticated, receiver-validated mapped parent-path
 delivery restricted to exact quaternary sibling resolutions and an atomic
 private-pair lifecycle, while its MLS carrier and public TreeKEM remain binary.
-It does not yet cover all membership/path-shape and real-Commit rejection
-cases, injected transition storage faults, or replace the MLS
-application/message key schedule. Task 60 remains current until those
-boundaries exist. No adaptive workload or three-mode measurement is available
-from this boundary.
+It does not yet inject transition-specific storage faults or replace the MLS
+application/message key schedule. Task 60 remains current only until the
+storage-fault boundary exists. No adaptive workload or three-mode measurement
+is available from this boundary.
