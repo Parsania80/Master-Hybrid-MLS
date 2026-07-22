@@ -3,9 +3,36 @@
 //! Isolated activation boundary for the local experimental OpenMLS fork.
 //!
 //! This crate deliberately links the separately named fork without exposing
-//! it through the unchanged baseline adapter. It contains no hybrid UpdatePath
-//! or adaptive-transition behavior yet; those changes must be implemented and
-//! tested inside the fork before an experimental client is exposed.
+//! it through the unchanged baseline adapter. Its public workload client is
+//! deliberately restricted to normal binary mKyber self-updates accepted by
+//! the fork's atomic application boundary; adaptive transition behavior stays
+//! outside this crate until Task 60.
+
+use std::{collections::BTreeMap, time::Instant};
+
+use arity_state::{ArityPolicySnapshot, ArityState, TransitionEvaluationState};
+use mkyber::MkyberDomain;
+use openmls_hybrid::{
+    experimental_hybrid::ExperimentalHybridCommitMetrics,
+    prelude::{
+        BasicCredential, Ciphersuite, CredentialWithKey, Extension, Extensions, GroupContext,
+        GroupId, KeyPackage, LeafNodeParameters, MlsGroup, MlsGroupCreateConfig,
+        MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn, ProcessedMessageContent, StagedCommit,
+        StagedWelcome, UnknownExtension,
+    },
+};
+use openmls_hybrid_basic_credential::SignatureKeyPair;
+use openmls_hybrid_rust_crypto::OpenMlsRustCrypto;
+use simulation::{
+    build_committer_schedule, BaselineWorkloadConfig, CommitterSelection, EligibleCommitter,
+    WorkloadOperation, WorkloadProfile,
+};
+use thiserror::Error;
+use tls_codec::{Deserialize as TlsDeserializeTrait, Serialize as TlsSerializeTrait};
+use transition_policy::{
+    DeltaThreshold, PolicyWindowConfig, TransitionByteComponent, TransitionByteRange,
+    TransitionPreflightMeasurement, TransitionStartConfig,
+};
 
 /// Exact upstream OpenMLS revision used by the local fork.
 pub const OPENMLS_HYBRID_UPSTREAM_REVISION: &str = "47dbedecad0c1fd8eb5368d582250ebfcc1e1ce6";
@@ -13,6 +40,473 @@ pub const OPENMLS_HYBRID_UPSTREAM_REVISION: &str = "47dbedecad0c1fd8eb5368d58225
 /// Confirms that the opt-in fork package is linked into this isolated boundary.
 pub fn fork_ciphersuite_type_name() -> &'static str {
     std::any::type_name::<openmls_hybrid::prelude::Ciphersuite>()
+}
+
+/// Public direct observations from one accepted binary-with-mKyber Commit.
+///
+/// The counts are extracted from the emitted, authenticated hybrid UpdatePath
+/// deliveries. They contain no secret or ciphertext values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExperimentalBinaryCommitMeasurement {
+    /// Serialized byte length of the emitted outer experimental Commit.
+    pub emitted_commit_bytes: u64,
+    /// No Welcome is emitted by the currently supported self-update-only client.
+    pub emitted_welcome_bytes: Option<u64>,
+    /// Existing valid members that atomically processed the Commit.
+    pub direct_commit_delivery_count: u32,
+    /// New members that joined through a Welcome for this operation.
+    pub welcome_join_count: u32,
+    /// End-to-end accepted Commit lifecycle time, including convergence check.
+    pub accepted_lifecycle_elapsed_nanoseconds: u128,
+    /// Number of authenticated hybrid UpdatePath deliveries in the Commit.
+    pub hybrid_path_delivery_count: u32,
+    /// Number of one-per-delivery mKyber common ciphertext components.
+    pub mkyber_common_ciphertext_count: u32,
+    /// Number of per-recipient mKyber ciphertext components.
+    pub mkyber_recipient_ciphertext_count: u32,
+    /// Number of per-recipient classical HPKE encapsulations.
+    pub classical_hpke_encapsulation_count: u32,
+}
+
+/// One accepted and converged binary-with-mKyber workload operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AcceptedExperimentalBinaryOperation {
+    /// One-based accepted workload sequence.
+    pub sequence: u32,
+    /// Stable public workload member identifier of the committer.
+    pub committer_member_index: u32,
+    /// Public MLS leaf index before staging.
+    pub committer_leaf_index: u32,
+    /// Public workload region label before staging.
+    pub committer_leaf_region: u32,
+    /// Actual supported operation, always a self-update for Task 59.
+    pub operation: WorkloadOperation,
+    /// Public MLS epoch before staging.
+    pub epoch_before: u64,
+    /// Public MLS epoch after all valid members converge.
+    pub epoch_after: u64,
+    /// Active member count after acceptance.
+    pub active_member_count: u32,
+    /// Direct public measurements from the accepted Commit.
+    pub measurement: ExperimentalBinaryCommitMeasurement,
+}
+
+/// Safe public result of a converged experimental binary workload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExperimentalBinaryWorkloadExecution {
+    /// Accepted operations in contiguous sequence order.
+    pub accepted_operations: Vec<AcceptedExperimentalBinaryOperation>,
+    /// Final converged public MLS epoch.
+    pub final_epoch: u64,
+    /// Final valid member count.
+    pub final_member_count: u32,
+}
+
+/// Errors from the Task 59 binary-with-mKyber workload boundary.
+#[derive(Debug, Error)]
+pub enum ExperimentalBinaryWorkloadError {
+    /// The shared public workload controls are invalid for this client.
+    #[error("the experimental workload has invalid public controls")]
+    InvalidControls,
+    /// Task 59 deliberately supports only real binary hybrid self-updates.
+    #[error("Task 59 accepts only the update-only workload profile")]
+    UnsupportedWorkloadProfile,
+    /// The fork rejected a required operation or an emitted wire value.
+    #[error("the experimental fork rejected a required binary workload operation")]
+    Fork,
+    /// A public count cannot be represented safely.
+    #[error("an experimental workload measurement count overflowed")]
+    CountOverflow,
+    /// A supposed hybrid Commit did not contain accepted hybrid delivery evidence.
+    #[error("an accepted experimental Commit did not contain a hybrid UpdatePath delivery")]
+    MissingHybridDelivery,
+    /// Valid members did not converge after an atomic Commit application.
+    #[error("valid experimental workload members did not converge")]
+    DivergentPublicState,
+}
+
+struct ExperimentalWorkloadMember {
+    member_index: u32,
+    leaf_region: u32,
+    provider: OpenMlsRustCrypto,
+    signer: SignatureKeyPair,
+    group: MlsGroup,
+}
+
+struct AcceptedRecordInput {
+    sequence: u32,
+    epoch_before: u64,
+    epoch_after: u64,
+    active_member_count: u32,
+    emitted_commit_bytes: u64,
+    direct_commit_delivery_count: u32,
+    elapsed_nanoseconds: u128,
+    metrics: ExperimentalHybridCommitMetrics,
+}
+
+/// Executes a reproducible normal-binary mKyber workload from the same public
+/// controls used by the baseline scheduler.
+///
+/// The public group ID, member/region counts, committer strategy, and operation
+/// count are shared controls. `UpdateOnly` is intentionally the only supported
+/// profile: every record is an accepted fork Commit merged through Task 58's
+/// atomic sender/receiver APIs. mKyber keys and Commit randomness remain
+/// OS-backed protocol entropy; the public schedule is reproducible, not the
+/// cryptographic bytes or timing samples.
+pub fn execute_experimental_binary_workload(
+    config: &BaselineWorkloadConfig,
+) -> Result<ExperimentalBinaryWorkloadExecution, ExperimentalBinaryWorkloadError> {
+    validate_controls(config)?;
+    let mut members = create_initial_group(config)?;
+    let mut accepted_operations = Vec::new();
+    let mut committer_counts = BTreeMap::<u32, u32>::new();
+
+    for sequence in 1..=config.operation_count {
+        let eligible = members
+            .iter()
+            .map(|member| EligibleCommitter {
+                member_index: member.member_index,
+                // Sequential Add operations preserve this stable initial leaf
+                // placement; Task 59 performs no Add/Remove after setup.
+                leaf_index: member.member_index,
+                leaf_region: member.leaf_region,
+            })
+            .collect::<Vec<_>>();
+        let schedule =
+            build_committer_schedule(&eligible, config.committer_strategy.clone(), sequence)
+                .map_err(|_| ExperimentalBinaryWorkloadError::InvalidControls)?;
+        let selection = schedule
+            .selections
+            .last()
+            .ok_or(ExperimentalBinaryWorkloadError::InvalidControls)?;
+        let committer_position = members
+            .iter()
+            .position(|member| member.member_index == selection.member_index)
+            .ok_or(ExperimentalBinaryWorkloadError::DivergentPublicState)?;
+        let epoch_before = members[committer_position].group.epoch().as_u64();
+        let started = Instant::now();
+        let (wire, hybrid_metrics) = stage_self_update(&mut members[committer_position])?;
+        if hybrid_metrics.hybrid_path_delivery_count() == 0 {
+            return Err(ExperimentalBinaryWorkloadError::MissingHybridDelivery);
+        }
+        let direct_commit_delivery_count =
+            deliver_to_receivers(&mut members, committer_position, &wire)?;
+        let committer = &mut members[committer_position];
+        committer
+            .group
+            .merge_pending_commit_experimental_atomic(&committer.provider)
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        let epoch_after = converged_epoch(&members)?;
+        if epoch_after
+            != epoch_before
+                .checked_add(1)
+                .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?
+        {
+            return Err(ExperimentalBinaryWorkloadError::DivergentPublicState);
+        }
+        *committer_counts.entry(selection.member_index).or_default() += 1;
+        accepted_operations.push(record_accepted_operation(
+            selection,
+            AcceptedRecordInput {
+                sequence,
+                epoch_before,
+                epoch_after,
+                active_member_count: u32::try_from(members.len())
+                    .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+                emitted_commit_bytes: u64::try_from(wire.len())
+                    .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+                direct_commit_delivery_count,
+                elapsed_nanoseconds: started.elapsed().as_nanos(),
+                metrics: hybrid_metrics,
+            },
+        ));
+    }
+
+    Ok(ExperimentalBinaryWorkloadExecution {
+        final_epoch: converged_epoch(&members)?,
+        final_member_count: u32::try_from(members.len())
+            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+        accepted_operations,
+    })
+}
+
+fn validate_controls(
+    config: &BaselineWorkloadConfig,
+) -> Result<(), ExperimentalBinaryWorkloadError> {
+    if config.group_id.is_empty()
+        || config.initial_member_count < 2
+        || config.maximum_member_count < config.initial_member_count
+        || config.region_count == 0
+    {
+        return Err(ExperimentalBinaryWorkloadError::InvalidControls);
+    }
+    if config.workload_profile != WorkloadProfile::UpdateOnly {
+        return Err(ExperimentalBinaryWorkloadError::UnsupportedWorkloadProfile);
+    }
+    Ok(())
+}
+
+fn create_initial_group(
+    config: &BaselineWorkloadConfig,
+) -> Result<Vec<ExperimentalWorkloadMember>, ExperimentalBinaryWorkloadError> {
+    let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+    let domain = MkyberDomain::new([0x59; 32]);
+    let mut members = Vec::new();
+    let provider = OpenMlsRustCrypto::default();
+    let signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let identity = workload_identity(0);
+    let creator_credential = credential(&identity, &signer);
+    let group = MlsGroup::new_with_group_id_experimental_mkyber(
+        &provider,
+        &signer,
+        &experimental_group_config(),
+        GroupId::from_slice(&config.group_id),
+        creator_credential,
+        domain,
+    )
+    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    members.push(ExperimentalWorkloadMember {
+        member_index: 0,
+        leaf_region: 0,
+        provider,
+        signer,
+        group,
+    });
+
+    for member_index in 1..config.initial_member_count {
+        let provider = OpenMlsRustCrypto::default();
+        let signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        let identity = workload_identity(member_index);
+        let bundle = KeyPackage::builder()
+            .build_with_experimental_mkyber(
+                ciphersuite,
+                &provider,
+                &signer,
+                credential(&identity, &signer),
+                domain,
+            )
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        let (commit, welcome, _) = {
+            let ExperimentalWorkloadMember {
+                provider,
+                signer,
+                group,
+                ..
+            } = &mut members[0];
+            group
+                .add_members(
+                    provider,
+                    signer,
+                    core::slice::from_ref(bundle.key_package()),
+                )
+                .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+        };
+        let wire = commit
+            .tls_serialize_detached()
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        let _ = deliver_to_receivers(&mut members, 0, &wire)?;
+        {
+            let ExperimentalWorkloadMember {
+                provider, group, ..
+            } = &mut members[0];
+            group
+                .merge_pending_commit_experimental_atomic(provider)
+                .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        }
+        let welcome = parse_welcome(&welcome)?;
+        let group = StagedWelcome::new_from_welcome(
+            &provider,
+            &MlsGroupJoinConfig::builder()
+                .use_ratchet_tree_extension(true)
+                .build(),
+            welcome,
+            None,
+        )
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+        .into_group(&provider)
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        members.push(ExperimentalWorkloadMember {
+            member_index,
+            leaf_region: member_index % config.region_count,
+            provider,
+            signer,
+            group,
+        });
+        let _ = converged_epoch(&members)?;
+    }
+    Ok(members)
+}
+
+fn stage_self_update(
+    member: &mut ExperimentalWorkloadMember,
+) -> Result<(Vec<u8>, ExperimentalHybridCommitMetrics), ExperimentalBinaryWorkloadError> {
+    let bundle = member
+        .group
+        .self_update(
+            &member.provider,
+            &member.signer,
+            LeafNodeParameters::default(),
+        )
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let metrics = bundle
+        .experimental_hybrid_metrics()
+        .ok_or(ExperimentalBinaryWorkloadError::MissingHybridDelivery)?;
+    let (commit, _, _) = bundle.into_contents();
+    let wire = commit
+        .tls_serialize_detached()
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    Ok((wire, metrics))
+}
+
+fn deliver_to_receivers(
+    members: &mut [ExperimentalWorkloadMember],
+    committer_position: usize,
+    wire: &[u8],
+) -> Result<u32, ExperimentalBinaryWorkloadError> {
+    let mut count = 0_u32;
+    for (position, member) in members.iter_mut().enumerate() {
+        if position == committer_position {
+            continue;
+        }
+        let staged = staged_commit_from_wire(&mut member.group, &member.provider, wire)?;
+        member
+            .group
+            .merge_staged_commit_experimental_atomic(&member.provider, staged)
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        count = count
+            .checked_add(1)
+            .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+    }
+    Ok(count)
+}
+
+fn staged_commit_from_wire(
+    group: &mut MlsGroup,
+    provider: &OpenMlsRustCrypto,
+    wire: &[u8],
+) -> Result<StagedCommit, ExperimentalBinaryWorkloadError> {
+    let message = MlsMessageIn::tls_deserialize_exact(wire)
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+        .try_into_protocol_message()
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let processed = group
+        .process_message(provider, message)
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let ProcessedMessageContent::StagedCommitMessage(staged) = processed.into_content() else {
+        return Err(ExperimentalBinaryWorkloadError::Fork);
+    };
+    Ok(*staged)
+}
+
+fn parse_welcome(
+    welcome: &openmls_hybrid::prelude::MlsMessageOut,
+) -> Result<openmls_hybrid::prelude::Welcome, ExperimentalBinaryWorkloadError> {
+    match MlsMessageIn::tls_deserialize_exact(
+        welcome
+            .tls_serialize_detached()
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?,
+    )
+    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+    .extract()
+    {
+        MlsMessageBodyIn::Welcome(welcome) => Ok(welcome),
+        _ => Err(ExperimentalBinaryWorkloadError::Fork),
+    }
+}
+
+fn converged_epoch(
+    members: &[ExperimentalWorkloadMember],
+) -> Result<u64, ExperimentalBinaryWorkloadError> {
+    let first = members
+        .first()
+        .ok_or(ExperimentalBinaryWorkloadError::InvalidControls)?;
+    let epoch = first.group.epoch().as_u64();
+    let tree = first.group.export_ratchet_tree();
+    if members.iter().skip(1).any(|member| {
+        member.group.epoch().as_u64() != epoch || member.group.export_ratchet_tree() != tree
+    }) {
+        return Err(ExperimentalBinaryWorkloadError::DivergentPublicState);
+    }
+    Ok(epoch)
+}
+
+fn record_accepted_operation(
+    selection: &CommitterSelection,
+    input: AcceptedRecordInput,
+) -> AcceptedExperimentalBinaryOperation {
+    AcceptedExperimentalBinaryOperation {
+        sequence: input.sequence,
+        committer_member_index: selection.member_index,
+        committer_leaf_index: selection.leaf_index,
+        committer_leaf_region: selection.leaf_region,
+        operation: WorkloadOperation::Update,
+        epoch_before: input.epoch_before,
+        epoch_after: input.epoch_after,
+        active_member_count: input.active_member_count,
+        measurement: ExperimentalBinaryCommitMeasurement {
+            emitted_commit_bytes: input.emitted_commit_bytes,
+            emitted_welcome_bytes: None,
+            direct_commit_delivery_count: input.direct_commit_delivery_count,
+            welcome_join_count: 0,
+            accepted_lifecycle_elapsed_nanoseconds: input.elapsed_nanoseconds,
+            hybrid_path_delivery_count: input.metrics.hybrid_path_delivery_count(),
+            mkyber_common_ciphertext_count: input.metrics.mkyber_common_ciphertext_count(),
+            mkyber_recipient_ciphertext_count: input.metrics.mkyber_recipient_ciphertext_count(),
+            classical_hpke_encapsulation_count: input.metrics.classical_hpke_encapsulation_count(),
+        },
+    }
+}
+
+fn workload_identity(member_index: u32) -> Vec<u8> {
+    format!("experimental-workload-member-{member_index}").into_bytes()
+}
+
+fn credential(identity: &[u8], signer: &SignatureKeyPair) -> CredentialWithKey {
+    CredentialWithKey {
+        credential: BasicCredential::new(identity.to_vec()).into(),
+        signature_key: signer.public().into(),
+    }
+}
+
+fn experimental_group_config() -> MlsGroupCreateConfig {
+    MlsGroupCreateConfig::builder()
+        .ciphersuite(Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519)
+        .use_ratchet_tree_extension(true)
+        .with_group_context_extensions(normal_binary_arity_extensions())
+        .build()
+}
+
+fn normal_binary_arity_extensions() -> Extensions<GroupContext> {
+    let window = PolicyWindowConfig::new(20, 2, 1).expect("fixed valid policy window");
+    let preflight = TransitionPreflightMeasurement::from_serialized_outer_message(
+        &[0_u8; 100],
+        &[TransitionByteRange::new(
+            TransitionByteComponent::BaseCommit,
+            0,
+            100,
+        )],
+    )
+    .expect("fixed valid transition preflight");
+    let resolved = DeltaThreshold::PercentOfTransitionMicro(25_000_000)
+        .resolve_for_preflight(preflight)
+        .expect("fixed resolvable transition threshold");
+    let start = TransitionStartConfig::new(2, 4, 128, 1, resolved.resolved_bytes())
+        .expect("fixed valid transition controls");
+    let policy = ArityPolicySnapshot::from_policy_inputs(window, start, resolved)
+        .expect("fixed consistent arity policy");
+    let state = ArityState::normal(2, 4, 0, policy, TransitionEvaluationState::new(0, 0, 0))
+        .expect("fixed valid normal binary state");
+    Extensions::single(Extension::Unknown(
+        state.extension_type(),
+        UnknownExtension(
+            state
+                .extension_value_bytes()
+                .expect("fixed canonical ArityState encoding"),
+        ),
+    ))
+    .expect("one unique ArityState extension")
 }
 
 #[cfg(test)]
@@ -60,6 +554,34 @@ mod tests {
     };
 
     use super::{fork_ciphersuite_type_name, OPENMLS_HYBRID_UPSTREAM_REVISION};
+
+    #[test]
+    fn reproducible_binary_workload_records_only_accepted_hybrid_commits() {
+        let config = simulation::BaselineWorkloadConfig {
+            group_id: b"task-59-binary-workload".to_vec(),
+            initial_member_count: 2,
+            maximum_member_count: 2,
+            operation_count: 3,
+            region_count: 2,
+            committer_strategy: simulation::CommitterStrategy::RoundRobin,
+            workload_profile: simulation::WorkloadProfile::UpdateOnly,
+        };
+        let execution = super::execute_experimental_binary_workload(&config)
+            .expect("accepted experimental binary workload");
+
+        assert_eq!(execution.accepted_operations.len(), 3);
+        assert_eq!(execution.final_member_count, 2);
+        assert!(execution.accepted_operations.iter().all(|accepted| {
+            accepted.operation == simulation::WorkloadOperation::Update
+                && accepted.epoch_after == accepted.epoch_before + 1
+                && accepted.measurement.emitted_commit_bytes > 0
+                && accepted.measurement.hybrid_path_delivery_count > 0
+                && accepted.measurement.mkyber_common_ciphertext_count > 0
+                && accepted.measurement.mkyber_recipient_ciphertext_count > 0
+                && accepted.measurement.classical_hpke_encapsulation_count
+                    == accepted.measurement.mkyber_recipient_ciphertext_count
+        }));
+    }
 
     #[test]
     fn links_the_expected_named_fork() {

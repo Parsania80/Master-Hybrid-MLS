@@ -390,6 +390,8 @@ impl CommitBuilder<'_, super::Complete, MlsGroup> {
             commit: mls_message,
             welcome: create_commit_result.welcome_option,
             group_info: create_commit_result.group_info,
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_hybrid_metrics: None,
         };
 
         Ok((group, bundle))

@@ -384,7 +384,7 @@ impl UpdatePathNode {
     }
 
     #[cfg(feature = "experimental-hybrid")]
-    fn experimental_hybrid_delivery(&self) -> Option<&[u8]> {
+    pub(crate) fn experimental_hybrid_delivery(&self) -> Option<&[u8]> {
         self.experimental_hybrid_delivery
             .as_ref()
             .map(AsRef::as_ref)

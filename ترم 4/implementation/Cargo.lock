@@ -420,6 +420,8 @@ dependencies = [
  "openmls_rust_crypto 0.5.1",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
+ "simulation",
+ "thiserror",
  "tls_codec",
  "transition-policy",
 ]
@@ -1516,6 +1518,7 @@ dependencies = [
  "arity-state",
  "csv",
  "experiment-config",
+ "experimental-mls-adapter",
  "hex",
  "metrics",
  "serde",

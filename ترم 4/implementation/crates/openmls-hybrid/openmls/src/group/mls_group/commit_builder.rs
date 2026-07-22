@@ -952,6 +952,12 @@ impl CommitBuilder<'_, Complete, &mut MlsGroup> {
             ..
         } = self;
 
+        #[cfg(feature = "experimental-hybrid")]
+        let experimental_hybrid_metrics = create_commit_result
+            .commit
+            .experimental_hybrid_commit_metrics()
+            .map_err(CommitBuilderStageError::LibraryError)?;
+
         // Set the current group state to [`MlsGroupState::PendingCommit`],
         // storing the current [`StagedCommit`] from the commit results
         group.group_state = MlsGroupState::PendingCommit(Box::new(PendingCommitState::Member(
@@ -977,6 +983,8 @@ impl CommitBuilder<'_, Complete, &mut MlsGroup> {
             commit: mls_message,
             welcome: create_commit_result.welcome_option,
             group_info: create_commit_result.group_info,
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_hybrid_metrics: Some(experimental_hybrid_metrics),
         })
     }
 }
@@ -989,6 +997,9 @@ pub struct CommitMessageBundle {
     commit: MlsMessageOut,
     welcome: Option<Welcome>,
     group_info: Option<GroupInfo>,
+    #[cfg(feature = "experimental-hybrid")]
+    experimental_hybrid_metrics:
+        Option<crate::experimental_hybrid::ExperimentalHybridCommitMetrics>,
 }
 
 /// The result of a commit with an add proposal. This includes
@@ -1034,6 +1045,8 @@ impl CommitMessageBundle {
             commit,
             welcome,
             group_info,
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_hybrid_metrics: None,
         }
     }
 }
@@ -1044,6 +1057,15 @@ impl CommitMessageBundle {
     /// Gets the Commit messsage. For owned version, see [`Self::into_commit`].
     pub fn commit(&self) -> &MlsMessageOut {
         &self.commit
+    }
+
+    /// Returns public hybrid component counts captured before an experimental
+    /// Commit is optionally encrypted into a PrivateMessage.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn experimental_hybrid_metrics(
+        &self,
+    ) -> Option<crate::experimental_hybrid::ExperimentalHybridCommitMetrics> {
+        self.experimental_hybrid_metrics
     }
 
     /// Gets the Welcome messsage. Only [`Some`] if new clients have been added in the commit.

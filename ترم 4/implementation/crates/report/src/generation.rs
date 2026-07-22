@@ -241,6 +241,7 @@ struct CommitCsvRow {
     recipient_resolutions: String,
     candidate_byte_comparison: String,
     crypto_counts: String,
+    hybrid_delivery: String,
     policy_window: String,
     transition: String,
     retirement: String,
@@ -276,6 +277,7 @@ fn commits_csv(records: &[PerCommitMetricRecord]) -> Result<Vec<u8>, ReportArtif
                 recipient_resolutions: json_value(&record.topology.recipient_resolutions)?,
                 candidate_byte_comparison: json_value(&record.bytes.comparison)?,
                 crypto_counts: json_value(&record.crypto_counts)?,
+                hybrid_delivery: json_value(&record.hybrid_delivery)?,
                 policy_window: json_value(&record.policy_window)?,
                 transition: json_value(&record.transition)?,
                 retirement: json_value(&record.retirement)?,
@@ -536,6 +538,7 @@ fn availability_summary(records: &[PerCommitMetricRecord]) -> Vec<MetricFamilyAv
             &record.bytes.comparison
         }),
         summarize_availability(records, "crypto_counts", |record| &record.crypto_counts),
+        summarize_availability(records, "hybrid_delivery", |record| &record.hybrid_delivery),
         summarize_availability(records, "policy_window", |record| &record.policy_window),
         summarize_availability(records, "transition", |record| &record.transition),
         summarize_availability(records, "retirement", |record| &record.retirement),

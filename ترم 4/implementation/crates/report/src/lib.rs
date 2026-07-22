@@ -9,7 +9,13 @@ pub mod generation;
 pub mod plots;
 
 use arity_state::ArityState;
-use metrics::{CommitByteMetrics, CryptoMetrics, RecipientResolutionMetrics, TopologyMetrics};
+use experimental_mls_adapter::{
+    AcceptedExperimentalBinaryOperation, ExperimentalBinaryWorkloadExecution,
+};
+use metrics::{
+    CommitByteMetrics, CryptoMetrics, CryptoOperation, CryptoOperationMetrics,
+    RecipientResolutionMetrics, TopologyMetrics,
+};
 use serde::Serialize;
 use simulation::{BaselineWorkloadConfig, BaselineWorkloadExecution, WorkloadOperation};
 use thiserror::Error;
@@ -90,6 +96,22 @@ pub struct CommitTimingObservation {
     pub accepted_lifecycle_elapsed_nanoseconds: u128,
 }
 
+/// Actual counts from canonical binary-with-mKyber UpdatePath deliveries.
+///
+/// These are public per-Commit counts captured before optional MLS private
+/// framing encryption. They do not contain any ciphertext, key, or secret.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct HybridDeliveryObservation {
+    /// Number of hybrid UpdatePath deliveries in the accepted Commit.
+    pub hybrid_path_delivery_count: u32,
+    /// One-per-delivery mKyber common ciphertext components.
+    pub mkyber_common_ciphertext_count: u32,
+    /// Per-recipient mKyber ciphertext components.
+    pub mkyber_recipient_ciphertext_count: u32,
+    /// Per-recipient classical HPKE encapsulations.
+    pub classical_hpke_encapsulation_count: u32,
+}
+
 /// The three topology and recipient-resolution measurement families.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CommitTopologyObservation {
@@ -153,6 +175,8 @@ pub struct PerCommitMetricRecord {
     pub bytes: CommitByteObservation,
     /// Per-operation crypto counts and timings when hooks observed them.
     pub crypto_counts: MetricAvailability<CryptoMetrics>,
+    /// Public mKyber/HPKE delivery-component counts when a fork Commit was observed.
+    pub hybrid_delivery: MetricAvailability<HybridDeliveryObservation>,
     /// End-to-end accepted-commit timing.
     pub timing: CommitTimingObservation,
     /// Window, `q_e`, `r_e`, and start-evaluation facts.
@@ -247,6 +271,9 @@ impl PerCommitMetricRecord {
                     crypto_counts: MetricAvailability::Unavailable(
                         MetricUnavailableReason::NotInstrumented,
                     ),
+                    hybrid_delivery: MetricAvailability::Unavailable(
+                        MetricUnavailableReason::RequiresExperimentalFork,
+                    ),
                     policy_window: MetricAvailability::Unavailable(
                         MetricUnavailableReason::PolicyWindowNotAttached,
                     ),
@@ -260,6 +287,27 @@ impl PerCommitMetricRecord {
                     welcome_join_count: accepted.measurement.welcome_join_count,
                 })
             })
+            .collect()
+    }
+
+    /// Converts accepted normal-binary fork outcomes into Task 54 records.
+    ///
+    /// The shared workload controls preserve baseline comparability. Only
+    /// emitted Commit bytes, lifecycle timing, and hybrid delivery counts are
+    /// observed here; transition/candidate/retirement facts remain typed
+    /// unavailable until their dedicated integrations exist.
+    pub fn from_experimental_binary_workload(
+        config: &BaselineWorkloadConfig,
+        execution: &ExperimentalBinaryWorkloadExecution,
+    ) -> Result<Vec<Self>, PerCommitSchemaError> {
+        if config.group_id.is_empty() {
+            return Err(PerCommitSchemaError::EmptyGroupId);
+        }
+        execution
+            .accepted_operations
+            .iter()
+            .enumerate()
+            .map(|(offset, accepted)| experimental_binary_record(config, accepted, offset))
             .collect()
     }
 
@@ -296,6 +344,81 @@ impl PerCommitMetricRecord {
         self.retirement = MetricAvailability::Observed(retirement);
         self
     }
+}
+
+fn experimental_binary_record(
+    config: &BaselineWorkloadConfig,
+    accepted: &AcceptedExperimentalBinaryOperation,
+    offset: usize,
+) -> Result<PerCommitMetricRecord, PerCommitSchemaError> {
+    let sequence =
+        u32::try_from(offset + 1).map_err(|_| PerCommitSchemaError::NonContiguousSequence)?;
+    if accepted.sequence != sequence {
+        return Err(PerCommitSchemaError::NonContiguousSequence);
+    }
+    if accepted.epoch_before.checked_add(1) != Some(accepted.epoch_after) {
+        return Err(PerCommitSchemaError::InvalidEpochAdvance);
+    }
+    let measurement = &accepted.measurement;
+    let crypto_counts = CryptoMetrics::new(vec![
+        CryptoOperationMetrics::counted(
+            CryptoOperation::ClassicalEncapsulation,
+            measurement.classical_hpke_encapsulation_count,
+        ),
+        CryptoOperationMetrics::counted(
+            CryptoOperation::MkyberEncapsulation,
+            measurement.mkyber_common_ciphertext_count,
+        ),
+    ])
+    .expect("fixed canonical experimental crypto metric order");
+    Ok(PerCommitMetricRecord {
+        schema_version: PER_COMMIT_SCHEMA_VERSION,
+        identity: CommitIdentity {
+            group_id: config.group_id.clone(),
+            sequence: accepted.sequence,
+            epoch_before: accepted.epoch_before,
+            epoch_after: accepted.epoch_after,
+            committer_member_index: accepted.committer_member_index,
+            committer_leaf_index: accepted.committer_leaf_index,
+            committer_leaf_region: accepted.committer_leaf_region,
+            active_member_count_after: accepted.active_member_count,
+        },
+        operation: accepted.operation,
+        topology: CommitTopologyObservation {
+            current_binary: MetricAvailability::Unavailable(
+                MetricUnavailableReason::NotInstrumented,
+            ),
+            candidate_quaternary: MetricAvailability::Unavailable(
+                MetricUnavailableReason::NotApplicable,
+            ),
+            recipient_resolutions: MetricAvailability::Unavailable(
+                MetricUnavailableReason::NotInstrumented,
+            ),
+        },
+        bytes: CommitByteObservation {
+            emitted_baseline_commit_bytes: measurement.emitted_commit_bytes,
+            emitted_welcome_bytes: measurement.emitted_welcome_bytes,
+            comparison: MetricAvailability::Unavailable(MetricUnavailableReason::NotApplicable),
+        },
+        crypto_counts: MetricAvailability::Observed(crypto_counts),
+        hybrid_delivery: MetricAvailability::Observed(HybridDeliveryObservation {
+            hybrid_path_delivery_count: measurement.hybrid_path_delivery_count,
+            mkyber_common_ciphertext_count: measurement.mkyber_common_ciphertext_count,
+            mkyber_recipient_ciphertext_count: measurement.mkyber_recipient_ciphertext_count,
+            classical_hpke_encapsulation_count: measurement.classical_hpke_encapsulation_count,
+        }),
+        timing: CommitTimingObservation {
+            accepted_lifecycle_elapsed_nanoseconds: measurement
+                .accepted_lifecycle_elapsed_nanoseconds,
+        },
+        policy_window: MetricAvailability::Unavailable(
+            MetricUnavailableReason::PolicyWindowNotAttached,
+        ),
+        transition: MetricAvailability::Unavailable(MetricUnavailableReason::TransitionNotStarted),
+        retirement: MetricAvailability::Unavailable(MetricUnavailableReason::TreeCoverNotRetired),
+        direct_commit_delivery_count: measurement.direct_commit_delivery_count,
+        welcome_join_count: measurement.welcome_join_count,
+    })
 }
 
 #[cfg(test)]
@@ -340,6 +463,32 @@ mod tests {
             MetricAvailability::Unavailable(MetricUnavailableReason::TransitionNotStarted)
         ));
         assert!(records.iter().any(|record| record.welcome_join_count == 1));
+    }
+
+    #[test]
+    fn experimental_binary_records_attach_observed_hybrid_delivery_counts() {
+        let mut config = config();
+        config.group_id = b"task-59-schema".to_vec();
+        config.workload_profile = WorkloadProfile::UpdateOnly;
+        config.operation_count = 2;
+        config.maximum_member_count = 2;
+        let execution = experimental_mls_adapter::execute_experimental_binary_workload(&config)
+            .expect("accepted experimental binary workload");
+        let records = PerCommitMetricRecord::from_experimental_binary_workload(&config, &execution)
+            .expect("experimental schema records");
+
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| matches!(
+            &record.hybrid_delivery,
+            MetricAvailability::Observed(observation)
+                if observation.mkyber_common_ciphertext_count > 0
+                    && observation.mkyber_recipient_ciphertext_count > 0
+                    && observation.classical_hpke_encapsulation_count
+                        == observation.mkyber_recipient_ciphertext_count
+        )));
+        assert!(records
+            .iter()
+            .all(|record| matches!(&record.crypto_counts, MetricAvailability::Observed(_))));
     }
 
     #[test]

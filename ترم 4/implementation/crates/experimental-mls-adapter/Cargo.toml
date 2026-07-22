@@ -5,18 +5,21 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+arity-state = { path = "../arity-state" }
+mkyber = { path = "../mkyber" }
 openmls-hybrid.workspace = true
+openmls_hybrid_basic_credential = { package = "openmls_basic_credential", path = "../openmls-hybrid/basic_credential" }
+openmls_hybrid_rust_crypto = { package = "openmls_rust_crypto", path = "../openmls-hybrid/openmls_rust_crypto" }
+simulation = { path = "../simulation" }
+thiserror.workspace = true
+tls_codec.workspace = true
+transition-policy = { path = "../transition-policy" }
 
 [dev-dependencies]
-arity-state = { path = "../arity-state" }
 hybrid-path-secret = { path = "../hybrid-path-secret" }
-mkyber = { path = "../mkyber" }
-openmls_hybrid_basic_credential = { package = "openmls_basic_credential", path = "../openmls-hybrid/basic_credential" }
 openmls_hybrid_rust_crypto = { package = "openmls_rust_crypto", path = "../openmls-hybrid/openmls_rust_crypto", features = ["transaction-test-utils"] }
 rand_chacha.workspace = true
 rand_core.workspace = true
-tls_codec.workspace = true
-transition-policy = { path = "../transition-policy" }
 
 [lints]
 workspace = true

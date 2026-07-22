@@ -384,6 +384,64 @@ pub struct ExperimentalHybridPathDelivery {
     canonical_bytes: Vec<u8>,
 }
 
+/// Public aggregate counts from one emitted experimental hybrid Commit.
+///
+/// Each hybrid UpdatePath delivery contains exactly one common mKyber
+/// ciphertext and one recipient mKyber/classical-HPKE pair per recipient.
+/// This type deliberately keeps counts only; it never contains a delivery,
+/// ciphertext, key, or path secret.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ExperimentalHybridCommitMetrics {
+    hybrid_path_delivery_count: u32,
+    mkyber_common_ciphertext_count: u32,
+    mkyber_recipient_ciphertext_count: u32,
+    classical_hpke_encapsulation_count: u32,
+}
+
+impl ExperimentalHybridCommitMetrics {
+    pub(crate) fn record_delivery(&mut self, recipient_count: usize) -> Result<(), LibraryError> {
+        let recipient_count = u32::try_from(recipient_count)
+            .map_err(|_| LibraryError::custom("experimental hybrid delivery count overflowed"))?;
+        self.hybrid_path_delivery_count = self
+            .hybrid_path_delivery_count
+            .checked_add(1)
+            .ok_or_else(|| LibraryError::custom("experimental hybrid delivery count overflowed"))?;
+        self.mkyber_common_ciphertext_count = self
+            .mkyber_common_ciphertext_count
+            .checked_add(1)
+            .ok_or_else(|| LibraryError::custom("experimental hybrid delivery count overflowed"))?;
+        self.mkyber_recipient_ciphertext_count = self
+            .mkyber_recipient_ciphertext_count
+            .checked_add(recipient_count)
+            .ok_or_else(|| LibraryError::custom("experimental hybrid delivery count overflowed"))?;
+        self.classical_hpke_encapsulation_count = self
+            .classical_hpke_encapsulation_count
+            .checked_add(recipient_count)
+            .ok_or_else(|| LibraryError::custom("experimental hybrid delivery count overflowed"))?;
+        Ok(())
+    }
+
+    /// Returns the count of hybrid UpdatePath deliveries.
+    pub const fn hybrid_path_delivery_count(self) -> u32 {
+        self.hybrid_path_delivery_count
+    }
+
+    /// Returns the count of one-per-delivery mKyber common ciphertexts.
+    pub const fn mkyber_common_ciphertext_count(self) -> u32 {
+        self.mkyber_common_ciphertext_count
+    }
+
+    /// Returns the count of per-recipient mKyber ciphertext components.
+    pub const fn mkyber_recipient_ciphertext_count(self) -> u32 {
+        self.mkyber_recipient_ciphertext_count
+    }
+
+    /// Returns the count of per-recipient classical HPKE encapsulations.
+    pub const fn classical_hpke_encapsulation_count(self) -> u32 {
+        self.classical_hpke_encapsulation_count
+    }
+}
+
 /// Classical HPKE execution provider bound to the local OpenMLS fork types.
 ///
 /// It implements the provider-neutral hybrid interface without exposing its

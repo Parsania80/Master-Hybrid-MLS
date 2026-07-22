@@ -16,6 +16,8 @@ use super::{
     Commit, ConfirmationTag, ContentType, FramingParameters, GroupContext, GroupEpoch, GroupId,
     Proposal, Sender, Signature, WireFormat,
 };
+#[cfg(feature = "experimental-hybrid")]
+use crate::experimental_hybrid::ExperimentalHybridCommitMetrics;
 use crate::{
     binary_tree::LeafNodeIndex,
     ciphersuite::signable::{Signable, SignedStruct},
@@ -87,6 +89,35 @@ pub(crate) struct AuthenticatedContent {
 }
 
 impl AuthenticatedContent {
+    /// Counts canonical hybrid UpdatePath components before private-message
+    /// encryption hides the authenticated Commit body.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_hybrid_commit_metrics(
+        &self,
+    ) -> Result<ExperimentalHybridCommitMetrics, LibraryError> {
+        let FramedContentBody::Commit(commit) = self.content() else {
+            return Err(LibraryError::custom(
+                "experimental metrics require a Commit",
+            ));
+        };
+        let mut metrics = ExperimentalHybridCommitMetrics::default();
+        let Some(path) = &commit.path else {
+            return Ok(metrics);
+        };
+        for node in path.nodes() {
+            let Some(bytes) = node.experimental_hybrid_delivery() else {
+                continue;
+            };
+            let ciphertext =
+                hybrid_path_secret::HybridPathCiphertext::from_commit_authenticated_bytes(bytes)
+                    .map_err(|_| {
+                        LibraryError::custom("invalid emitted experimental hybrid delivery")
+                    })?;
+            metrics.record_delivery(ciphertext.recipients().len())?;
+        }
+        Ok(metrics)
+    }
+
     /// Convenience function for creating a [`VerifiableAuthenticatedContent`].
     #[inline]
     fn new_and_sign(
