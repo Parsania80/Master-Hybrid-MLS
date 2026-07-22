@@ -344,9 +344,10 @@ pub fn execute_experimental_binary_workload(
 ///
 /// The supplied controls remain comparable with the baseline and Task 59
 /// client. This first adaptive client supports update-only workloads with at
-/// least two requested updates: its first update is normal binary evidence,
-/// the next accepted Commit is the authenticated transition, and the remaining
-/// requested updates execute through the fork's quaternary atomic APIs.
+/// least two requested updates. It retains real normal-binary observations
+/// until the policy authorizes the transition or the configured schedule is
+/// exhausted. Any remaining scheduled updates execute through the fork's
+/// quaternary atomic APIs.
 ///
 /// The policy's candidate and transition-preflight byte inputs come from a
 /// separate real probe run because the fork currently lacks a side-effect-free
@@ -432,6 +433,7 @@ pub fn execute_experimental_adaptive_workload(
     let mut last_current_bytes = costs[0].current_bytes();
     let mut transition_selection = None;
     let mut transition_position = None;
+    let mut transition_workload_sequence = None;
     let mut transition_record = policy_record;
     let mut transition_savings = None;
     let mut transition_evaluation = None;
@@ -500,6 +502,7 @@ pub fn execute_experimental_adaptive_workload(
         if evaluation.is_triggered() {
             transition_selection = Some(selection);
             transition_position = Some(position);
+            transition_workload_sequence = Some(workload_sequence);
             transition_record = record;
             transition_savings = Some(savings);
             transition_evaluation = Some(evaluation);
@@ -516,6 +519,8 @@ pub fn execute_experimental_adaptive_workload(
         });
     };
     let second_position = transition_position.ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+    let transition_workload_sequence =
+        transition_workload_sequence.ok_or(ExperimentalBinaryWorkloadError::Fork)?;
     let _policy_record = transition_record;
     let savings = transition_savings.ok_or(ExperimentalBinaryWorkloadError::Fork)?;
     let evaluation = transition_evaluation.ok_or(ExperimentalBinaryWorkloadError::Fork)?;
@@ -601,7 +606,8 @@ pub fn execute_experimental_adaptive_workload(
         .checked_add(1)
         .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
 
-    for workload_sequence in 3..=config.operation_count {
+    for workload_sequence in transition_workload_sequence.saturating_add(1)..=config.operation_count
+    {
         let selection = select_committer(&members, config, workload_sequence)?;
         let committer_position = member_position(&members, selection.member_index)?;
         let epoch_before = members[committer_position].group.epoch().as_u64();
@@ -1354,12 +1360,12 @@ mod tests {
     }
 
     #[test]
-    fn compact_adaptive_carrier_retains_real_observations_until_workload_end() {
+    fn eleven_normal_observations_remain_below_real_amortization_boundary() {
         let config = simulation::BaselineWorkloadConfig {
             group_id: b"task-61-adaptive-workload".to_vec(),
             initial_member_count: 5,
             maximum_member_count: 5,
-            operation_count: 3,
+            operation_count: 11,
             region_count: 2,
             committer_strategy: simulation::CommitterStrategy::RoundRobin,
             workload_profile: simulation::WorkloadProfile::UpdateOnly,
@@ -1367,16 +1373,16 @@ mod tests {
         let probe = super::measure_adaptive_probe(&config).expect("real adaptive probe");
         assert!(!probe.transition_wire.is_empty());
         assert!(!probe.quaternary_update_wire.is_empty());
-        let Err(super::ExperimentalBinaryWorkloadError::TransitionNotAuthorized {
-            current_binary_update_bytes,
-            quaternary_candidate_bytes,
-            transition_preflight_bytes,
-        }) = super::execute_experimental_adaptive_workload(&config)
-        else {
-            panic!("two observations are still below the measured preflight boundary");
-        };
-        assert!(quaternary_candidate_bytes < current_binary_update_bytes);
-        assert!(transition_preflight_bytes > 0);
+        let error = super::execute_experimental_adaptive_workload(&config)
+            .expect_err("eleven normal observations must not authorize transition");
+        assert!(matches!(
+            error,
+            super::ExperimentalBinaryWorkloadError::TransitionNotAuthorized {
+                current_binary_update_bytes: 6_355,
+                quaternary_candidate_bytes: 5_841,
+                transition_preflight_bytes: 6_041,
+            }
+        ));
     }
 
     #[test]
