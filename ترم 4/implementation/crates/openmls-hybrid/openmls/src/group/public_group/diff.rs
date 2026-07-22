@@ -51,7 +51,8 @@ pub(crate) mod compute_path;
 pub(crate) struct ExperimentalQuaternaryDeliveryPlan {
     pub(crate) parent_nodes: Vec<QuaternaryNode>,
     pub(crate) recipient_leaf_ordinal: u32,
-    pub(crate) recipients: Vec<(u32, EncryptionKey)>,
+    pub(crate) recipient_parent_node: Option<QuaternaryNode>,
+    pub(crate) recipient_targets: Vec<(u32, QuaternaryNode, EncryptionKey)>,
 }
 
 pub(crate) struct PublicGroupDiff<'a> {
@@ -208,6 +209,11 @@ impl<'a> PublicGroupDiff<'a> {
             recipient_quaternary_leaf_ordinal: expected_quaternary_delivery_plan
                 .as_ref()
                 .map(|plan| plan.recipient_leaf_ordinal),
+            #[cfg(feature = "experimental-hybrid")]
+            recipient_quaternary_parent_node: expected_quaternary_delivery_plan
+                .as_ref()
+                .and_then(|plan| plan.recipient_parent_node)
+                .map(|node| (node.depth, node.ordinal)),
             sender_leaf_index,
             exclusion_list,
             group_context: &self
@@ -281,7 +287,22 @@ impl<'a> PublicGroupDiff<'a> {
             .ok_or_else(|| {
                 LibraryError::custom("experimental quaternary recipient is absent from mapping")
             })?;
-        let parent_nodes = tree
+        let sender_path = tree
+            .topology()
+            .leaf_path_for_member(sender_member_id)
+            .map_err(|_| {
+                LibraryError::custom("experimental quaternary sender path derivation failed")
+            })?;
+        let recipient_member_id = member_ids.get(&recipient_leaf_index.u32()).ok_or_else(|| {
+            LibraryError::custom("experimental quaternary recipient is absent from mapping")
+        })?;
+        let recipient_path = tree
+            .topology()
+            .leaf_path_for_member(recipient_member_id)
+            .map_err(|_| {
+                LibraryError::custom("experimental quaternary recipient path derivation failed")
+            })?;
+        let parent_nodes: Vec<QuaternaryNode> = tree
             .topology()
             .nodes_for_member(sender_member_id)
             .map_err(|_| {
@@ -290,26 +311,59 @@ impl<'a> PublicGroupDiff<'a> {
             .into_iter()
             .take(usize::from(tree.topology().height()))
             .collect();
-        let recipients = mapping
+        let recipient_parent_node = sender_path
+            .iter()
+            .zip(&recipient_path)
+            .position(|(sender_branch, recipient_branch)| sender_branch != recipient_branch)
+            .and_then(|depth| parent_nodes.get(depth).copied());
+        let recipient_targets = mapping
             .assignments
             .iter()
             .filter(|assignment| assignment.binary_leaf_index != sender_leaf_index.u32())
             .map(|assignment| {
-                leaf_keys
+                let member_id = member_ids
+                    .get(&assignment.binary_leaf_index)
+                    .ok_or_else(|| {
+                        LibraryError::custom(
+                            "experimental quaternary recipient is absent from members",
+                        )
+                    })?;
+                let path = tree
+                    .topology()
+                    .leaf_path_for_member(member_id)
+                    .map_err(|_| {
+                        LibraryError::custom(
+                            "experimental quaternary recipient path derivation failed",
+                        )
+                    })?;
+                let parent = sender_path
+                    .iter()
+                    .zip(path)
+                    .position(|(sender_branch, recipient_branch)| {
+                        sender_branch != &recipient_branch
+                    })
+                    .and_then(|depth| parent_nodes.get(depth).copied())
+                    .ok_or_else(|| {
+                        LibraryError::custom(
+                            "experimental quaternary recipient has no sibling-resolution parent",
+                        )
+                    })?;
+                let key = leaf_keys
                     .get(&assignment.binary_leaf_index)
                     .cloned()
-                    .map(|key| (assignment.quaternary_leaf_ordinal, key))
                     .ok_or_else(|| {
                         LibraryError::custom(
                             "experimental quaternary recipient has no MLS leaf key",
                         )
-                    })
+                    })?;
+                Ok((assignment.quaternary_leaf_ordinal, parent, key))
             })
             .collect::<Result<Vec<_>, LibraryError>>()?;
         Ok(ExperimentalQuaternaryDeliveryPlan {
             parent_nodes,
             recipient_leaf_ordinal: recipient_assignment.quaternary_leaf_ordinal,
-            recipients,
+            recipient_parent_node,
+            recipient_targets,
         })
     }
 

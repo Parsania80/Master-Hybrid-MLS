@@ -179,11 +179,17 @@ impl PublicGroupDiff<'_> {
                 })?;
                 let mut parent_paths = Vec::with_capacity(delivery_plan.parent_nodes.len());
                 for parent in delivery_plan.parent_nodes {
+                    let recipients = delivery_plan
+                        .recipient_targets
+                        .iter()
+                        .filter(|(_, target_parent, _)| *target_parent == parent)
+                        .map(|(leaf_ordinal, _, key)| (*leaf_ordinal, key.clone()))
+                        .collect::<Vec<_>>();
                     let (parent_path, parent_keypair) = root_path
                         .encrypt_experimental_quaternary_parent(
                             crypto,
                             ciphersuite,
-                            &delivery_plan.recipients,
+                            &recipients,
                             &serialized_group_context,
                             ExperimentalQuaternaryParentPosition {
                                 tree_version: arity_state.tree_version(),

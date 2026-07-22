@@ -62,8 +62,9 @@ also derives an experimental quaternary authority from a later MLS epoch.
     depth/ordinal index. The root reuses the binary root source secret for its
     direct equality check; each non-root parent derives a separate source
     secret with label `quaternary TreeKEM path` bound to domain, version, and
-    position. Delivery currently reaches every non-sender leaf, not the final
-    minimal sibling resolution.
+    position. Each non-sender leaf is placed only in the parent at its first
+    divergent branch from the sender, yielding the exact mapped sibling
+    resolution for every parent delivery.
 12. Store every matched parent private pair in the candidate
     `GroupEpochSecrets` envelope together with the quaternary epoch authority.
     The existing atomic merge writes this envelope before replacing live state;
@@ -82,10 +83,12 @@ also derives an experimental quaternary authority from a later MLS epoch.
   status contains only epoch, tree version, mapping digest, and a root public-
   key digest, and reloads only through the existing `GroupEpochSecrets`
   storage lifecycle.
-- A transitioning receiver rejects a missing root-parent record, unsupported
-  parent position/version/tree version, malformed delivery, wrong recipient,
-  failed hybrid open, a public-key mismatch, or a secret mismatch before the
-  staged Commit reaches the atomic merge boundary.
+- A transitioning receiver rejects a missing mapped parent record, unsupported
+  parent position/version/tree version, malformed delivery, an absent mapped
+  sibling recipient, failed hybrid open, a public-key mismatch, or a secret
+  mismatch before the staged Commit reaches the atomic merge boundary. It
+  validates every mapped parent public key but opens only its divergence-parent
+  ciphertext.
 - As with ADR 0039, message-ratchet effects of receiving and staging a Commit
   occur before the merge API and are outside the storage transaction.
 
@@ -98,9 +101,11 @@ also derives an experimental quaternary authority from a later MLS epoch.
   without changing the receiver epoch, ratchet tree, or authenticated state.
 - A subsequent real hybrid MLS self-update rotates the stored authority at both
   members; the public status converges and survives a storage reload.
-- The transition Commit and subsequent self-update both carry the authenticated
-  mapping-derived quaternary parent-path records; receivers open and prove
-  every position and derived public key, including root-secret equality.
+- The transition Commit and subsequent self-update both carry authenticated
+  mapping-derived quaternary parent-path records. Each parent delivery contains
+  only its mapped sibling-resolution leaves; receivers validate every position
+  and derived public key, and open only their divergence parent, including the
+  root-secret equality check.
 - Three members converge through the root-only mapped path; five members
   converge through root plus a depth-1 parent, with both pairs persisted.
 - Locked/offline adapter tests cover the round trip and rejection boundary.
@@ -108,9 +113,10 @@ also derives an experimental quaternary authority from a later MLS epoch.
 ## Explicit Non-Claims and Remaining Work
 
 This decision now has authenticated, receiver-validated mapped parent-path
-delivery and atomic private-pair lifecycle, while its MLS carrier and public
-TreeKEM remain binary. It does not yet deliver only to exact quaternary sibling
-resolutions, cover all membership/path-shape rejection cases, or replace the
-MLS application/message key schedule. Task 60 remains current until those
-delivery, rejection, and storage-fault boundaries exist. No adaptive workload
-or three-mode measurement is available from this boundary.
+delivery restricted to exact quaternary sibling resolutions and an atomic
+private-pair lifecycle, while its MLS carrier and public TreeKEM remain binary.
+It does not yet cover all membership/path-shape and real-Commit rejection
+cases, injected transition storage faults, or replace the MLS
+application/message key schedule. Task 60 remains current until those
+boundaries exist. No adaptive workload or three-mode measurement is available
+from this boundary.

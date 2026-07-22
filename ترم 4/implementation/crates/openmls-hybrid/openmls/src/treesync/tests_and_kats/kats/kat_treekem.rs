@@ -304,6 +304,16 @@ pub fn run_test_vector(test: TreeKemTest, provider: &impl OpenMlsProvider) {
                 sender_leaf_encryption_key: update_path.leaf_node().encryption_key(),
                 #[cfg(feature = "experimental-hybrid")]
                 sender_leaf_capabilities: update_path.leaf_node().capabilities(),
+                #[cfg(feature = "experimental-hybrid")]
+                experimental_quaternary_parent_paths: &[],
+                #[cfg(feature = "experimental-hybrid")]
+                expected_quaternary_tree_version: None,
+                #[cfg(feature = "experimental-hybrid")]
+                expected_quaternary_parent_nodes: None,
+                #[cfg(feature = "experimental-hybrid")]
+                recipient_quaternary_leaf_ordinal: None,
+                #[cfg(feature = "experimental-hybrid")]
+                recipient_quaternary_parent_node: None,
                 sender_leaf_index: LeafNodeIndex::new(path_test.sender),
                 exclusion_list: &HashSet::default(),
                 group_context: &group_context.tls_serialize_detached().unwrap(),
@@ -343,6 +353,16 @@ fn apply_update_path(
         sender_leaf_encryption_key: update_path.leaf_node().encryption_key(),
         #[cfg(feature = "experimental-hybrid")]
         sender_leaf_capabilities: update_path.leaf_node().capabilities(),
+        #[cfg(feature = "experimental-hybrid")]
+        experimental_quaternary_parent_paths: &[],
+        #[cfg(feature = "experimental-hybrid")]
+        expected_quaternary_tree_version: None,
+        #[cfg(feature = "experimental-hybrid")]
+        expected_quaternary_parent_nodes: None,
+        #[cfg(feature = "experimental-hybrid")]
+        recipient_quaternary_leaf_ordinal: None,
+        #[cfg(feature = "experimental-hybrid")]
+        recipient_quaternary_parent_node: None,
         sender_leaf_index: LeafNodeIndex::new(sender),
         exclusion_list: &HashSet::default(),
         group_context: &group_context.tls_serialize_detached().unwrap(),

@@ -529,7 +529,7 @@ mod tests {
     };
     use hybrid_path_secret::{
         open_hybrid_path_level_with_provider, seal_hybrid_path_level_with_provider,
-        ClassicalHpkeKeyPair, HybridPathCiphertext, HybridPathLevelContext,
+        ClassicalHpkeKeyPair, HybridPathCiphertext, HybridPathLevelContext, HybridPathLevelError,
         HybridPathRecipientPrivate, HybridPathRecipientPublic, HybridPathSecret,
         HybridRecipientCiphertext, PathNodeIndex, RecipientNodeIndex, TreeArity,
         MLS_PATH_SECRET_BYTES,
@@ -570,7 +570,7 @@ mod tests {
         TransitionByteRange, TransitionPreflightMeasurement, TransitionStartConfig,
         TransitionStartEvaluator,
     };
-    use transition_tree::DeliveryOnlyTreeCover;
+    use transition_tree::{ActiveQuaternaryTree, DeliveryOnlyTreeCover};
 
     use super::{fork_ciphersuite_type_name, OPENMLS_HYBRID_UPSTREAM_REVISION};
 
@@ -742,6 +742,138 @@ mod tests {
         .expect("fork provider must open");
 
         assert_eq!(opened.as_bytes(), path_secret.as_bytes());
+    }
+
+    #[test]
+    fn quaternary_parent_delivery_rejects_a_recipient_outside_its_mapped_sibling_resolution() {
+        let mapping = BinaryToQuaternaryLeafMapping::from_binary_members(
+            [
+                &b"alice"[..],
+                &b"bob"[..],
+                &b"charlie"[..],
+                &b"dave"[..],
+                &b"eve"[..],
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(binary_leaf_index, member_id)| BinaryLeafMember {
+                member_id: member_id.to_vec(),
+                binary_leaf_index: binary_leaf_index as u32,
+            })
+            .collect(),
+        )
+        .expect("five-member canonical mapping");
+        let tree = ActiveQuaternaryTree::from_mapping(2, mapping).expect("mapped tree");
+        let bob_path = tree
+            .topology()
+            .leaf_path_for_member(b"bob")
+            .expect("Bob mapped path");
+        let charlie_path = tree
+            .topology()
+            .leaf_path_for_member(b"charlie")
+            .expect("Charlie mapped path");
+        let eve_path = tree
+            .topology()
+            .leaf_path_for_member(b"eve")
+            .expect("Eve mapped path");
+        assert_eq!(bob_path[0], charlie_path[0]);
+        assert_ne!(bob_path[1], charlie_path[1]);
+        assert_ne!(bob_path[0], eve_path[0]);
+        let backend = EducationalMkyber512Reference;
+        let domain = MkyberDomain::new([0x56; 32]);
+        let mut randomness = ChaCha20Rng::from_seed([0x57; 32]);
+        let provider = ForkClassicalHpkeProvider::default();
+        let context = HybridPathLevelContext::new(
+            b"mapped-quaternary-sibling".to_vec(),
+            11,
+            2,
+            TreeArity::Quaternary,
+            PathNodeIndex::new(1),
+            domain,
+            [0x58; 32],
+        );
+        let path_secret = HybridPathSecret::from_bytes(&[0x59; MLS_PATH_SECRET_BYTES])
+            .expect("fixed-size path secret");
+
+        // In this five-member mapping Bob's depth-one sibling resolution is
+        // separate from Eve's root sibling resolution. Only the latter is
+        // represented in this root-parent delivery.
+        let (authorized_public, authorized_private) = backend
+            .keygen(domain, &mut randomness)
+            .expect("authorized mKyber key generation")
+            .into_parts();
+        let (authorized_classical_public, authorized_classical_private) =
+            ClassicalHpkeKeyPair::generate_with_os_rng()
+                .expect("authorized classical key generation")
+                .into_parts();
+        let (_nonrecipient_public, nonrecipient_private) = backend
+            .keygen(domain, &mut randomness)
+            .expect("non-recipient mKyber key generation")
+            .into_parts();
+        let (_nonrecipient_classical_public, nonrecipient_classical_private) =
+            ClassicalHpkeKeyPair::generate_with_os_rng()
+                .expect("non-recipient classical key generation")
+                .into_parts();
+        let authorized = HybridPathRecipientPublic::new(
+            RecipientNodeIndex::new(4),
+            authorized_public,
+            authorized_classical_public,
+        );
+        let nonrecipient = HybridPathRecipientPrivate::new(
+            RecipientNodeIndex::new(1),
+            nonrecipient_private,
+            nonrecipient_classical_private,
+        );
+        let ciphertext = seal_hybrid_path_level_with_provider(
+            &provider,
+            &backend,
+            &mut randomness,
+            &context,
+            &path_secret,
+            &[authorized],
+        )
+        .expect("root sibling delivery");
+
+        assert_eq!(
+            ciphertext
+                .recipients()
+                .iter()
+                .map(|record| record.recipient_node_index().as_u32())
+                .collect::<Vec<_>>(),
+            vec![4],
+            "the root-parent payload must exclude the depth-one sibling recipient"
+        );
+        assert!(
+            matches!(
+                open_hybrid_path_level_with_provider(
+                    &provider,
+                    &backend,
+                    &context,
+                    &ciphertext,
+                    &nonrecipient,
+                ),
+                Err(HybridPathLevelError::RecipientNotFound)
+            ),
+            "a recipient outside the mapped sibling resolution must not open this parent"
+        );
+
+        let authorized_private = HybridPathRecipientPrivate::new(
+            RecipientNodeIndex::new(4),
+            authorized_private,
+            authorized_classical_private,
+        );
+        assert_eq!(
+            open_hybrid_path_level_with_provider(
+                &provider,
+                &backend,
+                &context,
+                &ciphertext,
+                &authorized_private,
+            )
+            .expect("mapped sibling recipient opens its parent")
+            .as_bytes(),
+            path_secret.as_bytes()
+        );
     }
 
     #[test]
