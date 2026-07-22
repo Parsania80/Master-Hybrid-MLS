@@ -15,7 +15,7 @@ use crate::{
         node::{
             encryption_keys::EncryptionKeyPair,
             leaf_node::{Capabilities, LeafNodeParameters, UpdateLeafNodeParams},
-            parent_node::PlainUpdatePathNode,
+            parent_node::{ExperimentalQuaternaryParentPosition, PlainUpdatePathNode},
         },
         treekem::UpdatePath,
     },
@@ -43,7 +43,7 @@ pub(crate) struct PathComputationResult {
     /// Matched private material for the feature-gated quaternary root. It is
     /// persisted in `GroupEpochSecrets`, not the binary TreeKEM key list.
     #[cfg(feature = "experimental-hybrid")]
-    pub(crate) experimental_quaternary_root_keypair: Option<EncryptionKeyPair>,
+    pub(crate) experimental_quaternary_parent_keypairs: Vec<EncryptionKeyPair>,
 }
 
 impl PublicGroupDiff<'_> {
@@ -147,7 +147,7 @@ impl PublicGroupDiff<'_> {
             .clone();
         let mut encrypted_path = UpdatePath::new(leaf_node, encrypted_path);
         #[cfg(feature = "experimental-hybrid")]
-        let mut experimental_quaternary_root_keypair = None;
+        let mut experimental_quaternary_parent_keypairs = Vec::new();
 
         #[cfg(feature = "experimental-hybrid")]
         if let Some(extension) = self
@@ -167,27 +167,41 @@ impl PublicGroupDiff<'_> {
                         LibraryError::custom("experimental quaternary sender lacks mKyber leaf key")
                     })?
                     .domain();
-                let recipient_leaf_keys = self
-                    .full_leaf_encryption_keys()
-                    .into_iter()
-                    .filter(|(recipient_leaf_index, _)| *recipient_leaf_index != leaf_index)
-                    .map(|(recipient_leaf_index, key)| (recipient_leaf_index.u32(), key))
-                    .collect::<Vec<_>>();
+                let delivery_plan = self.experimental_quaternary_delivery_plan(
+                    leaf_index,
+                    leaf_index,
+                    &arity_state,
+                )?;
                 let root_path = plain_path.last().ok_or_else(|| {
                     LibraryError::custom(
                         "experimental quaternary authority requires a non-empty MLS UpdatePath",
                     )
                 })?;
-                let (parent_path, root_keypair) = root_path.encrypt_experimental_quaternary_root(
-                    crypto,
-                    ciphersuite,
-                    &recipient_leaf_keys,
-                    &serialized_group_context,
-                    arity_state.tree_version(),
-                    domain,
-                )?;
-                encrypted_path.set_experimental_quaternary_parent_path(parent_path);
-                experimental_quaternary_root_keypair = Some(root_keypair);
+                let mut parent_paths = Vec::with_capacity(delivery_plan.parent_nodes.len());
+                for parent in delivery_plan.parent_nodes {
+                    let (parent_path, parent_keypair) = root_path
+                        .encrypt_experimental_quaternary_parent(
+                            crypto,
+                            ciphersuite,
+                            &delivery_plan.recipients,
+                            &serialized_group_context,
+                            ExperimentalQuaternaryParentPosition {
+                                tree_version: arity_state.tree_version(),
+                                depth: parent.depth,
+                                ordinal: parent.ordinal,
+                                domain,
+                            },
+                        )?;
+                    parent_paths.push(parent_path);
+                    experimental_quaternary_parent_keypairs.push(parent_keypair);
+                }
+                if parent_paths.is_empty() {
+                    return Err(LibraryError::custom(
+                        "experimental quaternary authority requires a non-empty parent path",
+                    )
+                    .into());
+                }
+                encrypted_path.set_experimental_quaternary_parent_paths(parent_paths);
             }
         }
         Ok(PathComputationResult {
@@ -196,7 +210,7 @@ impl PublicGroupDiff<'_> {
             plain_path: Some(plain_path),
             new_keypairs,
             #[cfg(feature = "experimental-hybrid")]
-            experimental_quaternary_root_keypair,
+            experimental_quaternary_parent_keypairs,
         })
     }
 }

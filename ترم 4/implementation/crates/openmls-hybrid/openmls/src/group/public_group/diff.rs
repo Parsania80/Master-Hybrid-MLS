@@ -2,6 +2,8 @@
 //!
 //! This module contains the [`PublicGroupDiff`] struct, as well as the
 //! [`StagedPublicGroupDiff`] and associated functions and types.
+#[cfg(feature = "experimental-hybrid")]
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 
 use openmls_traits::crypto::OpenMlsCrypto;
@@ -34,10 +36,23 @@ use crate::{
     },
 };
 #[cfg(feature = "experimental-hybrid")]
-use arity_state::{ArityLifecycle, ArityState};
+use adaptive_tree::{BinaryLeafMember, QuaternaryNode};
+#[cfg(feature = "experimental-hybrid")]
+use arity_state::{hash_canonical_public_bytes, ArityLifecycle, ArityState};
+#[cfg(feature = "experimental-hybrid")]
+use transition_tree::ActiveQuaternaryTree;
 
 pub(crate) mod apply_proposals;
 pub(crate) mod compute_path;
+
+/// The authenticated mapping-derived quaternary delivery coordinates for one
+/// MLS UpdatePath sender and receiver.
+#[cfg(feature = "experimental-hybrid")]
+pub(crate) struct ExperimentalQuaternaryDeliveryPlan {
+    pub(crate) parent_nodes: Vec<QuaternaryNode>,
+    pub(crate) recipient_leaf_ordinal: u32,
+    pub(crate) recipients: Vec<(u32, EncryptionKey)>,
+}
 
 pub(crate) struct PublicGroupDiff<'a> {
     diff: TreeSyncDiff<'a>,
@@ -134,16 +149,10 @@ impl<'a> PublicGroupDiff<'a> {
         sender_leaf_index: LeafNodeIndex,
         update_path: &UpdatePath,
         exclusion_list: &HashSet<&LeafNodeIndex>,
-    ) -> Result<
-        (
-            Vec<EncryptionKeyPair>,
-            CommitSecret,
-            Option<EncryptionKeyPair>,
-        ),
-        ApplyUpdatePathError,
-    > {
+    ) -> Result<(Vec<EncryptionKeyPair>, CommitSecret, Vec<EncryptionKeyPair>), ApplyUpdatePathError>
+    {
         #[cfg(feature = "experimental-hybrid")]
-        let expected_quaternary_tree_version = self
+        let expected_quaternary_delivery_plan = self
             .group_context()
             .extensions()
             .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
@@ -153,10 +162,17 @@ impl<'a> PublicGroupDiff<'a> {
                         "invalid authenticated experimental ArityState",
                     ))
                 })?;
-                Ok::<Option<u32>, ApplyUpdatePathError>(
-                    matches!(state.lifecycle(), ArityLifecycle::Transitioning(_))
-                        .then_some(state.tree_version()),
-                )
+                if matches!(state.lifecycle(), ArityLifecycle::Transitioning(_)) {
+                    self.experimental_quaternary_delivery_plan(
+                        sender_leaf_index,
+                        own_leaf_index,
+                        &state,
+                    )
+                    .map(Some)
+                    .map_err(ApplyUpdatePathError::LibraryError)
+                } else {
+                    Ok(None)
+                }
             })
             .transpose()?
             .flatten();
@@ -166,9 +182,32 @@ impl<'a> PublicGroupDiff<'a> {
             #[cfg(feature = "experimental-hybrid")]
             sender_leaf_capabilities: update_path.leaf_node().capabilities(),
             #[cfg(feature = "experimental-hybrid")]
-            experimental_quaternary_parent_path: update_path.experimental_quaternary_parent_path(),
+            experimental_quaternary_parent_paths: update_path
+                .experimental_quaternary_parent_paths(),
             #[cfg(feature = "experimental-hybrid")]
-            expected_quaternary_tree_version,
+            expected_quaternary_tree_version: expected_quaternary_delivery_plan
+                .as_ref()
+                .map(|_| self.group_context().extensions())
+                .and_then(|extensions| {
+                    extensions.unknown(
+                        crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE,
+                    )
+                })
+                .and_then(|extension| ArityState::from_extension_value(&extension.0).ok())
+                .map(|state| state.tree_version()),
+            #[cfg(feature = "experimental-hybrid")]
+            expected_quaternary_parent_nodes: expected_quaternary_delivery_plan.as_ref().map(
+                |plan| {
+                    plan.parent_nodes
+                        .iter()
+                        .map(|node| (node.depth, node.ordinal))
+                        .collect()
+                },
+            ),
+            #[cfg(feature = "experimental-hybrid")]
+            recipient_quaternary_leaf_ordinal: expected_quaternary_delivery_plan
+                .as_ref()
+                .map(|plan| plan.recipient_leaf_ordinal),
             sender_leaf_index,
             exclusion_list,
             group_context: &self
@@ -190,11 +229,88 @@ impl<'a> PublicGroupDiff<'a> {
         self.diff.leaf(index)
     }
 
-    /// Returns the prospective occupied MLS leaves for the feature-gated
-    /// quaternary-root delivery.
+    /// Derives the sender path and receiver address exclusively from the
+    /// authenticated transitioning membership mapping.
     #[cfg(feature = "experimental-hybrid")]
-    pub(crate) fn full_leaf_encryption_keys(&self) -> Vec<(LeafNodeIndex, EncryptionKey)> {
-        self.diff.full_leaf_encryption_keys()
+    pub(crate) fn experimental_quaternary_delivery_plan(
+        &self,
+        sender_leaf_index: LeafNodeIndex,
+        recipient_leaf_index: LeafNodeIndex,
+        state: &ArityState,
+    ) -> Result<ExperimentalQuaternaryDeliveryPlan, LibraryError> {
+        let ArityLifecycle::Transitioning(transitioning) = state.lifecycle() else {
+            return Err(LibraryError::custom(
+                "experimental quaternary delivery requires transitioning ArityState",
+            ));
+        };
+        let mut member_ids = BTreeMap::new();
+        let mut leaf_keys = BTreeMap::new();
+        for (leaf_index, member_id, encryption_key) in self.diff.full_leaf_member_records() {
+            member_ids.insert(leaf_index.u32(), member_id);
+            leaf_keys.insert(leaf_index.u32(), encryption_key);
+        }
+        let mapping = adaptive_tree::BinaryToQuaternaryLeafMapping::from_binary_members(
+            member_ids
+                .iter()
+                .map(|(binary_leaf_index, member_id)| BinaryLeafMember {
+                    member_id: member_id.clone(),
+                    binary_leaf_index: *binary_leaf_index,
+                })
+                .collect(),
+        )
+        .map_err(|_| LibraryError::custom("invalid experimental quaternary member mapping"))?;
+        let mapping_bytes = mapping
+            .canonical_bytes()
+            .map_err(|_| LibraryError::custom("experimental quaternary mapping encoding failed"))?;
+        if hash_canonical_public_bytes(&mapping_bytes) != *transitioning.mapping_hash().as_bytes() {
+            return Err(LibraryError::custom(
+                "experimental quaternary mapping does not match authenticated ArityState",
+            ));
+        }
+        let tree = ActiveQuaternaryTree::from_mapping(state.tree_version(), mapping.clone())
+            .map_err(|_| {
+                LibraryError::custom("experimental quaternary topology derivation failed")
+            })?;
+        let sender_member_id = member_ids.get(&sender_leaf_index.u32()).ok_or_else(|| {
+            LibraryError::custom("experimental quaternary sender is absent from mapping")
+        })?;
+        let recipient_assignment = mapping
+            .assignments
+            .iter()
+            .find(|assignment| assignment.binary_leaf_index == recipient_leaf_index.u32())
+            .ok_or_else(|| {
+                LibraryError::custom("experimental quaternary recipient is absent from mapping")
+            })?;
+        let parent_nodes = tree
+            .topology()
+            .nodes_for_member(sender_member_id)
+            .map_err(|_| {
+                LibraryError::custom("experimental quaternary sender path derivation failed")
+            })?
+            .into_iter()
+            .take(usize::from(tree.topology().height()))
+            .collect();
+        let recipients = mapping
+            .assignments
+            .iter()
+            .filter(|assignment| assignment.binary_leaf_index != sender_leaf_index.u32())
+            .map(|assignment| {
+                leaf_keys
+                    .get(&assignment.binary_leaf_index)
+                    .cloned()
+                    .map(|key| (assignment.quaternary_leaf_ordinal, key))
+                    .ok_or_else(|| {
+                        LibraryError::custom(
+                            "experimental quaternary recipient has no MLS leaf key",
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, LibraryError>>()?;
+        Ok(ExperimentalQuaternaryDeliveryPlan {
+            parent_nodes,
+            recipient_leaf_ordinal: recipient_assignment.quaternary_leaf_ordinal,
+            recipients,
+        })
     }
 
     /// Set the given path as the direct path of the `sender_leaf_index` and

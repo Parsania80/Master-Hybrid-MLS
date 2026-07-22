@@ -204,18 +204,21 @@ impl TreeSyncDiff<'_> {
         self.diff.leaf_count()
     }
 
-    /// Returns the authenticated encryption keys of all occupied MLS leaves
-    /// in the prospective tree. The experimental quaternary-root delivery is
-    /// addressed to leaf indices so every non-committer can independently
-    /// open and verify the same root-parent secret.
+    /// Returns public member identity and encryption material for every
+    /// occupied prospective leaf, used solely to rebuild the authenticated
+    /// binary-to-quaternary mapping and delivery plan.
     #[cfg(feature = "experimental-hybrid")]
-    pub(crate) fn full_leaf_encryption_keys(&self) -> Vec<(LeafNodeIndex, EncryptionKey)> {
+    pub(crate) fn full_leaf_member_records(&self) -> Vec<(LeafNodeIndex, Vec<u8>, EncryptionKey)> {
         self.diff
             .leaves()
             .filter_map(|(leaf_index, leaf)| {
-                leaf.node()
-                    .as_ref()
-                    .map(|leaf| (leaf_index, leaf.encryption_key().clone()))
+                leaf.node().as_ref().map(|leaf| {
+                    (
+                        leaf_index,
+                        leaf.credential().serialized_content().to_vec(),
+                        leaf.encryption_key().clone(),
+                    )
+                })
             })
             .collect()
     }

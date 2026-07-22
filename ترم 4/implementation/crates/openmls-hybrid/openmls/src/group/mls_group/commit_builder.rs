@@ -882,13 +882,9 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
                     diff.group_context().epoch().as_u64(),
                     &arity_state,
                     path_computation_result
-                        .experimental_quaternary_root_keypair
-                        .take()
-                        .ok_or_else(|| {
-                            LibraryError::custom(
-                                "experimental quaternary authority requires a root key pair",
-                            )
-                        })?,
+                        .experimental_quaternary_parent_keypairs
+                        .drain(..)
+                        .collect::<Vec<_>>(),
                 )?;
             }
         }

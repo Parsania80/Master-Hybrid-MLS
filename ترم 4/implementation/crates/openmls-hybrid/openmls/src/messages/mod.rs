@@ -414,7 +414,7 @@ impl PathSecret {
         parent_depth: u8,
         parent_ordinal: u32,
     ) -> Result<EncryptionKeyPair, LibraryError> {
-        if tree_version == 0 || parent_depth != 0 || parent_ordinal != 0 {
+        if tree_version == 0 || parent_ordinal > 0x00ff_ffff {
             return Err(LibraryError::custom(
                 "unsupported experimental quaternary parent position",
             ));
@@ -458,6 +458,42 @@ impl PathSecret {
             })?;
         EncryptionKeyPair::from((HpkePublicKey::from(public), private))
             .with_experimental_mkyber_keypair(mkyber_keypair)
+    }
+
+    /// Derives a non-root quaternary parent secret from the binary root secret.
+    /// The root itself deliberately reuses the binary root source secret so
+    /// receivers can bind it directly to the ordinary MLS UpdatePath.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn derive_experimental_quaternary_parent_secret(
+        &self,
+        crypto: &impl OpenMlsCrypto,
+        ciphersuite: Ciphersuite,
+        domain: mkyber::MkyberDomain,
+        tree_version: u32,
+        parent_depth: u8,
+        parent_ordinal: u32,
+    ) -> Result<Self, LibraryError> {
+        if tree_version == 0 || parent_depth == 0 || parent_ordinal > 0x00ff_ffff {
+            return Err(LibraryError::custom(
+                "invalid experimental quaternary non-root parent position",
+            ));
+        }
+        let mut context = Vec::with_capacity(41);
+        context.extend_from_slice(domain.as_bytes());
+        context.extend_from_slice(&tree_version.to_be_bytes());
+        context.push(parent_depth);
+        context.extend_from_slice(&parent_ordinal.to_be_bytes());
+        let path_secret = self
+            .path_secret
+            .kdf_expand_label(
+                crypto,
+                ciphersuite,
+                "quaternary TreeKEM path",
+                &context,
+                ciphersuite.hash_length(),
+            )
+            .map_err(LibraryError::unexpected_crypto_error)?;
+        Ok(Self { path_secret })
     }
 
     /// Derives a path secret.

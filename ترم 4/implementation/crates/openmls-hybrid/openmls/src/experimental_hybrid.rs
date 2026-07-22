@@ -501,11 +501,7 @@ pub(crate) fn quaternary_hybrid_context(
     parent_ordinal: u32,
     domain: MkyberDomain,
 ) -> Result<hybrid_path_secret::HybridPathLevelContext, LibraryError> {
-    if tree_version == 0 || parent_depth != 0 || parent_ordinal != 0 {
-        return Err(LibraryError::custom(
-            "unsupported experimental quaternary parent position",
-        ));
-    }
+    let parent_node_index = quaternary_parent_node_index(parent_depth, parent_ordinal)?;
     if ciphersuite != Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 {
         return Err(LibraryError::custom(
             "unsupported experimental hybrid ciphersuite",
@@ -529,10 +525,26 @@ pub(crate) fn quaternary_hybrid_context(
         group_context.epoch().as_u64(),
         tree_version,
         hybrid_path_secret::TreeArity::Quaternary,
-        hybrid_path_secret::PathNodeIndex::new(parent_ordinal),
+        hybrid_path_secret::PathNodeIndex::new(parent_node_index),
         domain,
         group_context_hash,
     ))
+}
+
+/// Encodes an unambiguous quaternary parent address for the hybrid delivery
+/// context and canonical ciphertext. The root is `(0, 0) -> 0`; no parent
+/// ordinal can occupy the high eight depth bits.
+#[cfg(feature = "experimental-hybrid")]
+pub(crate) fn quaternary_parent_node_index(
+    parent_depth: u8,
+    parent_ordinal: u32,
+) -> Result<u32, LibraryError> {
+    if parent_ordinal > 0x00ff_ffff {
+        return Err(LibraryError::custom(
+            "experimental quaternary parent ordinal exceeds wire range",
+        ));
+    }
+    Ok((u32::from(parent_depth) << 24) | parent_ordinal)
 }
 
 impl ClassicalHpkeProvider for ForkClassicalHpkeProvider {

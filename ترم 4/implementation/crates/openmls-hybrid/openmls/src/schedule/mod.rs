@@ -1318,7 +1318,7 @@ impl GroupEpochSecrets {
         serialized_group_context: &[u8],
         epoch: u64,
         state: &arity_state::ArityState,
-        root_keypair: EncryptionKeyPair,
+        mut parent_keypairs: Vec<EncryptionKeyPair>,
     ) -> Result<(), LibraryError> {
         state
             .validate()
@@ -1338,6 +1338,9 @@ impl GroupEpochSecrets {
                 "experimental quaternary authority precedes its transition epoch",
             ));
         }
+        let root_keypair = parent_keypairs.first().ok_or_else(|| {
+            LibraryError::custom("experimental quaternary authority requires parent key pairs")
+        })?;
         let public_mkyber_key = root_keypair
             .public_key()
             .experimental_mkyber_key()
@@ -1382,8 +1385,9 @@ impl GroupEpochSecrets {
             tree_version: state.tree_version(),
             mapping_hash: *transitioning.mapping_hash().as_bytes(),
             secret: Secret::from_slice(&secret),
-            root_keypair: Some(root_keypair),
+            root_keypair: Some(parent_keypairs.remove(0)),
             root_public_key_hash,
+            additional_parent_keypairs: parent_keypairs,
         });
         Ok(())
     }
@@ -1438,6 +1442,33 @@ impl GroupEpochSecrets {
                 "persisted experimental quaternary root mKyber domains do not match",
             ));
         }
+        for parent_keypair in &authority.additional_parent_keypairs {
+            let public_mkyber_key = parent_keypair
+                .public_key()
+                .experimental_mkyber_key()
+                .ok_or_else(|| {
+                    LibraryError::custom(
+                        "persisted experimental quaternary parent lacks mKyber public key",
+                    )
+                })?;
+            let private_mkyber_key = parent_keypair
+                .experimental_mkyber_private_key()
+                .map_err(|_| {
+                    LibraryError::custom(
+                        "persisted experimental quaternary parent has invalid mKyber private key",
+                    )
+                })?
+                .ok_or_else(|| {
+                    LibraryError::custom(
+                        "persisted experimental quaternary parent lacks mKyber private key",
+                    )
+                })?;
+            if private_mkyber_key.domain() != public_mkyber_key.domain() {
+                return Err(LibraryError::custom(
+                    "persisted experimental quaternary parent mKyber domains do not match",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -1450,6 +1481,7 @@ pub struct ExperimentalQuaternaryEpochSecretStatus {
     tree_version: u32,
     mapping_hash: [u8; 32],
     root_public_key_hash: [u8; 32],
+    parent_key_count: u32,
 }
 
 #[cfg(feature = "experimental-hybrid")]
@@ -1473,6 +1505,11 @@ impl ExperimentalQuaternaryEpochSecretStatus {
     pub const fn root_public_key_hash(&self) -> &[u8; 32] {
         &self.root_public_key_hash
     }
+
+    /// Returns the number of persisted quaternary parent private pairs.
+    pub const fn parent_key_count(&self) -> u32 {
+        self.parent_key_count
+    }
 }
 
 #[cfg(feature = "experimental-hybrid")]
@@ -1487,6 +1524,8 @@ struct ExperimentalQuaternaryEpochSecret {
     root_keypair: Option<EncryptionKeyPair>,
     #[serde(default)]
     root_public_key_hash: [u8; 32],
+    #[serde(default)]
+    additional_parent_keypairs: Vec<EncryptionKeyPair>,
 }
 
 #[cfg(feature = "experimental-hybrid")]
@@ -1504,6 +1543,7 @@ impl ExperimentalQuaternaryEpochSecret {
             tree_version: self.tree_version,
             mapping_hash: self.mapping_hash,
             root_public_key_hash: self.root_public_key_hash,
+            parent_key_count: 1 + self.additional_parent_keypairs.len() as u32,
         }
     }
 }

@@ -12,8 +12,8 @@ use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize, VLBy
 use super::encryption_keys::{EncryptionKey, EncryptionKeyPair};
 #[cfg(feature = "experimental-hybrid")]
 use crate::experimental_hybrid::{
-    binary_hybrid_context, quaternary_hybrid_context, ExperimentalHybridPathDelivery,
-    ForkClassicalHpkeProvider,
+    binary_hybrid_context, quaternary_hybrid_context, quaternary_parent_node_index,
+    ExperimentalHybridPathDelivery, ForkClassicalHpkeProvider,
 };
 use crate::{
     binary_tree::array_representation::{LeafNodeIndex, ParentNodeIndex},
@@ -71,6 +71,17 @@ pub(crate) struct PlainUpdatePathNode {
     node_index: u32,
     public_key: EncryptionKey,
     path_secret: PathSecret,
+}
+
+/// Authenticated coordinates and mKyber domain for one experimental
+/// quaternary parent-path record.
+#[cfg(feature = "experimental-hybrid")]
+#[derive(Clone, Copy)]
+pub(crate) struct ExperimentalQuaternaryParentPosition {
+    pub(crate) tree_version: u32,
+    pub(crate) depth: u8,
+    pub(crate) ordinal: u32,
+    pub(crate) domain: mkyber::MkyberDomain,
 }
 
 impl PlainUpdatePathNode {
@@ -173,43 +184,56 @@ impl PlainUpdatePathNode {
             })
     }
 
-    /// Encrypts the authenticated experimental quaternary root-parent secret
+    /// Encrypts one authenticated experimental quaternary parent secret
     /// to every non-committer MLS leaf. The payload is intentionally a
     /// feature-gated UpdatePath field, so the enclosing Commit signature
     /// authenticates both the public parent key and recipient ciphertext.
     #[cfg(feature = "experimental-hybrid")]
-    pub(crate) fn encrypt_experimental_quaternary_root(
+    pub(crate) fn encrypt_experimental_quaternary_parent(
         &self,
         crypto: &impl OpenMlsCrypto,
         ciphersuite: Ciphersuite,
         recipient_leaf_keys: &[(u32, EncryptionKey)],
         group_context: &[u8],
-        tree_version: u32,
-        domain: mkyber::MkyberDomain,
+        position: ExperimentalQuaternaryParentPosition,
     ) -> Result<(ExperimentalQuaternaryParentPath, EncryptionKeyPair), LibraryError> {
         if recipient_leaf_keys.is_empty() {
             return Err(LibraryError::custom(
-                "experimental quaternary root has no recipient leaves",
+                "experimental quaternary parent has no recipient leaves",
             ));
         }
-        let parent_keypair = self
-            .path_secret
-            .derive_experimental_quaternary_parent_keypair(
-                crypto,
-                ciphersuite,
-                domain,
-                tree_version,
-                0,
-                0,
-            )?;
+        let parent_path_secret = if position.depth == 0 && position.ordinal == 0 {
+            None
+        } else {
+            Some(
+                self.path_secret
+                    .derive_experimental_quaternary_parent_secret(
+                        crypto,
+                        ciphersuite,
+                        position.domain,
+                        position.tree_version,
+                        position.depth,
+                        position.ordinal,
+                    )?,
+            )
+        };
+        let parent_secret_source = parent_path_secret.as_ref().unwrap_or(&self.path_secret);
+        let parent_keypair = parent_secret_source.derive_experimental_quaternary_parent_keypair(
+            crypto,
+            ciphersuite,
+            position.domain,
+            position.tree_version,
+            position.depth,
+            position.ordinal,
+        )?;
         let context = quaternary_hybrid_context(
             crypto,
             ciphersuite,
             group_context,
-            tree_version,
-            0,
-            0,
-            domain,
+            position.tree_version,
+            position.depth,
+            position.ordinal,
+            position.domain,
         )?;
         let recipients = recipient_leaf_keys
             .iter()
@@ -234,7 +258,7 @@ impl PlainUpdatePathNode {
                 ))
             })
             .collect::<Result<Vec<_>, LibraryError>>()?;
-        let path_secret = HybridPathSecret::from_bytes(self.path_secret.path_secret.as_slice())
+        let path_secret = HybridPathSecret::from_bytes(parent_secret_source.path_secret.as_slice())
             .map_err(|_| {
                 LibraryError::custom("invalid experimental quaternary path secret length")
             })?;
@@ -251,16 +275,16 @@ impl PlainUpdatePathNode {
             LibraryError::custom("experimental quaternary UpdatePath encryption failed")
         })?;
         let delivery = ExperimentalHybridPathDelivery::from_canonical_bytes(
-            0,
+            quaternary_parent_node_index(position.depth, position.ordinal)?,
             ciphertext.commit_authenticated_bytes().map_err(|_| {
                 LibraryError::custom("experimental quaternary UpdatePath encoding failed")
             })?,
         )
         .map_err(|_| LibraryError::custom("invalid experimental quaternary UpdatePath delivery"))?;
         let parent_path = ExperimentalQuaternaryParentPath::new(
-            tree_version,
-            0,
-            0,
+            position.tree_version,
+            position.depth,
+            position.ordinal,
             parent_keypair.public_key().clone(),
             delivery.canonical_bytes().to_vec(),
         );

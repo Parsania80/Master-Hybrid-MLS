@@ -1392,9 +1392,9 @@ mod tests {
     }
 
     #[test]
-    fn experimental_atomic_binary_commit_converges_three_members_and_reloads() {
+    fn mapped_quaternary_parent_delivery_converges_three_members_and_reloads() {
         let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
-            experimental_binary_pair();
+            experimental_binary_pair_with_policy_controls(3, 0);
         let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
         let domain = MkyberDomain::new([0x91; 32]);
         let charlie_provider = OpenMlsRustCrypto::default();
@@ -1453,6 +1453,38 @@ mod tests {
         .into_group(&charlie_provider)
         .expect("Charlie joins");
 
+        let transition_state = triggered_transition_state(&alice);
+        let (transition_commit, _, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, transition_state)
+            .expect("Alice stages mapped transition");
+        let transition_wire = transition_commit
+            .tls_serialize_detached()
+            .expect("mapped transition serialization");
+        let bob_transition = staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+        let charlie_transition =
+            staged_commit_from_wire(&mut charlie, &charlie_provider, &transition_wire);
+        bob.merge_staged_commit_experimental_transition_atomic(&bob_provider, bob_transition)
+            .expect("Bob atomically merges mapped transition");
+        charlie
+            .merge_staged_commit_experimental_transition_atomic(
+                &charlie_provider,
+                charlie_transition,
+            )
+            .expect("Charlie atomically merges mapped transition");
+        alice
+            .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+            .expect("Alice atomically merges mapped transition");
+        for group in [&alice, &bob, &charlie] {
+            assert_eq!(
+                group
+                    .experimental_quaternary_epoch_secret_status()
+                    .expect("mapped transition authority")
+                    .parent_key_count(),
+                1,
+                "three members occupy one quaternary root parent"
+            );
+        }
+
         let update_wire = hybrid_self_update_wire(
             &mut bob,
             &bob_provider,
@@ -1462,12 +1494,12 @@ mod tests {
         let alice_staged = staged_commit_from_wire(&mut alice, &alice_provider, &update_wire);
         let charlie_staged = staged_commit_from_wire(&mut charlie, &charlie_provider, &update_wire);
         alice
-            .merge_staged_commit_experimental_atomic(&alice_provider, alice_staged)
+            .merge_staged_commit_experimental_quaternary_atomic(&alice_provider, alice_staged)
             .expect("Alice atomically merges Bob update");
         charlie
-            .merge_staged_commit_experimental_atomic(&charlie_provider, charlie_staged)
+            .merge_staged_commit_experimental_quaternary_atomic(&charlie_provider, charlie_staged)
             .expect("Charlie atomically merges Bob update");
-        bob.merge_pending_commit_experimental_atomic(&bob_provider)
+        bob.merge_pending_commit_experimental_quaternary_atomic(&bob_provider)
             .expect("Bob atomically merges own update");
 
         assert_eq!(alice.epoch(), bob.epoch());
@@ -1476,6 +1508,15 @@ mod tests {
         assert_eq!(bob.export_ratchet_tree(), charlie.export_ratchet_tree());
         assert_eq!(alice.extensions(), bob.extensions());
         assert_eq!(bob.extensions(), charlie.extensions());
+        for group in [&alice, &bob, &charlie] {
+            assert_eq!(
+                group
+                    .experimental_quaternary_epoch_secret_status()
+                    .expect("mapped parent authority")
+                    .parent_key_count(),
+                1,
+            );
+        }
 
         for (provider, group) in [
             (&alice_provider, &alice),
@@ -1488,6 +1529,241 @@ mod tests {
             assert_eq!(reloaded.epoch(), group.epoch());
             assert_eq!(reloaded.export_ratchet_tree(), group.export_ratchet_tree());
             assert_eq!(reloaded.extensions(), group.extensions());
+        }
+    }
+
+    #[test]
+    fn mapped_quaternary_parent_path_delivers_root_and_child_for_five_members() {
+        let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair_with_policy_controls(5, 0);
+        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+        let domain = MkyberDomain::new([0x91; 32]);
+
+        let charlie_provider = OpenMlsRustCrypto::default();
+        let charlie_signer =
+            SignatureKeyPair::new(ciphersuite.signature_algorithm()).expect("Charlie signer");
+        let charlie_bundle = KeyPackage::builder()
+            .build_with_experimental_mkyber(
+                ciphersuite,
+                &charlie_provider,
+                &charlie_signer,
+                CredentialWithKey {
+                    credential: BasicCredential::new(b"experimental-charlie".to_vec()).into(),
+                    signature_key: charlie_signer.public().into(),
+                },
+                domain,
+            )
+            .expect("Charlie experimental KeyPackage");
+        let (charlie_add, charlie_welcome, _) = alice
+            .add_members(
+                &alice_provider,
+                &alice_signer,
+                core::slice::from_ref(charlie_bundle.key_package()),
+            )
+            .expect("Alice adds Charlie");
+        let charlie_add_wire = charlie_add
+            .tls_serialize_detached()
+            .expect("Charlie add wire");
+        let bob_charlie_add = staged_commit_from_wire(&mut bob, &bob_provider, &charlie_add_wire);
+        alice
+            .merge_pending_commit_experimental_atomic(&alice_provider)
+            .expect("Alice merges Charlie add");
+        bob.merge_staged_commit_experimental_atomic(&bob_provider, bob_charlie_add)
+            .expect("Bob merges Charlie add");
+        let mut charlie = StagedWelcome::new_from_welcome(
+            &charlie_provider,
+            &MlsGroupJoinConfig::builder()
+                .use_ratchet_tree_extension(true)
+                .build(),
+            match MlsMessageIn::tls_deserialize_exact(
+                charlie_welcome
+                    .tls_serialize_detached()
+                    .expect("Charlie Welcome wire"),
+            )
+            .expect("Charlie Welcome parsing")
+            .extract()
+            {
+                MlsMessageBodyIn::Welcome(welcome) => welcome,
+                _ => panic!("expected Charlie Welcome"),
+            },
+            None,
+        )
+        .expect("Charlie staged Welcome")
+        .into_group(&charlie_provider)
+        .expect("Charlie joins");
+
+        let dave_provider = OpenMlsRustCrypto::default();
+        let dave_signer =
+            SignatureKeyPair::new(ciphersuite.signature_algorithm()).expect("Dave signer");
+        let dave_bundle = KeyPackage::builder()
+            .build_with_experimental_mkyber(
+                ciphersuite,
+                &dave_provider,
+                &dave_signer,
+                CredentialWithKey {
+                    credential: BasicCredential::new(b"experimental-dave".to_vec()).into(),
+                    signature_key: dave_signer.public().into(),
+                },
+                domain,
+            )
+            .expect("Dave experimental KeyPackage");
+        let (dave_add, dave_welcome, _) = alice
+            .add_members(
+                &alice_provider,
+                &alice_signer,
+                core::slice::from_ref(dave_bundle.key_package()),
+            )
+            .expect("Alice adds Dave");
+        let dave_add_wire = dave_add.tls_serialize_detached().expect("Dave add wire");
+        let bob_dave_add = staged_commit_from_wire(&mut bob, &bob_provider, &dave_add_wire);
+        let charlie_dave_add =
+            staged_commit_from_wire(&mut charlie, &charlie_provider, &dave_add_wire);
+        alice
+            .merge_pending_commit_experimental_atomic(&alice_provider)
+            .expect("Alice merges Dave add");
+        bob.merge_staged_commit_experimental_atomic(&bob_provider, bob_dave_add)
+            .expect("Bob merges Dave add");
+        charlie
+            .merge_staged_commit_experimental_atomic(&charlie_provider, charlie_dave_add)
+            .expect("Charlie merges Dave add");
+        let mut dave = StagedWelcome::new_from_welcome(
+            &dave_provider,
+            &MlsGroupJoinConfig::builder()
+                .use_ratchet_tree_extension(true)
+                .build(),
+            match MlsMessageIn::tls_deserialize_exact(
+                dave_welcome
+                    .tls_serialize_detached()
+                    .expect("Dave Welcome wire"),
+            )
+            .expect("Dave Welcome parsing")
+            .extract()
+            {
+                MlsMessageBodyIn::Welcome(welcome) => welcome,
+                _ => panic!("expected Dave Welcome"),
+            },
+            None,
+        )
+        .expect("Dave staged Welcome")
+        .into_group(&dave_provider)
+        .expect("Dave joins");
+
+        let eve_provider = OpenMlsRustCrypto::default();
+        let eve_signer =
+            SignatureKeyPair::new(ciphersuite.signature_algorithm()).expect("Eve signer");
+        let eve_bundle = KeyPackage::builder()
+            .build_with_experimental_mkyber(
+                ciphersuite,
+                &eve_provider,
+                &eve_signer,
+                CredentialWithKey {
+                    credential: BasicCredential::new(b"experimental-eve".to_vec()).into(),
+                    signature_key: eve_signer.public().into(),
+                },
+                domain,
+            )
+            .expect("Eve experimental KeyPackage");
+        let (eve_add, eve_welcome, _) = alice
+            .add_members(
+                &alice_provider,
+                &alice_signer,
+                core::slice::from_ref(eve_bundle.key_package()),
+            )
+            .expect("Alice adds Eve");
+        let eve_add_wire = eve_add.tls_serialize_detached().expect("Eve add wire");
+        let bob_eve_add = staged_commit_from_wire(&mut bob, &bob_provider, &eve_add_wire);
+        let charlie_eve_add =
+            staged_commit_from_wire(&mut charlie, &charlie_provider, &eve_add_wire);
+        let dave_eve_add = staged_commit_from_wire(&mut dave, &dave_provider, &eve_add_wire);
+        alice
+            .merge_pending_commit_experimental_atomic(&alice_provider)
+            .expect("Alice merges Eve add");
+        bob.merge_staged_commit_experimental_atomic(&bob_provider, bob_eve_add)
+            .expect("Bob merges Eve add");
+        charlie
+            .merge_staged_commit_experimental_atomic(&charlie_provider, charlie_eve_add)
+            .expect("Charlie merges Eve add");
+        dave.merge_staged_commit_experimental_atomic(&dave_provider, dave_eve_add)
+            .expect("Dave merges Eve add");
+        let mut eve = StagedWelcome::new_from_welcome(
+            &eve_provider,
+            &MlsGroupJoinConfig::builder()
+                .use_ratchet_tree_extension(true)
+                .build(),
+            match MlsMessageIn::tls_deserialize_exact(
+                eve_welcome
+                    .tls_serialize_detached()
+                    .expect("Eve Welcome wire"),
+            )
+            .expect("Eve Welcome parsing")
+            .extract()
+            {
+                MlsMessageBodyIn::Welcome(welcome) => welcome,
+                _ => panic!("expected Eve Welcome"),
+            },
+            None,
+        )
+        .expect("Eve staged Welcome")
+        .into_group(&eve_provider)
+        .expect("Eve joins");
+
+        let transition_state = triggered_transition_state(&alice);
+        let (transition_commit, _, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, transition_state)
+            .expect("Alice stages five-member transition");
+        let transition_wire = transition_commit
+            .tls_serialize_detached()
+            .expect("transition wire");
+        let bob_transition = staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+        let charlie_transition =
+            staged_commit_from_wire(&mut charlie, &charlie_provider, &transition_wire);
+        let dave_transition = staged_commit_from_wire(&mut dave, &dave_provider, &transition_wire);
+        let eve_transition = staged_commit_from_wire(&mut eve, &eve_provider, &transition_wire);
+        for (group, provider, staged) in [
+            (&mut bob, &bob_provider, bob_transition),
+            (&mut charlie, &charlie_provider, charlie_transition),
+            (&mut dave, &dave_provider, dave_transition),
+            (&mut eve, &eve_provider, eve_transition),
+        ] {
+            group
+                .merge_staged_commit_experimental_transition_atomic(provider, staged)
+                .expect("receiver merges five-member transition");
+        }
+        alice
+            .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+            .expect("Alice merges five-member transition");
+
+        let update_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        let alice_update = staged_commit_from_wire(&mut alice, &alice_provider, &update_wire);
+        let charlie_update = staged_commit_from_wire(&mut charlie, &charlie_provider, &update_wire);
+        let dave_update = staged_commit_from_wire(&mut dave, &dave_provider, &update_wire);
+        let eve_update = staged_commit_from_wire(&mut eve, &eve_provider, &update_wire);
+        for (group, provider, staged) in [
+            (&mut alice, &alice_provider, alice_update),
+            (&mut charlie, &charlie_provider, charlie_update),
+            (&mut dave, &dave_provider, dave_update),
+            (&mut eve, &eve_provider, eve_update),
+        ] {
+            group
+                .merge_staged_commit_experimental_quaternary_atomic(provider, staged)
+                .expect("receiver merges mapped root and child path");
+        }
+        bob.merge_pending_commit_experimental_quaternary_atomic(&bob_provider)
+            .expect("Bob merges mapped root and child path");
+        for group in [&alice, &bob, &charlie, &dave, &eve] {
+            assert_eq!(
+                group
+                    .experimental_quaternary_epoch_secret_status()
+                    .expect("five-member mapped authority")
+                    .parent_key_count(),
+                2,
+                "five members require root plus one depth-1 parent for Bob's mapped path"
+            );
         }
     }
 

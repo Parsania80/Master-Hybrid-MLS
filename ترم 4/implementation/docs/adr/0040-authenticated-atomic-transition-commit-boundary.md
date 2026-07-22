@@ -48,25 +48,27 @@ also derives an experimental quaternary authority from a later MLS epoch.
    rotates this authority. Sender and receiver derive the same redacted public
    status from the accepted candidate, and dedicated atomic APIs reject a
    missing, stale, or GroupContext/mapping/TreeCover-mismatched authority.
-9. Carry one feature-gated, fork-local quaternary **root** parent record inside
-   the authenticated MLS `UpdatePath`. The record contains its version,
-   adaptive tree version, `(depth=0, ordinal=0)`, matched public
-   classical/mKyber parent key, and canonical hybrid recipient delivery. The
-   record is covered by the surrounding Commit signature; it is explicitly not
-   an RFC MLS encoding.
-10. Derive the quaternary root pair from the ordinary binary root path secret
-    with separate classical and mKyber labels bound to domain, tree version,
-    depth, and ordinal. Deliver that root secret to every non-committer MLS
-    leaf through the quaternary GroupContext-bound hybrid context. Each
-    receiver opens it with its own matched leaf pair, derives the root pair,
-    compares its complete public key and secret with the MLS UpdatePath root,
-    and only then permits the existing atomic Commit merge.
-11. Store that matched root private pair in the candidate `GroupEpochSecrets`
-    envelope together with the quaternary epoch authority. The existing atomic
-    merge writes this envelope before replacing live state; each later epoch
-    replaces and drops the prior root pair. Public status retains only a hash
-    of its serialized public key, and reload validation reconstructs the
-    mKyber private key to confirm its domain matches the stored public key.
+9. Carry an ordered feature-gated, fork-local quaternary parent-path vector
+   inside the authenticated MLS `UpdatePath`. Each record contains version,
+   adaptive tree version, `(depth, ordinal)`, matched public classical/mKyber
+   parent key, and canonical hybrid recipient delivery. The vector is covered
+   by the surrounding Commit signature; it is explicitly not an RFC MLS
+   encoding.
+10. Rebuild the canonical mapping from the prospective authenticated MLS
+    leaves. It determines the sender's root-to-leaf quaternary parents and
+    each recipient's quaternary leaf ordinal. The receiver independently
+    rebuilds and requires the same ordered coordinates before opening delivery.
+11. Bind every parent to the complete GroupContext and a collision-free packed
+    depth/ordinal index. The root reuses the binary root source secret for its
+    direct equality check; each non-root parent derives a separate source
+    secret with label `quaternary TreeKEM path` bound to domain, version, and
+    position. Delivery currently reaches every non-sender leaf, not the final
+    minimal sibling resolution.
+12. Store every matched parent private pair in the candidate
+    `GroupEpochSecrets` envelope together with the quaternary epoch authority.
+    The existing atomic merge writes this envelope before replacing live state;
+    each later epoch replaces and drops the prior parent-path set. Public
+    status exposes only the root public-key digest and parent count.
 
 ## Failure Semantics
 
@@ -97,20 +99,18 @@ also derives an experimental quaternary authority from a later MLS epoch.
 - A subsequent real hybrid MLS self-update rotates the stored authority at both
   members; the public status converges and survives a storage reload.
 - The transition Commit and subsequent self-update both carry the authenticated
-  quaternary root-parent record; the receiver opens it and proves it agrees
-  with the normal MLS root path secret and complete derived parent key.
-- The transition root public-key digest changes on the next accepted UpdatePath
-  and the replacement digest survives a storage reload; validation confirms
-  the persisted mKyber private/public domain match without exposing it.
+  mapping-derived quaternary parent-path records; receivers open and prove
+  every position and derived public key, including root-secret equality.
+- Three members converge through the root-only mapped path; five members
+  converge through root plus a depth-1 parent, with both pairs persisted.
 - Locked/offline adapter tests cover the round trip and rejection boundary.
 
 ## Explicit Non-Claims and Remaining Work
 
-This decision now has an authenticated, receiver-validated **root-only**
-quaternary parent delivery and atomic root-pair lifecycle, while its MLS
-carrier and public TreeKEM remain binary. It does not yet populate every
-quaternary parent in `ActiveQuaternaryTree` or replace the MLS
-application/message key schedule. Task 60 remains current until those mapped
-parent paths, multi-member transition convergence, full rejection coverage,
-and transition-specific storage-fault coverage exist. No adaptive workload or
-three-mode measurement is available from this boundary.
+This decision now has authenticated, receiver-validated mapped parent-path
+delivery and atomic private-pair lifecycle, while its MLS carrier and public
+TreeKEM remain binary. It does not yet deliver only to exact quaternary sibling
+resolutions, cover all membership/path-shape rejection cases, or replace the
+MLS application/message key schedule. Task 60 remains current until those
+delivery, rejection, and storage-fault boundaries exist. No adaptive workload
+or three-mode measurement is available from this boundary.
