@@ -1236,6 +1236,8 @@ impl EpochSecrets {
                 epoch_authenticator: self.epoch_authenticator,
                 external_secret: self.external_secret,
                 resumption_psk: self.resumption_psk,
+                #[cfg(feature = "experimental-hybrid")]
+                experimental_quaternary_epoch_secret: None,
             },
             MessageSecrets::new(
                 self.sender_data_secret,
@@ -1256,6 +1258,9 @@ pub(crate) struct GroupEpochSecrets {
     epoch_authenticator: EpochAuthenticator,
     external_secret: ExternalSecret,
     resumption_psk: ResumptionPskSecret,
+    #[cfg(feature = "experimental-hybrid")]
+    #[serde(default)]
+    experimental_quaternary_epoch_secret: Option<ExperimentalQuaternaryEpochSecret>,
 }
 
 impl std::fmt::Debug for GroupEpochSecrets {
@@ -1295,5 +1300,124 @@ impl GroupEpochSecrets {
     /// External secret
     pub(crate) fn resumption_psk(&self) -> &ResumptionPskSecret {
         &self.resumption_psk
+    }
+
+    /// Derives and persists the fork-local quaternary authority for one
+    /// authenticated transitioning epoch.
+    ///
+    /// The authority is derived only from the newly established MLS exporter
+    /// secret and complete provisional GroupContext. An accepted MLS UpdatePath
+    /// must therefore advance the MLS epoch before this authority can rotate.
+    /// This method never exposes secret bytes.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn activate_experimental_quaternary_epoch_secret(
+        &mut self,
+        crypto: &impl OpenMlsCrypto,
+        ciphersuite: Ciphersuite,
+        serialized_group_context: &[u8],
+        epoch: u64,
+        state: &arity_state::ArityState,
+    ) -> Result<(), LibraryError> {
+        state
+            .validate()
+            .map_err(|_| LibraryError::custom("invalid experimental transition ArityState"))?;
+        if state.active_arity() != 4 || state.candidate_arity() != 4 || state.tree_version() == 0 {
+            return Err(LibraryError::custom(
+                "experimental quaternary authority requires active quaternary ArityState",
+            ));
+        }
+        let arity_state::ArityLifecycle::Transitioning(transitioning) = state.lifecycle() else {
+            return Err(LibraryError::custom(
+                "experimental quaternary authority requires transitioning ArityState",
+            ));
+        };
+        if transitioning.transition_epoch() > epoch {
+            return Err(LibraryError::custom(
+                "experimental quaternary authority precedes its transition epoch",
+            ));
+        }
+        let secret = self
+            .exporter_secret
+            .derive_exported_secret(
+                ciphersuite,
+                crypto,
+                "experimental quaternary epoch authority",
+                serialized_group_context,
+                ciphersuite.hash_length(),
+            )
+            .map_err(LibraryError::unexpected_crypto_error)?;
+        self.experimental_quaternary_epoch_secret = Some(ExperimentalQuaternaryEpochSecret {
+            epoch,
+            tree_version: state.tree_version(),
+            mapping_hash: *transitioning.mapping_hash().as_bytes(),
+            secret: Secret::from_slice(&secret),
+        });
+        Ok(())
+    }
+
+    /// Returns public metadata for the persisted experimental quaternary
+    /// authority without exposing secret bytes.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_quaternary_epoch_secret_status(
+        &self,
+    ) -> Option<ExperimentalQuaternaryEpochSecretStatus> {
+        self.experimental_quaternary_epoch_secret
+            .as_ref()
+            .map(ExperimentalQuaternaryEpochSecret::status)
+    }
+}
+
+/// Redacted public metadata for a persisted experimental quaternary authority.
+#[cfg(feature = "experimental-hybrid")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExperimentalQuaternaryEpochSecretStatus {
+    epoch: u64,
+    tree_version: u32,
+    mapping_hash: [u8; 32],
+}
+
+#[cfg(feature = "experimental-hybrid")]
+impl ExperimentalQuaternaryEpochSecretStatus {
+    /// Returns the MLS epoch that produced this authority.
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the authenticated active quaternary tree version.
+    pub const fn tree_version(&self) -> u32 {
+        self.tree_version
+    }
+
+    /// Returns the authenticated deterministic mapping digest.
+    pub const fn mapping_hash(&self) -> &[u8; 32] {
+        &self.mapping_hash
+    }
+}
+
+#[cfg(feature = "experimental-hybrid")]
+#[derive(Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "test-utils"), derive(Clone, PartialEq))]
+struct ExperimentalQuaternaryEpochSecret {
+    epoch: u64,
+    tree_version: u32,
+    mapping_hash: [u8; 32],
+    secret: Secret,
+}
+
+#[cfg(feature = "experimental-hybrid")]
+impl std::fmt::Debug for ExperimentalQuaternaryEpochSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ExperimentalQuaternaryEpochSecret { *** }")
+    }
+}
+
+#[cfg(feature = "experimental-hybrid")]
+impl ExperimentalQuaternaryEpochSecret {
+    const fn status(&self) -> ExperimentalQuaternaryEpochSecretStatus {
+        ExperimentalQuaternaryEpochSecretStatus {
+            epoch: self.epoch,
+            tree_version: self.tree_version,
+            mapping_hash: self.mapping_hash,
+        }
     }
 }

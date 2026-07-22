@@ -484,6 +484,7 @@ impl MlsGroup {
             &prior_mapping,
             &next_state,
         )?;
+        candidate.validate_experimental_quaternary_epoch_authority()?;
         storage
             .commit_transaction(transaction)
             .map_err(MergeCommitError::StorageError)?;
@@ -536,6 +537,92 @@ impl MlsGroup {
                 &next_state,
             )
             .map_err(MlsGroupStateError::from)?;
+        candidate
+            .validate_experimental_quaternary_epoch_authority()
+            .map_err(MlsGroupStateError::from)?;
+        storage.commit_transaction(transaction).map_err(|error| {
+            MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+        })?;
+        *self = candidate;
+        Ok(())
+    }
+
+    /// Returns redacted metadata for the active, persisted experimental
+    /// quaternary epoch authority. Secret bytes are never exposed.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn experimental_quaternary_epoch_secret_status(
+        &self,
+    ) -> Option<crate::schedule::ExperimentalQuaternaryEpochSecretStatus> {
+        self.group_epoch_secrets()
+            .experimental_quaternary_epoch_secret_status()
+    }
+
+    /// Atomically applies a staged UpdatePath while the fork-local
+    /// quaternary authority is active.
+    ///
+    /// The inherited MLS binary UpdatePath remains the authenticated delivery
+    /// carrier for this milestone. A successful path advances the MLS epoch,
+    /// then the candidate derives and persists a fresh quaternary authority
+    /// from that new epoch's exporter secret and GroupContext.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn merge_staged_commit_experimental_quaternary_atomic<Provider>(
+        &mut self,
+        provider: &Provider,
+        staged_commit: StagedCommit,
+    ) -> Result<(), MergeCommitError<Provider::StorageError>>
+    where
+        Provider: OpenMlsProvider,
+        Provider::Storage: TransactionalStorageProvider<CURRENT_VERSION>,
+    {
+        self.validate_experimental_quaternary_epoch_authority()?;
+        let storage = provider.storage();
+        let transaction = storage
+            .begin_transaction()
+            .map_err(MergeCommitError::StorageError)?;
+        let mut candidate = Self::load(&transaction, self.group_id())
+            .map_err(MergeCommitError::StorageError)?
+            .ok_or_else(|| LibraryError::custom("experimental group is missing from storage"))?;
+        candidate.aad.clone_from(&self.aad);
+        candidate.merge_staged_commit_with_storage(&transaction, staged_commit)?;
+        candidate.validate_experimental_quaternary_epoch_authority()?;
+        storage
+            .commit_transaction(transaction)
+            .map_err(MergeCommitError::StorageError)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    /// Atomically applies this member's pending UpdatePath while the
+    /// fork-local quaternary authority is active.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn merge_pending_commit_experimental_quaternary_atomic<Provider>(
+        &mut self,
+        provider: &Provider,
+    ) -> Result<(), MergePendingCommitError<Provider::StorageError>>
+    where
+        Provider: OpenMlsProvider,
+        Provider::Storage: TransactionalStorageProvider<CURRENT_VERSION>,
+    {
+        self.validate_experimental_quaternary_epoch_authority()
+            .map_err(MlsGroupStateError::from)?;
+        let storage = provider.storage();
+        let transaction = storage.begin_transaction().map_err(|error| {
+            MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+        })?;
+        let mut candidate = Self::load(&transaction, self.group_id())
+            .map_err(|error| {
+                MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+            })?
+            .ok_or_else(|| {
+                MlsGroupStateError::LibraryError(LibraryError::custom(
+                    "experimental group is missing from storage",
+                ))
+            })?;
+        candidate.aad.clone_from(&self.aad);
+        candidate.merge_pending_commit_with_storage(&transaction)?;
+        candidate
+            .validate_experimental_quaternary_epoch_authority()
+            .map_err(MlsGroupStateError::from)?;
         storage.commit_transaction(transaction).map_err(|error| {
             MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
         })?;
@@ -553,6 +640,53 @@ impl MlsGroup {
         {
             return Err(LibraryError::custom(
                 "experimental atomic binary merge requires normal 2-to-4 ArityState",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    fn validate_experimental_quaternary_epoch_authority(&self) -> Result<(), LibraryError> {
+        let state = self.experimental_arity_state()?;
+        let ArityLifecycle::Transitioning(transitioning) = state.lifecycle() else {
+            return Err(LibraryError::custom(
+                "experimental quaternary merge requires transitioning ArityState",
+            ));
+        };
+        let status = self
+            .experimental_quaternary_epoch_secret_status()
+            .ok_or_else(|| {
+                LibraryError::custom("experimental group has no quaternary epoch authority")
+            })?;
+        if status.epoch() != self.epoch().as_u64()
+            || status.tree_version() != state.tree_version()
+            || status.mapping_hash() != transitioning.mapping_hash().as_bytes()
+        {
+            return Err(LibraryError::custom(
+                "experimental quaternary epoch authority is not bound to GroupContext",
+            ));
+        }
+        let mapping = self.experimental_transition_mapping()?;
+        let mapping_bytes = mapping
+            .canonical_bytes()
+            .map_err(|_| LibraryError::custom("experimental transition mapping encoding failed"))?;
+        if &hash_canonical_public_bytes(&mapping_bytes) != status.mapping_hash() {
+            return Err(LibraryError::custom(
+                "experimental quaternary authority mapping hash mismatch",
+            ));
+        }
+        let treecover =
+            DeliveryOnlyTreeCover::from_mapping(transitioning.treecover().version(), &mapping)
+                .map_err(|_| {
+                    LibraryError::custom("experimental transition TreeCover derivation failed")
+                })?;
+        if treecover
+            .hash()
+            .map_err(|_| LibraryError::custom("experimental transition TreeCover hash failed"))?
+            != transitioning.treecover().hash()
+        {
+            return Err(LibraryError::custom(
+                "experimental quaternary authority TreeCover hash mismatch",
             ));
         }
         Ok(())

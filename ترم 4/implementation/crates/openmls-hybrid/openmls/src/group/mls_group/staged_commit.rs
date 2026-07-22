@@ -36,6 +36,8 @@ use crate::{
     },
     treesync::node::encryption_keys::EncryptionKeyPair,
 };
+#[cfg(feature = "experimental-hybrid")]
+use arity_state::{ArityLifecycle, ArityState};
 
 #[cfg(feature = "extensions-draft-08")]
 use super::proposal_store::{QueuedAppDataUpdateProposal, QueuedAppEphemeralProposal};
@@ -374,11 +376,42 @@ impl MlsGroup {
             commit_secret,
             &serialized_provisional_group_context,
         )?;
-        let (provisional_group_secrets, provisional_message_secrets) = epoch_secrets.split_secrets(
-            serialized_provisional_group_context,
-            diff.tree_size(),
-            self.own_leaf_index(),
-        );
+        let (mut provisional_group_secrets, provisional_message_secrets) = epoch_secrets
+            .split_secrets(
+                serialized_provisional_group_context,
+                diff.tree_size(),
+                self.own_leaf_index(),
+            );
+
+        #[cfg(feature = "experimental-hybrid")]
+        if let Some(extension) = diff
+            .group_context()
+            .extensions()
+            .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
+        {
+            let arity_state = ArityState::from_extension_value(&extension.0).map_err(|_| {
+                LibraryError::custom("experimental group has invalid authenticated ArityState")
+            })?;
+            if matches!(arity_state.lifecycle(), ArityLifecycle::Transitioning(_)) {
+                if update_path_leaf_node.is_none() {
+                    return Err(LibraryError::custom(
+                        "experimental quaternary authority requires an MLS UpdatePath",
+                    )
+                    .into());
+                }
+                let serialized_context = diff
+                    .group_context()
+                    .tls_serialize_detached()
+                    .map_err(LibraryError::missing_bound_check)?;
+                provisional_group_secrets.activate_experimental_quaternary_epoch_secret(
+                    provider.crypto(),
+                    self.ciphersuite(),
+                    &serialized_context,
+                    diff.group_context().epoch().as_u64(),
+                    &arity_state,
+                )?;
+            }
+        }
 
         // Verify confirmation tag
         // ValSem205

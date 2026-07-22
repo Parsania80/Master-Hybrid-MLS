@@ -1222,10 +1222,80 @@ mod tests {
         assert_eq!(alice.export_ratchet_tree(), bob.export_ratchet_tree());
         assert_eq!(arity_state_from_group(&alice), next_state);
         assert_eq!(arity_state_from_group(&bob), next_state);
+        let alice_authority = alice
+            .experimental_quaternary_epoch_secret_status()
+            .expect("Alice persisted quaternary authority");
+        let bob_authority = bob
+            .experimental_quaternary_epoch_secret_status()
+            .expect("Bob persisted quaternary authority");
+        assert_eq!(alice_authority, bob_authority);
+        assert_eq!(alice_authority.epoch(), alice.epoch().as_u64());
+        assert_eq!(alice_authority.tree_version(), next_state.tree_version());
+        let ArityLifecycle::Transitioning(transitioning) = next_state.lifecycle() else {
+            panic!("expected transitioning state");
+        };
+        assert_eq!(
+            alice_authority.mapping_hash(),
+            transitioning.mapping_hash().as_bytes()
+        );
         assert!(matches!(
             next_state.lifecycle(),
             ArityLifecycle::Transitioning(_)
         ));
+    }
+
+    #[test]
+    fn quaternary_authority_is_persisted_and_rotated_by_an_authenticated_update_path() {
+        let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair_with_policy_controls(2, 0);
+        let next_state = triggered_transition_state(&alice);
+        let (transition_commit, _, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, next_state)
+            .expect("sender stages authenticated transition Commit");
+        let transition_wire = transition_commit
+            .tls_serialize_detached()
+            .expect("transition Commit serialization");
+        let staged_transition = staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+        bob.merge_staged_commit_experimental_transition_atomic(&bob_provider, staged_transition)
+            .expect("receiver merges transition Commit");
+        alice
+            .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+            .expect("sender merges transition Commit");
+        let authority_before = alice
+            .experimental_quaternary_epoch_secret_status()
+            .expect("transition authority");
+
+        let update_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        let staged_update = staged_commit_from_wire(&mut alice, &alice_provider, &update_wire);
+        alice
+            .merge_staged_commit_experimental_quaternary_atomic(&alice_provider, staged_update)
+            .expect("receiver merges authority-rotating UpdatePath");
+        bob.merge_pending_commit_experimental_quaternary_atomic(&bob_provider)
+            .expect("sender merges authority-rotating UpdatePath");
+
+        let alice_authority = alice
+            .experimental_quaternary_epoch_secret_status()
+            .expect("rotated Alice authority");
+        let bob_authority = bob
+            .experimental_quaternary_epoch_secret_status()
+            .expect("rotated Bob authority");
+        assert_eq!(alice_authority, bob_authority);
+        assert_eq!(alice_authority.epoch(), alice.epoch().as_u64());
+        assert_eq!(alice_authority.epoch(), authority_before.epoch() + 1);
+        assert_eq!(alice.export_ratchet_tree(), bob.export_ratchet_tree());
+
+        let reloaded_alice = MlsGroup::load(alice_provider.storage(), alice.group_id())
+            .expect("Alice storage read")
+            .expect("Alice stored group");
+        assert_eq!(
+            reloaded_alice.experimental_quaternary_epoch_secret_status(),
+            Some(alice_authority)
+        );
     }
 
     #[test]

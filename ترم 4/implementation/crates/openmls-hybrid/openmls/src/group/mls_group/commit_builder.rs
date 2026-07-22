@@ -3,6 +3,8 @@
 
 use std::{borrow::BorrowMut, marker::PhantomData};
 
+#[cfg(feature = "experimental-hybrid")]
+use arity_state::{ArityLifecycle, ArityState};
 use openmls_traits::{
     crypto::OpenMlsCrypto, random::OpenMlsRand, signatures::Signer, storage::StorageProvider as _,
 };
@@ -846,12 +848,42 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
             (welcome_option, exported_group_info)
         };
 
-        let (provisional_group_epoch_secrets, provisional_message_secrets) =
+        let (mut provisional_group_epoch_secrets, provisional_message_secrets) =
             provisional_epoch_secrets.split_secrets(
                 serialized_provisional_group_context,
                 diff.tree_size(),
                 own_leaf_index,
             );
+
+        #[cfg(feature = "experimental-hybrid")]
+        if let Some(extension) = diff
+            .group_context()
+            .extensions()
+            .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
+        {
+            let arity_state = ArityState::from_extension_value(&extension.0).map_err(|_| {
+                LibraryError::custom("experimental group has invalid authenticated ArityState")
+            })?;
+            if matches!(arity_state.lifecycle(), ArityLifecycle::Transitioning(_)) {
+                if update_path_leaf_node.is_none() {
+                    return Err(LibraryError::custom(
+                        "experimental quaternary authority requires an MLS UpdatePath",
+                    )
+                    .into());
+                }
+                let serialized_context = diff
+                    .group_context()
+                    .tls_serialize_detached()
+                    .map_err(LibraryError::missing_bound_check)?;
+                provisional_group_epoch_secrets.activate_experimental_quaternary_epoch_secret(
+                    crypto,
+                    ciphersuite,
+                    &serialized_context,
+                    diff.group_context().epoch().as_u64(),
+                    &arity_state,
+                )?;
+            }
+        }
 
         #[cfg(feature = "extensions-draft-08")]
         let application_export_tree = ApplicationExportTree::new(application_exporter);

@@ -11,10 +11,10 @@ delivery-only TreeCover binding. Until this decision, those values were not
 authenticated by a real experimental MLS Commit. Task 58 also deliberately
 rejects every non-normal state, so it cannot apply a transition Commit.
 
-The imported fork still uses its inherited binary TreeKEM tree and epoch-secret
-derivation. A public quaternary topology marker must therefore not be described
-as an active quaternary epoch-secret authority until the fork actually derives,
-stores, and uses that authority.
+The imported fork still uses its inherited binary TreeKEM public tree and
+epoch-secret derivation. A public quaternary topology marker must therefore not
+be described as a quaternary TreeKEM implementation merely because the fork
+also derives an experimental quaternary authority from a later MLS epoch.
 
 ## Decision
 
@@ -39,6 +39,15 @@ stores, and uses that authority.
 6. The dedicated transition Commit cannot add or remove a member. Candidate
    membership must produce exactly the pre-Commit mapping, preventing a
    membership change from being smuggled into the transition boundary.
+7. When the authenticated provisional state is `Transitioning`, derive a
+   fork-local quaternary epoch authority from the newly established MLS exporter
+   secret using label `experimental quaternary epoch authority` and the complete
+   provisional GroupContext as context. Persist it inside the existing
+   `GroupEpochSecrets` envelope, which Task 58 already writes atomically.
+8. Require an MLS UpdatePath for every transitioning epoch that installs or
+   rotates this authority. Sender and receiver derive the same redacted public
+   status from the accepted candidate, and dedicated atomic APIs reject a
+   missing, stale, or GroupContext/mapping/TreeCover-mismatched authority.
 
 ## Failure Semantics
 
@@ -48,6 +57,9 @@ stores, and uses that authority.
 - The normal binary atomic merge rejects a transition Commit and leaves the
   receiver's public group state unchanged; callers must use the dedicated
   transition API.
+- The persisted authority secret is never returned. Its status contains only
+  epoch, tree version, and mapping digest, and reloads only through the existing
+  `GroupEpochSecrets` storage lifecycle.
 - As with ADR 0039, message-ratchet effects of receiving and staging a Commit
   occur before the merge API and are outside the storage transaction.
 
@@ -58,14 +70,17 @@ stores, and uses that authority.
   Commit. Both members converge on epoch, ratchet tree, and exact `ArityState`.
 - The normal binary atomic merge rejects the same staged transition Commit
   without changing the receiver epoch, ratchet tree, or authenticated state.
+- A subsequent real hybrid MLS self-update rotates the stored authority at both
+  members; the public status converges and survives a storage reload.
 - Locked/offline adapter tests cover the round trip and rejection boundary.
 
 ## Explicit Non-Claims and Remaining Work
 
-This decision authenticates and atomically applies public transition metadata
-only. The inherited live MLS TreeKEM remains binary; `ActiveQuaternaryTree` is
-still a public model and not a real epoch-secret authority. Task 60 remains
-current until fork-native quaternary secret derivation/storage, multi-member
-transition convergence, full rejection coverage, and transition-specific
-storage-fault coverage exist. No adaptive workload or three-mode measurement is
-available from this boundary.
+This decision now derives, persists, and rotates a fork-local quaternary epoch
+authority, but its delivery carrier and public TreeKEM remain binary MLS. It is
+therefore not yet a quaternary-parent UpdatePath or a replacement for the MLS
+application/message key schedule; `ActiveQuaternaryTree` remains a public
+topology model. Task 60 remains current until quaternary parent-path delivery,
+multi-member transition convergence, full rejection coverage, and
+transition-specific storage-fault coverage exist. No adaptive workload or
+three-mode measurement is available from this boundary.
