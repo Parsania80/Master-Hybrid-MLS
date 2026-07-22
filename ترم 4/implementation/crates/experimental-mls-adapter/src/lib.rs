@@ -1288,7 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_workload_refuses_a_transition_when_real_probe_has_no_byte_saving() {
+    fn compact_adaptive_carrier_is_smaller_but_one_observation_cannot_amortize_transition() {
         let config = simulation::BaselineWorkloadConfig {
             group_id: b"task-61-adaptive-workload".to_vec(),
             initial_member_count: 5,
@@ -1310,7 +1310,7 @@ mod tests {
             panic!("the real policy must reject a non-saving candidate");
         };
         assert!(current_binary_update_bytes > 0);
-        assert!(quaternary_candidate_bytes >= current_binary_update_bytes);
+        assert!(quaternary_candidate_bytes < current_binary_update_bytes);
         assert!(transition_preflight_bytes > 0);
     }
 

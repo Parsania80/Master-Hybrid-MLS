@@ -130,6 +130,168 @@ impl TreeSyncDiff<'_> {
             .subtree_root_position(params.sender_leaf_index, own_leaf_index)
             .map_err(|_| ApplyUpdatePathError::MissingOwnLeaf)?;
 
+        #[cfg(feature = "experimental-hybrid")]
+        let compact_quaternary_carrier = params.expected_quaternary_tree_version.is_some()
+            && params.expected_quaternary_parent_nodes.is_some()
+            && params.recipient_quaternary_leaf_ordinal.is_some()
+            && params.recipient_quaternary_parent_node.is_some()
+            && !params.update_path.is_empty()
+            && params.update_path.iter().all(|node| {
+                node.encrypted_path_secrets.is_empty()
+                    && node.experimental_hybrid_delivery().is_none()
+            });
+
+        #[cfg(feature = "experimental-hybrid")]
+        if compact_quaternary_carrier {
+            if !supports_mkyber_recipient_capabilities(params.sender_leaf_capabilities) {
+                return Err(ApplyUpdatePathError::MissingExperimentalCapability);
+            }
+            let expected_tree_version = params
+                .expected_quaternary_tree_version
+                .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+            let expected_nodes = params
+                .expected_quaternary_parent_nodes
+                .as_ref()
+                .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+            let recipient_leaf_ordinal = params
+                .recipient_quaternary_leaf_ordinal
+                .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+            if expected_nodes.is_empty() || params.experimental_quaternary_parent_paths.len() != 1 {
+                return Err(ApplyUpdatePathError::UnableToDecrypt);
+            }
+            let root_delivery = &params.experimental_quaternary_parent_paths[0];
+            root_delivery
+                .validate_version()
+                .map_err(ApplyUpdatePathError::LibraryError)?;
+            if root_delivery.tree_version() != expected_tree_version
+                || root_delivery.parent_depth() != 0
+                || root_delivery.parent_ordinal() != 0
+            {
+                return Err(ApplyUpdatePathError::UnableToDecrypt);
+            }
+            let root_mkyber_key = root_delivery
+                .public_key()
+                .experimental_mkyber_key()
+                .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+            let context = quaternary_hybrid_context(
+                crypto,
+                ciphersuite,
+                params.group_context,
+                expected_tree_version,
+                0,
+                0,
+                root_mkyber_key.domain(),
+            )
+            .map_err(ApplyUpdatePathError::LibraryError)?;
+            let delivery = ExperimentalHybridPathDelivery::from_canonical_bytes(
+                crate::experimental_hybrid::quaternary_parent_node_index(0, 0)
+                    .map_err(ApplyUpdatePathError::LibraryError)?,
+                root_delivery.delivery().to_vec(),
+            )
+            .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+            let ciphertext =
+                hybrid_path_secret::HybridPathCiphertext::from_commit_authenticated_bytes(
+                    delivery.canonical_bytes(),
+                )
+                .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+            let recipient_leaf_key = self
+                .leaf(own_leaf_index)
+                .ok_or(ApplyUpdatePathError::MissingOwnLeaf)?
+                .encryption_key();
+            let recipient_keypair = owned_keys
+                .iter()
+                .find(|keypair| keypair.public_key() == recipient_leaf_key)
+                .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+            let root_secret = open_hybrid_path_level_with_provider(
+                &ForkClassicalHpkeProvider::default(),
+                &EducationalMkyber512Reference,
+                &context,
+                &ciphertext,
+                &HybridPathRecipientPrivate::new(
+                    RecipientNodeIndex::new(recipient_leaf_ordinal),
+                    recipient_keypair
+                        .experimental_mkyber_private_key()
+                        .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?
+                        .ok_or(ApplyUpdatePathError::UnableToDecrypt)?,
+                    ClassicalHpkePrivateKey::from_bytes(
+                        recipient_keypair.private_key().classical_private_key(),
+                    )
+                    .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?,
+                ),
+            )
+            .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+            let root_secret = PathSecret::from(Secret::from_slice(root_secret.as_bytes()));
+            let mut quaternary_keypairs = Vec::with_capacity(expected_nodes.len());
+            for (depth, ordinal) in expected_nodes {
+                let keypair = if *depth == 0 && *ordinal == 0 {
+                    root_secret.derive_experimental_quaternary_parent_keypair(
+                        crypto,
+                        ciphersuite,
+                        root_mkyber_key.domain(),
+                        expected_tree_version,
+                        *depth,
+                        *ordinal,
+                    )
+                } else {
+                    root_secret
+                        .derive_experimental_quaternary_parent_secret(
+                            crypto,
+                            ciphersuite,
+                            root_mkyber_key.domain(),
+                            expected_tree_version,
+                            *depth,
+                            *ordinal,
+                        )
+                        .and_then(|secret| {
+                            secret.derive_experimental_quaternary_parent_keypair(
+                                crypto,
+                                ciphersuite,
+                                root_mkyber_key.domain(),
+                                expected_tree_version,
+                                *depth,
+                                *ordinal,
+                            )
+                        })
+                };
+                let keypair = keypair.map_err(ApplyUpdatePathError::LibraryError)?;
+                if (*depth, *ordinal) == (0, 0)
+                    && keypair.public_key() != root_delivery.public_key()
+                {
+                    return Err(ApplyUpdatePathError::PathMismatch);
+                }
+                quaternary_keypairs.push(keypair);
+            }
+            let root_index = self
+                .filtered_direct_path(params.sender_leaf_index)
+                .last()
+                .copied()
+                .ok_or(ApplyUpdatePathError::PathLengthMismatch)?;
+            let (derived_path, _, keypairs, commit_secret) = ParentNode::derive_path(
+                crypto,
+                ciphersuite,
+                root_secret,
+                vec![root_index],
+                params
+                    .sender_leaf_encryption_key
+                    .experimental_mkyber_key()
+                    .map(|key| key.domain()),
+            )?;
+            let (_, derived_root) = derived_path
+                .last()
+                .ok_or(ApplyUpdatePathError::PathLengthMismatch)?;
+            let compact_root = params
+                .update_path
+                .last()
+                .ok_or(ApplyUpdatePathError::PathLengthMismatch)?;
+            if compact_root.encryption_key() != derived_root.encryption_key() {
+                return Err(ApplyUpdatePathError::PathMismatch);
+            }
+            if quaternary_keypairs.len() != expected_nodes.len() {
+                return Err(ApplyUpdatePathError::UnableToDecrypt);
+            }
+            return Ok((keypairs, commit_secret, quaternary_keypairs));
+        }
+
         let update_path_node = params
             .update_path
             .get(path_position)

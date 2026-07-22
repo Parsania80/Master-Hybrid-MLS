@@ -550,9 +550,30 @@ impl MlsGroup {
                     .filter(|keypair| new_owned_encryption_keys.contains(keypair.public_key()))
                     .collect();
 
-                // We should have private keys for all owned encryption keys.
-                debug_assert_eq!(new_owned_encryption_keys.len(), epoch_keypairs.len());
-                if new_owned_encryption_keys.len() != epoch_keypairs.len() {
+                // Compact transitioning commits authenticate every public
+                // binary node but intentionally retain only the root private
+                // pair. Later compact commits derive their epoch secret from
+                // the signed quaternary-root delivery rather than these
+                // binary parent keys.
+                #[cfg(feature = "experimental-hybrid")]
+                let compact_quaternary_epoch = self
+                    .public_group()
+                    .group_context()
+                    .extensions()
+                    .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
+                    .and_then(|extension| ArityState::from_extension_value(&extension.0).ok())
+                    .is_some_and(|state| {
+                        matches!(state.lifecycle(), ArityLifecycle::Transitioning(_))
+                    });
+                #[cfg(not(feature = "experimental-hybrid"))]
+                let compact_quaternary_epoch = false;
+                debug_assert!(
+                    compact_quaternary_epoch
+                        || new_owned_encryption_keys.len() == epoch_keypairs.len()
+                );
+                if !compact_quaternary_epoch
+                    && new_owned_encryption_keys.len() != epoch_keypairs.len()
+                {
                     return Err(LibraryError::custom(
                         "We should have all the private key material we need.",
                     )

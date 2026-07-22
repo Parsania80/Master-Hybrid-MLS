@@ -145,7 +145,7 @@ impl PublicGroupDiff<'_> {
             .leaf(leaf_index)
             .ok_or_else(|| LibraryError::custom("Couldn't find own leaf"))?
             .clone();
-        let mut encrypted_path = UpdatePath::new(leaf_node, encrypted_path);
+        let mut encrypted_path = UpdatePath::new(leaf_node.clone(), encrypted_path);
         #[cfg(feature = "experimental-hybrid")]
         let mut experimental_quaternary_parent_keypairs = Vec::new();
 
@@ -177,37 +177,54 @@ impl PublicGroupDiff<'_> {
                         "experimental quaternary authority requires a non-empty MLS UpdatePath",
                     )
                 })?;
-                let mut parent_paths = Vec::with_capacity(delivery_plan.parent_nodes.len());
-                for parent in delivery_plan.parent_nodes {
-                    let recipients = delivery_plan
-                        .recipient_targets
-                        .iter()
-                        .filter(|(_, target_parent, _)| *target_parent == parent)
-                        .map(|(leaf_ordinal, _, key)| (*leaf_ordinal, key.clone()))
-                        .collect::<Vec<_>>();
-                    let (parent_path, parent_keypair) = root_path
-                        .encrypt_experimental_quaternary_parent(
+                let root_position = ExperimentalQuaternaryParentPosition {
+                    tree_version: arity_state.tree_version(),
+                    depth: 0,
+                    ordinal: 0,
+                    domain,
+                };
+                let root_recipients = delivery_plan
+                    .recipient_targets
+                    .iter()
+                    .map(|(leaf_ordinal, _, key)| (*leaf_ordinal, key.clone()))
+                    .collect::<Vec<_>>();
+                let (root_parent_path, root_keypair) = root_path
+                    .encrypt_experimental_quaternary_parent(
+                        crypto,
+                        ciphersuite,
+                        &root_recipients,
+                        &serialized_group_context,
+                        root_position,
+                    )?;
+                experimental_quaternary_parent_keypairs.push(root_keypair);
+                for parent in delivery_plan.parent_nodes.into_iter().skip(1) {
+                    experimental_quaternary_parent_keypairs.push(
+                        root_path.derive_compact_quaternary_parent_keypair(
                             crypto,
                             ciphersuite,
-                            &recipients,
-                            &serialized_group_context,
                             ExperimentalQuaternaryParentPosition {
                                 tree_version: arity_state.tree_version(),
                                 depth: parent.depth,
                                 ordinal: parent.ordinal,
                                 domain,
                             },
-                        )?;
-                    parent_paths.push(parent_path);
-                    experimental_quaternary_parent_keypairs.push(parent_keypair);
+                        )?,
+                    );
                 }
-                if parent_paths.is_empty() {
+                if experimental_quaternary_parent_keypairs.is_empty() {
                     return Err(LibraryError::custom(
                         "experimental quaternary authority requires a non-empty parent path",
                     )
                     .into());
                 }
-                encrypted_path.set_experimental_quaternary_parent_paths(parent_paths);
+                encrypted_path = UpdatePath::new(
+                    leaf_node,
+                    plain_path
+                        .iter()
+                        .map(PlainUpdatePathNode::compact_quaternary_update_path_node)
+                        .collect(),
+                );
+                encrypted_path.set_experimental_quaternary_parent_paths(vec![root_parent_path]);
             }
         }
         Ok(PathComputationResult {

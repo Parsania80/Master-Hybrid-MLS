@@ -85,6 +85,58 @@ pub(crate) struct ExperimentalQuaternaryParentPosition {
 }
 
 impl PlainUpdatePathNode {
+    /// Emits an authenticated public-only binary node for the compact
+    /// experimental quaternary carrier. Its path secret is replaced by the
+    /// signed quaternary-root delivery.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn compact_quaternary_update_path_node(&self) -> UpdatePathNode {
+        UpdatePathNode {
+            public_key: self.public_key.clone(),
+            encrypted_path_secrets: Vec::new(),
+            experimental_hybrid_delivery: None,
+        }
+    }
+
+    /// Derives a deterministic quaternary parent pair from the binary root
+    /// path secret without adding a second ciphertext delivery.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn derive_compact_quaternary_parent_keypair(
+        &self,
+        crypto: &impl OpenMlsCrypto,
+        ciphersuite: Ciphersuite,
+        position: ExperimentalQuaternaryParentPosition,
+    ) -> Result<EncryptionKeyPair, LibraryError> {
+        if position.depth == 0 && position.ordinal == 0 {
+            return self
+                .path_secret
+                .derive_experimental_quaternary_parent_keypair(
+                    crypto,
+                    ciphersuite,
+                    position.domain,
+                    position.tree_version,
+                    position.depth,
+                    position.ordinal,
+                );
+        }
+        self.path_secret
+            .derive_experimental_quaternary_parent_secret(
+                crypto,
+                ciphersuite,
+                position.domain,
+                position.tree_version,
+                position.depth,
+                position.ordinal,
+            )?
+            .derive_experimental_quaternary_parent_keypair(
+                crypto,
+                ciphersuite,
+                position.domain,
+                position.tree_version,
+                position.depth,
+                position.ordinal,
+            )
+    }
+
     /// Encrypt this node and return the resulting [`UpdatePathNode`].
     pub(in crate::treesync) fn encrypt(
         &self,
