@@ -259,6 +259,8 @@ impl MlsGroup {
     ) -> Result<StagedCommit, StageCommitError> {
         let ciphersuite = self.ciphersuite();
         // Determine if Commit has a path
+        #[cfg(feature = "experimental-hybrid")]
+        let mut experimental_quaternary_root_keypair = None;
         let (commit_secret, new_keypairs, new_leaf_keypair_option, update_path_leaf_node) =
             if let Some(path) = commit.path.clone() {
                 // Update the public group
@@ -298,7 +300,7 @@ impl MlsGroup {
 
                 // ValSem203: Path secrets must decrypt correctly
                 // ValSem204: Public keys from Path must be verified and match the private keys from the direct path
-                let (new_keypairs, commit_secret) = diff.decrypt_path(
+                let (new_keypairs, commit_secret, root_keypair) = diff.decrypt_path(
                     provider.crypto(),
                     &decryption_keypairs,
                     self.own_leaf_index(),
@@ -306,6 +308,12 @@ impl MlsGroup {
                     &path,
                     &apply_proposals_values.exclusion_list(),
                 )?;
+                #[cfg(feature = "experimental-hybrid")]
+                {
+                    experimental_quaternary_root_keypair = root_keypair;
+                }
+                #[cfg(not(feature = "experimental-hybrid"))]
+                let _ = root_keypair;
 
                 // Check if one of our update proposals was applied. If so, we
                 // need to store that keypair separately, because after merging
@@ -409,6 +417,11 @@ impl MlsGroup {
                     &serialized_context,
                     diff.group_context().epoch().as_u64(),
                     &arity_state,
+                    experimental_quaternary_root_keypair.ok_or_else(|| {
+                        LibraryError::custom(
+                            "experimental quaternary authority requires a root key pair",
+                        )
+                    })?,
                 )?;
             }
         }

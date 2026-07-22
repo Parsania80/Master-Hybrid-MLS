@@ -658,6 +658,8 @@ impl MlsGroup {
             .ok_or_else(|| {
                 LibraryError::custom("experimental group has no quaternary epoch authority")
             })?;
+        self.group_epoch_secrets()
+            .validate_experimental_quaternary_root_keypair()?;
         if status.epoch() != self.epoch().as_u64()
             || status.tree_version() != state.tree_version()
             || status.mapping_hash() != transitioning.mapping_hash().as_bytes()

@@ -1232,6 +1232,7 @@ mod tests {
         assert_eq!(alice_authority, bob_authority);
         assert_eq!(alice_authority.epoch(), alice.epoch().as_u64());
         assert_eq!(alice_authority.tree_version(), next_state.tree_version());
+        assert_ne!(alice_authority.root_public_key_hash(), &[0; 32]);
         let ArityLifecycle::Transitioning(transitioning) = next_state.lifecycle() else {
             panic!("expected transitioning state");
         };
@@ -1265,6 +1266,7 @@ mod tests {
         let authority_before = alice
             .experimental_quaternary_epoch_secret_status()
             .expect("transition authority");
+        let root_public_key_hash_before = *authority_before.root_public_key_hash();
 
         let update_wire = hybrid_self_update_wire(
             &mut bob,
@@ -1288,6 +1290,11 @@ mod tests {
         assert_eq!(alice_authority, bob_authority);
         assert_eq!(alice_authority.epoch(), alice.epoch().as_u64());
         assert_eq!(alice_authority.epoch(), authority_before.epoch() + 1);
+        assert_ne!(
+            alice_authority.root_public_key_hash(),
+            &root_public_key_hash_before,
+            "the replacement epoch must retire the previous root key pair"
+        );
         assert_eq!(alice.export_ratchet_tree(), bob.export_ratchet_tree());
 
         let reloaded_alice = MlsGroup::load(alice_provider.storage(), alice.group_id())
@@ -1296,6 +1303,14 @@ mod tests {
         assert_eq!(
             reloaded_alice.experimental_quaternary_epoch_secret_status(),
             Some(alice_authority)
+        );
+        assert_eq!(
+            reloaded_alice
+                .experimental_quaternary_epoch_secret_status()
+                .expect("reloaded root status")
+                .root_public_key_hash(),
+            alice_authority.root_public_key_hash(),
+            "the persisted root key pair must survive reload without exposing private bytes"
         );
     }
 

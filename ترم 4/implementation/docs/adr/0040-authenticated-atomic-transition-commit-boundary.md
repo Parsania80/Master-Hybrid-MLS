@@ -61,6 +61,12 @@ also derives an experimental quaternary authority from a later MLS epoch.
     receiver opens it with its own matched leaf pair, derives the root pair,
     compares its complete public key and secret with the MLS UpdatePath root,
     and only then permits the existing atomic Commit merge.
+11. Store that matched root private pair in the candidate `GroupEpochSecrets`
+    envelope together with the quaternary epoch authority. The existing atomic
+    merge writes this envelope before replacing live state; each later epoch
+    replaces and drops the prior root pair. Public status retains only a hash
+    of its serialized public key, and reload validation reconstructs the
+    mKyber private key to confirm its domain matches the stored public key.
 
 ## Failure Semantics
 
@@ -70,9 +76,10 @@ also derives an experimental quaternary authority from a later MLS epoch.
 - The normal binary atomic merge rejects a transition Commit and leaves the
   receiver's public group state unchanged; callers must use the dedicated
   transition API.
-- The persisted authority secret is never returned. Its status contains only
-  epoch, tree version, and mapping digest, and reloads only through the existing
-  `GroupEpochSecrets` storage lifecycle.
+- The persisted authority secret and root private key are never returned. Its
+  status contains only epoch, tree version, mapping digest, and a root public-
+  key digest, and reloads only through the existing `GroupEpochSecrets`
+  storage lifecycle.
 - A transitioning receiver rejects a missing root-parent record, unsupported
   parent position/version/tree version, malformed delivery, wrong recipient,
   failed hybrid open, a public-key mismatch, or a secret mismatch before the
@@ -92,16 +99,18 @@ also derives an experimental quaternary authority from a later MLS epoch.
 - The transition Commit and subsequent self-update both carry the authenticated
   quaternary root-parent record; the receiver opens it and proves it agrees
   with the normal MLS root path secret and complete derived parent key.
+- The transition root public-key digest changes on the next accepted UpdatePath
+  and the replacement digest survives a storage reload; validation confirms
+  the persisted mKyber private/public domain match without exposing it.
 - Locked/offline adapter tests cover the round trip and rejection boundary.
 
 ## Explicit Non-Claims and Remaining Work
 
 This decision now has an authenticated, receiver-validated **root-only**
-quaternary parent delivery, while its MLS carrier, public TreeKEM, and private
-epoch-keypair lifecycle remain binary. It does not yet persist a separate
-quaternary parent private-key set, populate every quaternary parent in
-`ActiveQuaternaryTree`, or replace the MLS application/message key schedule.
-Task 60 remains current until those parent-path/storage steps, multi-member
-transition convergence, full rejection coverage, and transition-specific
-storage-fault coverage exist. No adaptive workload or three-mode measurement
-is available from this boundary.
+quaternary parent delivery and atomic root-pair lifecycle, while its MLS
+carrier and public TreeKEM remain binary. It does not yet populate every
+quaternary parent in `ActiveQuaternaryTree` or replace the MLS
+application/message key schedule. Task 60 remains current until those mapped
+parent paths, multi-member transition convergence, full rejection coverage,
+and transition-specific storage-fault coverage exist. No adaptive workload or
+three-mode measurement is available from this boundary.

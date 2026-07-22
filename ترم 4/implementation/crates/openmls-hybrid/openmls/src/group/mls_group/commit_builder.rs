@@ -577,7 +577,7 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
             return Err(CreateCommitError::CannotRemoveSelf);
         }
 
-        let path_computation_result =
+        let mut path_computation_result =
             // If path is needed, compute path values
             if apply_proposals_values.path_required
                 || contains_own_updates
@@ -881,6 +881,14 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
                     &serialized_context,
                     diff.group_context().epoch().as_u64(),
                     &arity_state,
+                    path_computation_result
+                        .experimental_quaternary_root_keypair
+                        .take()
+                        .ok_or_else(|| {
+                            LibraryError::custom(
+                                "experimental quaternary authority requires a root key pair",
+                            )
+                        })?,
                 )?;
             }
         }

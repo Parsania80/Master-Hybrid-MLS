@@ -186,7 +186,7 @@ impl PlainUpdatePathNode {
         group_context: &[u8],
         tree_version: u32,
         domain: mkyber::MkyberDomain,
-    ) -> Result<ExperimentalQuaternaryParentPath, LibraryError> {
+    ) -> Result<(ExperimentalQuaternaryParentPath, EncryptionKeyPair), LibraryError> {
         if recipient_leaf_keys.is_empty() {
             return Err(LibraryError::custom(
                 "experimental quaternary root has no recipient leaves",
@@ -257,13 +257,14 @@ impl PlainUpdatePathNode {
             })?,
         )
         .map_err(|_| LibraryError::custom("invalid experimental quaternary UpdatePath delivery"))?;
-        Ok(ExperimentalQuaternaryParentPath::new(
+        let parent_path = ExperimentalQuaternaryParentPath::new(
             tree_version,
             0,
             0,
             parent_keypair.public_key().clone(),
             delivery.canonical_bytes().to_vec(),
-        ))
+        );
+        Ok((parent_path, parent_keypair))
     }
 
     /// Return a reference to the `path_secret` of this node.

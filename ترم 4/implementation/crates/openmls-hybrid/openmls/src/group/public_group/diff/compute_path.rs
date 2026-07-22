@@ -40,6 +40,10 @@ pub(crate) struct PathComputationResult {
     pub(crate) encrypted_path: Option<UpdatePath>,
     pub(crate) plain_path: Option<Vec<PlainUpdatePathNode>>,
     pub(crate) new_keypairs: Vec<EncryptionKeyPair>,
+    /// Matched private material for the feature-gated quaternary root. It is
+    /// persisted in `GroupEpochSecrets`, not the binary TreeKEM key list.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) experimental_quaternary_root_keypair: Option<EncryptionKeyPair>,
 }
 
 impl PublicGroupDiff<'_> {
@@ -142,6 +146,8 @@ impl PublicGroupDiff<'_> {
             .ok_or_else(|| LibraryError::custom("Couldn't find own leaf"))?
             .clone();
         let mut encrypted_path = UpdatePath::new(leaf_node, encrypted_path);
+        #[cfg(feature = "experimental-hybrid")]
+        let mut experimental_quaternary_root_keypair = None;
 
         #[cfg(feature = "experimental-hybrid")]
         if let Some(extension) = self
@@ -172,16 +178,16 @@ impl PublicGroupDiff<'_> {
                         "experimental quaternary authority requires a non-empty MLS UpdatePath",
                     )
                 })?;
-                encrypted_path.set_experimental_quaternary_parent_path(
-                    root_path.encrypt_experimental_quaternary_root(
-                        crypto,
-                        ciphersuite,
-                        &recipient_leaf_keys,
-                        &serialized_group_context,
-                        arity_state.tree_version(),
-                        domain,
-                    )?,
-                );
+                let (parent_path, root_keypair) = root_path.encrypt_experimental_quaternary_root(
+                    crypto,
+                    ciphersuite,
+                    &recipient_leaf_keys,
+                    &serialized_group_context,
+                    arity_state.tree_version(),
+                    domain,
+                )?;
+                encrypted_path.set_experimental_quaternary_parent_path(parent_path);
+                experimental_quaternary_root_keypair = Some(root_keypair);
             }
         }
         Ok(PathComputationResult {
@@ -189,6 +195,8 @@ impl PublicGroupDiff<'_> {
             encrypted_path: Some(encrypted_path),
             plain_path: Some(plain_path),
             new_keypairs,
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_quaternary_root_keypair,
         })
     }
 }

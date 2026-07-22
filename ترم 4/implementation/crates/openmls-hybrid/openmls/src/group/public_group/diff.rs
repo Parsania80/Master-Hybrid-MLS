@@ -134,7 +134,14 @@ impl<'a> PublicGroupDiff<'a> {
         sender_leaf_index: LeafNodeIndex,
         update_path: &UpdatePath,
         exclusion_list: &HashSet<&LeafNodeIndex>,
-    ) -> Result<(Vec<EncryptionKeyPair>, CommitSecret), ApplyUpdatePathError> {
+    ) -> Result<
+        (
+            Vec<EncryptionKeyPair>,
+            CommitSecret,
+            Option<EncryptionKeyPair>,
+        ),
+        ApplyUpdatePathError,
+    > {
         #[cfg(feature = "experimental-hybrid")]
         let expected_quaternary_tree_version = self
             .group_context()

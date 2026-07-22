@@ -117,7 +117,7 @@
 
 use openmls_traits::{crypto::OpenMlsCrypto, types::*};
 use serde::{Deserialize, Serialize};
-use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize};
+use tls_codec::{Serialize as _, TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize};
 
 use crate::{
     binary_tree::array_representation::{LeafNodeIndex, TreeSize},
@@ -127,6 +127,7 @@ use crate::{
     group::GroupContext,
     messages::{ConfirmationTag, PathSecret},
     tree::secret_tree::SecretTree,
+    treesync::node::encryption_keys::EncryptionKeyPair,
     versions::ProtocolVersion,
 };
 
@@ -1317,6 +1318,7 @@ impl GroupEpochSecrets {
         serialized_group_context: &[u8],
         epoch: u64,
         state: &arity_state::ArityState,
+        root_keypair: EncryptionKeyPair,
     ) -> Result<(), LibraryError> {
         state
             .validate()
@@ -1336,6 +1338,35 @@ impl GroupEpochSecrets {
                 "experimental quaternary authority precedes its transition epoch",
             ));
         }
+        let public_mkyber_key = root_keypair
+            .public_key()
+            .experimental_mkyber_key()
+            .ok_or_else(|| {
+                LibraryError::custom("experimental quaternary root lacks mKyber public key")
+            })?;
+        let private_mkyber_key = root_keypair
+            .experimental_mkyber_private_key()
+            .map_err(|_| {
+                LibraryError::custom("experimental quaternary root has invalid mKyber private key")
+            })?
+            .ok_or_else(|| {
+                LibraryError::custom("experimental quaternary root lacks mKyber private key")
+            })?;
+        if private_mkyber_key.domain() != public_mkyber_key.domain() {
+            return Err(LibraryError::custom(
+                "experimental quaternary root mKyber domains do not match",
+            ));
+        }
+        let serialized_root_public_key = root_keypair
+            .public_key()
+            .tls_serialize_detached()
+            .map_err(LibraryError::missing_bound_check)?;
+        let root_public_key_hash = crypto
+            .hash(ciphersuite.hash_algorithm(), &serialized_root_public_key)
+            .map_err(LibraryError::unexpected_crypto_error)?;
+        let root_public_key_hash = root_public_key_hash.as_slice().try_into().map_err(|_| {
+            LibraryError::custom("invalid experimental quaternary root public-key hash length")
+        })?;
         let secret = self
             .exporter_secret
             .derive_exported_secret(
@@ -1351,6 +1382,8 @@ impl GroupEpochSecrets {
             tree_version: state.tree_version(),
             mapping_hash: *transitioning.mapping_hash().as_bytes(),
             secret: Secret::from_slice(&secret),
+            root_keypair: Some(root_keypair),
+            root_public_key_hash,
         });
         Ok(())
     }
@@ -1365,6 +1398,48 @@ impl GroupEpochSecrets {
             .as_ref()
             .map(ExperimentalQuaternaryEpochSecret::status)
     }
+
+    /// Checks that the persisted quaternary root record still has matched
+    /// public/private mKyber material. This touches no secret bytes and lets a
+    /// reload reject an obsolete authority record that predates root storage.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn validate_experimental_quaternary_root_keypair(&self) -> Result<(), LibraryError> {
+        let authority = self
+            .experimental_quaternary_epoch_secret
+            .as_ref()
+            .ok_or_else(|| {
+                LibraryError::custom("experimental group has no quaternary epoch authority")
+            })?;
+        let root_keypair = authority.root_keypair.as_ref().ok_or_else(|| {
+            LibraryError::custom("experimental quaternary authority has no persisted root key pair")
+        })?;
+        let public_mkyber_key = root_keypair
+            .public_key()
+            .experimental_mkyber_key()
+            .ok_or_else(|| {
+                LibraryError::custom(
+                    "persisted experimental quaternary root lacks mKyber public key",
+                )
+            })?;
+        let private_mkyber_key = root_keypair
+            .experimental_mkyber_private_key()
+            .map_err(|_| {
+                LibraryError::custom(
+                    "persisted experimental quaternary root has invalid mKyber private key",
+                )
+            })?
+            .ok_or_else(|| {
+                LibraryError::custom(
+                    "persisted experimental quaternary root lacks mKyber private key",
+                )
+            })?;
+        if private_mkyber_key.domain() != public_mkyber_key.domain() {
+            return Err(LibraryError::custom(
+                "persisted experimental quaternary root mKyber domains do not match",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Redacted public metadata for a persisted experimental quaternary authority.
@@ -1374,6 +1449,7 @@ pub struct ExperimentalQuaternaryEpochSecretStatus {
     epoch: u64,
     tree_version: u32,
     mapping_hash: [u8; 32],
+    root_public_key_hash: [u8; 32],
 }
 
 #[cfg(feature = "experimental-hybrid")]
@@ -1392,6 +1468,11 @@ impl ExperimentalQuaternaryEpochSecretStatus {
     pub const fn mapping_hash(&self) -> &[u8; 32] {
         &self.mapping_hash
     }
+
+    /// Returns a digest of the persisted root public key, never private bytes.
+    pub const fn root_public_key_hash(&self) -> &[u8; 32] {
+        &self.root_public_key_hash
+    }
 }
 
 #[cfg(feature = "experimental-hybrid")]
@@ -1402,6 +1483,10 @@ struct ExperimentalQuaternaryEpochSecret {
     tree_version: u32,
     mapping_hash: [u8; 32],
     secret: Secret,
+    #[serde(default)]
+    root_keypair: Option<EncryptionKeyPair>,
+    #[serde(default)]
+    root_public_key_hash: [u8; 32],
 }
 
 #[cfg(feature = "experimental-hybrid")]
@@ -1418,6 +1503,7 @@ impl ExperimentalQuaternaryEpochSecret {
             epoch: self.epoch,
             tree_version: self.tree_version,
             mapping_hash: self.mapping_hash,
+            root_public_key_hash: self.root_public_key_hash,
         }
     }
 }

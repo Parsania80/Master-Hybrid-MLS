@@ -119,7 +119,14 @@ impl TreeSyncDiff<'_> {
         params: DecryptPathParams,
         owned_keys: &[&EncryptionKeyPair],
         own_leaf_index: LeafNodeIndex,
-    ) -> Result<(Vec<EncryptionKeyPair>, CommitSecret), ApplyUpdatePathError> {
+    ) -> Result<
+        (
+            Vec<EncryptionKeyPair>,
+            CommitSecret,
+            Option<EncryptionKeyPair>,
+        ),
+        ApplyUpdatePathError,
+    > {
         let path_position = self
             .subtree_root_position(params.sender_leaf_index, own_leaf_index)
             .map_err(|_| ApplyUpdatePathError::MissingOwnLeaf)?;
@@ -262,6 +269,10 @@ impl TreeSyncDiff<'_> {
         }
 
         #[cfg(feature = "experimental-hybrid")]
+        let mut experimental_quaternary_root_keypair = None;
+        #[cfg(not(feature = "experimental-hybrid"))]
+        let experimental_quaternary_root_keypair = None;
+        #[cfg(feature = "experimental-hybrid")]
         match (
             params.expected_quaternary_tree_version,
             params.experimental_quaternary_parent_path,
@@ -353,11 +364,16 @@ impl TreeSyncDiff<'_> {
                 {
                     return Err(ApplyUpdatePathError::PathMismatch);
                 }
+                experimental_quaternary_root_keypair = Some(derived_parent_keypair);
             }
             _ => return Err(ApplyUpdatePathError::UnableToDecrypt),
         }
 
-        Ok((keypairs, commit_secret))
+        Ok((
+            keypairs,
+            commit_secret,
+            experimental_quaternary_root_keypair,
+        ))
     }
 
     /// Prepare the [`EncryptedGroupSecrets`] for a number of `invited_members`

@@ -309,7 +309,7 @@ pub fn run_test_vector(test: TreeKemTest, provider: &impl OpenMlsProvider) {
                 group_context: &group_context.tls_serialize_detached().unwrap(),
             };
 
-            let (_encryption_keys, commit_secret_inner) = tree_after_kat
+            let (_encryption_keys, commit_secret_inner, _root_keypair) = tree_after_kat
                 .empty_diff()
                 .decrypt_path(
                     provider.crypto(),
@@ -348,7 +348,7 @@ fn apply_update_path(
         group_context: &group_context.tls_serialize_detached().unwrap(),
     };
 
-    let (encryption_keys, commit_secret) = treesync
+    let (encryption_keys, commit_secret, _root_keypair) = treesync
         .empty_diff()
         .decrypt_path(
             provider.crypto(),
