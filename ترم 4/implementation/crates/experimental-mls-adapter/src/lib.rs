@@ -40,10 +40,11 @@ mod tests {
             MKYBER_RECIPIENT_KEY_MATERIAL_VERSION,
         },
         prelude::{
-            BasicCredential, Ciphersuite, CredentialWithKey, Extension, Extensions, KeyPackage,
-            LeafNodeParameters, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig,
-            MlsMessageBodyIn, MlsMessageBodyOut, MlsMessageIn, OpenMlsProvider,
-            ProcessedMessageContent, StagedWelcome, UnknownExtension,
+            ApplyUpdatePathError, BasicCredential, Capabilities, Ciphersuite, CredentialWithKey,
+            Extension, Extensions, KeyPackage, LeafNodeParameters, MlsGroup, MlsGroupCreateConfig,
+            MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageBodyOut, MlsMessageIn, OpenMlsProvider,
+            ProcessMessageError, ProcessedMessageContent, StageCommitError, StagedWelcome,
+            UnknownExtension,
         },
         treesync::{EncryptionKey, ParentNode},
     };
@@ -380,8 +381,14 @@ mod tests {
         assert_eq!(recovered.as_bytes(), encapsulation.shared_secret.as_bytes());
     }
 
-    #[test]
-    fn experimental_binary_self_update_round_trips_through_tree_sync() {
+    fn experimental_binary_pair() -> (
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+    ) {
         let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
         let domain = MkyberDomain::new([0x91; 32]);
         let alice_provider = OpenMlsRustCrypto::default();
@@ -420,7 +427,7 @@ mod tests {
                 domain,
             )
             .expect("Bob experimental KeyPackage");
-        let (add_commit, welcome, _) = alice
+        let (_add_commit, welcome, _) = alice
             .add_members(
                 &alice_provider,
                 &alice_signer,
@@ -441,7 +448,7 @@ mod tests {
             MlsMessageBodyIn::Welcome(welcome) => welcome,
             _ => panic!("expected Welcome"),
         };
-        let mut bob = StagedWelcome::new_from_welcome(
+        let bob = StagedWelcome::new_from_welcome(
             &bob_provider,
             &MlsGroupJoinConfig::builder()
                 .use_ratchet_tree_extension(true)
@@ -452,13 +459,41 @@ mod tests {
         .expect("Bob staged Welcome")
         .into_group(&bob_provider)
         .expect("Bob joins");
+        (
+            alice_provider,
+            alice_signer,
+            alice,
+            bob_provider,
+            bob_signer,
+            bob,
+        )
+    }
+
+    fn hybrid_self_update_wire(
+        bob: &mut MlsGroup,
+        bob_provider: &OpenMlsRustCrypto,
+        bob_signer: &SignatureKeyPair,
+        leaf_node_parameters: LeafNodeParameters,
+    ) -> Vec<u8> {
         let update = bob
-            .self_update(&bob_provider, &bob_signer, LeafNodeParameters::default())
+            .self_update(bob_provider, bob_signer, leaf_node_parameters)
             .expect("Bob stages hybrid self-update");
         let (update_commit, _, _) = update.into_contents();
-        let update_wire = update_commit
+        update_commit
             .tls_serialize_detached()
-            .expect("update serialization");
+            .expect("update serialization")
+    }
+
+    #[test]
+    fn experimental_binary_self_update_round_trips_through_tree_sync() {
+        let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair();
+        let update_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
         let protocol_message = MlsMessageIn::tls_deserialize_exact(&update_wire)
             .expect("update parsing")
             .try_into_protocol_message()
@@ -500,6 +535,162 @@ mod tests {
             _ => panic!("expected Bob GroupInfo"),
         };
         assert_eq!(alice_context, bob_context);
-        let _ = add_commit;
+    }
+
+    #[test]
+    fn experimental_binary_commit_rejects_tampered_wire_without_mutation() {
+        let (alice_provider, _alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair();
+        let mut update_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        let before_epoch = alice.epoch();
+        let before_tree = alice.export_ratchet_tree();
+        let last_byte = update_wire.last_mut().expect("non-empty Commit wire");
+        *last_byte ^= 0x01;
+        let protocol_message = MlsMessageIn::tls_deserialize_exact(&update_wire)
+            .expect("tampered fixed-length wire remains parseable")
+            .try_into_protocol_message()
+            .expect("tampered Commit remains a protocol message");
+
+        assert!(alice
+            .process_message(&alice_provider, protocol_message)
+            .is_err());
+        assert_eq!(alice.epoch(), before_epoch);
+        assert_eq!(alice.export_ratchet_tree(), before_tree);
+    }
+
+    #[test]
+    fn experimental_binary_commit_rejects_malformed_wire_without_mutation() {
+        let (_alice_provider, _alice_signer, alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair();
+        let mut update_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        let before_epoch = alice.epoch();
+        let before_tree = alice.export_ratchet_tree();
+        update_wire.pop().expect("non-empty Commit wire");
+
+        assert!(MlsMessageIn::tls_deserialize_exact(&update_wire).is_err());
+        assert_eq!(alice.epoch(), before_epoch);
+        assert_eq!(alice.export_ratchet_tree(), before_tree);
+    }
+
+    #[test]
+    fn experimental_binary_commit_rejects_non_member_receiver_without_mutation() {
+        let (_alice_provider, _alice_signer, _alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair();
+        let update_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+        let mallory_provider = OpenMlsRustCrypto::default();
+        let mallory_signer =
+            SignatureKeyPair::new(ciphersuite.signature_algorithm()).expect("Mallory signer");
+        let mallory_credential = CredentialWithKey {
+            credential: BasicCredential::new(b"experimental-mallory".to_vec()).into(),
+            signature_key: mallory_signer.public().into(),
+        };
+        let mut mallory = MlsGroup::new_with_group_id_experimental_mkyber(
+            &mallory_provider,
+            &mallory_signer,
+            &MlsGroupCreateConfig::builder()
+                .ciphersuite(ciphersuite)
+                .use_ratchet_tree_extension(true)
+                .build(),
+            openmls_hybrid::prelude::GroupId::from_slice(b"non-member-receiver"),
+            mallory_credential,
+            MkyberDomain::new([0x91; 32]),
+        )
+        .expect("Mallory experimental group creation");
+        let before_epoch = mallory.epoch();
+        let before_tree = mallory.export_ratchet_tree();
+        let protocol_message = MlsMessageIn::tls_deserialize_exact(&update_wire)
+            .expect("non-member Commit parsing")
+            .try_into_protocol_message()
+            .expect("non-member protocol message");
+
+        assert!(mallory
+            .process_message(&mallory_provider, protocol_message)
+            .is_err());
+        assert_eq!(mallory.epoch(), before_epoch);
+        assert_eq!(mallory.export_ratchet_tree(), before_tree);
+    }
+
+    #[test]
+    fn experimental_binary_commit_replay_is_rejected_without_mutation() {
+        let (alice_provider, _alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair();
+        let update_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        let protocol_message = MlsMessageIn::tls_deserialize_exact(&update_wire)
+            .expect("update parsing")
+            .try_into_protocol_message()
+            .expect("protocol message");
+        let staged = alice
+            .process_message(&alice_provider, protocol_message)
+            .expect("Alice processes hybrid self-update");
+        let ProcessedMessageContent::StagedCommitMessage(staged) = staged.into_content() else {
+            panic!("expected staged Commit");
+        };
+        alice
+            .merge_staged_commit(&alice_provider, *staged)
+            .expect("Alice merges hybrid self-update");
+        bob.merge_pending_commit(&bob_provider)
+            .expect("Bob merges self-update");
+        let before_epoch = alice.epoch();
+        let before_tree = alice.export_ratchet_tree();
+        let replay = MlsMessageIn::tls_deserialize_exact(&update_wire)
+            .expect("replay parsing")
+            .try_into_protocol_message()
+            .expect("replay protocol message");
+
+        assert!(alice.process_message(&alice_provider, replay).is_err());
+        assert_eq!(alice.epoch(), before_epoch);
+        assert_eq!(alice.export_ratchet_tree(), before_tree);
+    }
+
+    #[test]
+    fn experimental_binary_commit_rejects_missing_sender_capabilities_without_mutation() {
+        let (alice_provider, _alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair();
+        let update_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::builder()
+                .with_capabilities(Capabilities::default())
+                .build(),
+        );
+        let before_epoch = alice.epoch();
+        let before_tree = alice.export_ratchet_tree();
+        let protocol_message = MlsMessageIn::tls_deserialize_exact(&update_wire)
+            .expect("capability-rejection Commit parsing")
+            .try_into_protocol_message()
+            .expect("capability-rejection protocol message");
+
+        assert!(matches!(
+            alice
+                .process_message(&alice_provider, protocol_message)
+                .expect_err("missing experimental capabilities must be rejected"),
+            ProcessMessageError::InvalidCommit(StageCommitError::UpdatePathError(
+                ApplyUpdatePathError::MissingExperimentalCapability
+            ))
+        ));
+        assert_eq!(alice.epoch(), before_epoch);
+        assert_eq!(alice.export_ratchet_tree(), before_tree);
     }
 }

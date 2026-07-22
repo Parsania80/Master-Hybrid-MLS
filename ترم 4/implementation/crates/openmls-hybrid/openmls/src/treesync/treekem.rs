@@ -29,8 +29,11 @@ use super::{
 use crate::ciphersuite::Secret;
 #[cfg(feature = "experimental-hybrid")]
 use crate::experimental_hybrid::{
-    binary_hybrid_context, ExperimentalHybridPathDelivery, ForkClassicalHpkeProvider,
+    binary_hybrid_context, supports_mkyber_recipient_capabilities, ExperimentalHybridPathDelivery,
+    ForkClassicalHpkeProvider,
 };
+#[cfg(feature = "experimental-hybrid")]
+use crate::treesync::node::leaf_node::Capabilities;
 use crate::{
     binary_tree::array_representation::LeafNodeIndex,
     ciphersuite::{hpke, signable::Verifiable},
@@ -139,6 +142,9 @@ impl TreeSyncDiff<'_> {
         #[cfg(feature = "experimental-hybrid")]
         let path_secret =
             if let Some(delivery_bytes) = update_path_node.experimental_hybrid_delivery() {
+                if !supports_mkyber_recipient_capabilities(params.sender_leaf_capabilities) {
+                    return Err(ApplyUpdatePathError::MissingExperimentalCapability);
+                }
                 if update_path_node
                     .encryption_key()
                     .experimental_mkyber_key()
@@ -332,6 +338,9 @@ pub(crate) struct DecryptPathParams<'a> {
     /// The authenticated new leaf encryption key carried by the UpdatePath.
     /// Its mKyber domain selects deterministic experimental parent derivation.
     pub(crate) sender_leaf_encryption_key: &'a EncryptionKey,
+    /// Capabilities authenticated in the incoming UpdatePath leaf.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) sender_leaf_capabilities: &'a Capabilities,
     pub(crate) sender_leaf_index: LeafNodeIndex,
     pub(crate) exclusion_list: &'a HashSet<&'a LeafNodeIndex>,
     pub(crate) group_context: &'a [u8],

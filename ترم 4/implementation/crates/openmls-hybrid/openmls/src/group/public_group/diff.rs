@@ -135,6 +135,8 @@ impl<'a> PublicGroupDiff<'a> {
         let params = DecryptPathParams {
             update_path: update_path.nodes(),
             sender_leaf_encryption_key: update_path.leaf_node().encryption_key(),
+            #[cfg(feature = "experimental-hybrid")]
+            sender_leaf_capabilities: update_path.leaf_node().capabilities(),
             sender_leaf_index,
             exclusion_list,
             group_context: &self

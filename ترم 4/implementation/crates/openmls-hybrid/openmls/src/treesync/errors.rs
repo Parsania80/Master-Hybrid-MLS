@@ -63,6 +63,9 @@ pub enum ApplyUpdatePathError {
     /// Unable to decrypt the path node.
     #[error("Unable to decrypt the path node.")]
     UnableToDecrypt,
+    /// The authenticated UpdatePath leaf lacks the required experimental capabilities.
+    #[error("The UpdatePath leaf lacks required experimental capabilities.")]
+    MissingExperimentalCapability,
     /// Unable to find sender in tree.
     #[error("Unable to find sender in tree.")]
     MissingSender,

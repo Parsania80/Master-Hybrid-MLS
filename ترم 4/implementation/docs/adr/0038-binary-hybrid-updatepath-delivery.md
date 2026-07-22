@@ -29,12 +29,16 @@ MLS-128/X25519 experimental profile and fails closed for another ciphersuite.
 This is an internal feature-gated fork wire change, not RFC 9420
 interoperability. It does not yet provide experimental-member admission across
 all group builders, authenticated nonzero ArityState/tree-version handling,
-atomic storage replacement/removal, or rejection coverage for recipients,
-non-recipients, tampering, replay, malformed wire data, and capabilities.
+atomic storage replacement/removal or an experimental workload/measurement
+client.
 
 The adapter now proves one real two-member accepted-Commit round-trip: Alice
 creates an experimental group, adds Bob from a signed experimental KeyPackage,
 Bob joins through a Welcome, and Bob's serialized hybrid self-update is
 processed and merged by Alice before both members merge to matching epoch,
-ratchet-tree, and GroupContext state. Atomic storage replacement/removal and
-failure non-mutation remain Gate 57.6 work.
+ratchet-tree, and GroupContext state. Real-wire tests cover accepted recipient
+delivery, non-member rejection, ciphertext tampering, malformed wire, replay,
+and a validly signed sender UpdatePath leaf without the required experimental
+capabilities. Every rejected receiver case retains epoch and ratchet-tree
+state. Atomic storage replacement/removal and full staged failure non-mutation
+remain Gate 57.6 work.
