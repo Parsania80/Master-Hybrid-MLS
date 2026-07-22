@@ -5,20 +5,21 @@
 //! This crate deliberately links the separately named fork without exposing
 //! it through the unchanged baseline adapter. Its public workload client is
 //! deliberately restricted to normal binary mKyber self-updates accepted by
-//! the fork's atomic application boundary; adaptive transition behavior stays
-//! outside this crate until Task 60.
+//! the fork's atomic application boundary. The created groups nevertheless
+//! require the private-use ArityState capability so Task 60 transition Commits
+//! can be authenticated by every member.
 
 use std::{collections::BTreeMap, time::Instant};
 
 use arity_state::{ArityPolicySnapshot, ArityState, TransitionEvaluationState};
 use mkyber::MkyberDomain;
 use openmls_hybrid::{
-    experimental_hybrid::ExperimentalHybridCommitMetrics,
+    experimental_hybrid::{mkyber_recipient_capabilities, ExperimentalHybridCommitMetrics},
     prelude::{
-        BasicCredential, Ciphersuite, CredentialWithKey, Extension, Extensions, GroupContext,
-        GroupId, KeyPackage, LeafNodeParameters, MlsGroup, MlsGroupCreateConfig,
-        MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn, ProcessedMessageContent, StagedCommit,
-        StagedWelcome, UnknownExtension,
+        BasicCredential, Ciphersuite, CredentialWithKey, Extension, ExtensionType, Extensions,
+        GroupContext, GroupId, KeyPackage, LeafNodeParameters, MlsGroup, MlsGroupCreateConfig,
+        MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn, ProcessedMessageContent,
+        RequiredCapabilitiesExtension, StagedCommit, StagedWelcome, UnknownExtension,
     },
 };
 use openmls_hybrid_basic_credential::SignatureKeyPair;
@@ -473,6 +474,7 @@ fn credential(identity: &[u8], signer: &SignatureKeyPair) -> CredentialWithKey {
 fn experimental_group_config() -> MlsGroupCreateConfig {
     MlsGroupCreateConfig::builder()
         .ciphersuite(Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519)
+        .capabilities(mkyber_recipient_capabilities())
         .use_ratchet_tree_extension(true)
         .with_group_context_extensions(normal_binary_arity_extensions())
         .build()
@@ -498,20 +500,33 @@ fn normal_binary_arity_extensions() -> Extensions<GroupContext> {
         .expect("fixed consistent arity policy");
     let state = ArityState::normal(2, 4, 0, policy, TransitionEvaluationState::new(0, 0, 0))
         .expect("fixed valid normal binary state");
-    Extensions::single(Extension::Unknown(
-        state.extension_type(),
-        UnknownExtension(
-            state
-                .extension_value_bytes()
-                .expect("fixed canonical ArityState encoding"),
+    Extensions::from_vec(vec![
+        Extension::Unknown(
+            state.extension_type(),
+            UnknownExtension(
+                state
+                    .extension_value_bytes()
+                    .expect("fixed canonical ArityState encoding"),
+            ),
         ),
-    ))
-    .expect("one unique ArityState extension")
+        Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(
+            &[ExtensionType::Unknown(
+                arity_state::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE,
+            )],
+            &[],
+            &[],
+        )),
+    ])
+    .expect("unique authenticated experimental extensions")
 }
 
 #[cfg(test)]
 mod tests {
-    use arity_state::{ArityPolicySnapshot, ArityState, TransitionEvaluationState};
+    use adaptive_tree::{BinaryLeafMember, BinaryToQuaternaryLeafMapping};
+    use arity_state::{
+        hash_canonical_public_bytes, ArityLifecycle, ArityPolicySnapshot, ArityState, MappingHash,
+        TransitionEvaluationState, TreeCoverBinding,
+    };
     use hybrid_path_secret::{
         open_hybrid_path_level_with_provider, seal_hybrid_path_level_with_provider,
         ClassicalHpkeKeyPair, HybridPathCiphertext, HybridPathLevelContext,
@@ -536,10 +551,11 @@ mod tests {
         },
         prelude::{
             ApplyUpdatePathError, BasicCredential, Capabilities, Ciphersuite, CredentialWithKey,
-            Extension, Extensions, GroupContext, KeyPackage, LeafNodeParameters, MlsGroup,
-            MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageBodyOut,
-            MlsMessageIn, OpenMlsProvider, ProcessMessageError, ProcessedMessageContent,
-            StageCommitError, StagedCommit, StagedWelcome, UnknownExtension,
+            Extension, ExtensionType, Extensions, GroupContext, KeyPackage, LeafNodeParameters,
+            MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn,
+            MlsMessageBodyOut, MlsMessageIn, OpenMlsProvider, ProcessMessageError,
+            ProcessedMessageContent, RequiredCapabilitiesExtension, StageCommitError, StagedCommit,
+            StagedWelcome, UnknownExtension,
         },
         treesync::{EncryptionKey, ParentNode},
     };
@@ -549,9 +565,12 @@ mod tests {
     use rand_core::SeedableRng;
     use tls_codec::{Deserialize as TlsDeserializeTrait, Serialize as TlsSerializeTrait};
     use transition_policy::{
-        DeltaThreshold, PolicyWindowConfig, TransitionByteComponent, TransitionByteRange,
-        TransitionPreflightMeasurement, TransitionStartConfig,
+        CommitImpactFacts, DeltaThreshold, ImpactfulCommitByteCosts, PolicyTransitionState,
+        PolicyWindow, PolicyWindowConfig, PreflightSavings, TransitionByteComponent,
+        TransitionByteRange, TransitionPreflightMeasurement, TransitionStartConfig,
+        TransitionStartEvaluator,
     };
+    use transition_tree::DeliveryOnlyTreeCover;
 
     use super::{fork_ciphersuite_type_name, OPENMLS_HYBRID_UPSTREAM_REVISION};
 
@@ -916,6 +935,20 @@ mod tests {
         SignatureKeyPair,
         MlsGroup,
     ) {
+        experimental_binary_pair_with_policy_controls(128, 2)
+    }
+
+    fn experimental_binary_pair_with_policy_controls(
+        target_group_size: u32,
+        warmup_accepted_commits: u32,
+    ) -> (
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+    ) {
         let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
         let domain = MkyberDomain::new([0x91; 32]);
         let alice_provider = OpenMlsRustCrypto::default();
@@ -934,8 +967,12 @@ mod tests {
         };
         let config = MlsGroupCreateConfig::builder()
             .ciphersuite(ciphersuite)
+            .capabilities(mkyber_recipient_capabilities())
             .use_ratchet_tree_extension(true)
-            .with_group_context_extensions(normal_binary_arity_extensions())
+            .with_group_context_extensions(normal_binary_arity_extensions_with_controls(
+                target_group_size,
+                warmup_accepted_commits,
+            ))
             .build();
         let mut alice = MlsGroup::new_with_group_id_experimental_mkyber(
             &alice_provider,
@@ -998,7 +1035,15 @@ mod tests {
     }
 
     fn normal_binary_arity_extensions() -> Extensions<GroupContext> {
-        let window = PolicyWindowConfig::new(20, 2, 1).expect("valid policy window");
+        normal_binary_arity_extensions_with_controls(128, 2)
+    }
+
+    fn normal_binary_arity_extensions_with_controls(
+        target_group_size: u32,
+        warmup_accepted_commits: u32,
+    ) -> Extensions<GroupContext> {
+        let window =
+            PolicyWindowConfig::new(20, warmup_accepted_commits, 1).expect("valid policy window");
         let preflight = TransitionPreflightMeasurement::from_serialized_outer_message(
             &[0_u8; 100],
             &[TransitionByteRange::new(
@@ -1011,21 +1056,31 @@ mod tests {
         let resolved = DeltaThreshold::PercentOfTransitionMicro(25_000_000)
             .resolve_for_preflight(preflight)
             .expect("resolved test threshold");
-        let start = TransitionStartConfig::new(2, 4, 128, 1, resolved.resolved_bytes())
-            .expect("valid transition controls");
+        let start =
+            TransitionStartConfig::new(2, 4, target_group_size, 1, resolved.resolved_bytes())
+                .expect("valid transition controls");
         let policy = ArityPolicySnapshot::from_policy_inputs(window, start, resolved)
             .expect("self-consistent policy snapshot");
         let state = ArityState::normal(2, 4, 0, policy, TransitionEvaluationState::new(0, 0, 0))
             .expect("valid normal binary state");
-        Extensions::single(Extension::Unknown(
-            state.extension_type(),
-            UnknownExtension(
-                state
-                    .extension_value_bytes()
-                    .expect("canonical ArityState encoding"),
+        Extensions::from_vec(vec![
+            Extension::Unknown(
+                state.extension_type(),
+                UnknownExtension(
+                    state
+                        .extension_value_bytes()
+                        .expect("canonical ArityState encoding"),
+                ),
             ),
-        ))
-        .expect("unique ArityState extension")
+            Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(
+                &[ExtensionType::Unknown(
+                    arity_state::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE,
+                )],
+                &[],
+                &[],
+            )),
+        ])
+        .expect("unique authenticated experimental extensions")
     }
 
     fn hybrid_self_update_wire(
@@ -1059,6 +1114,142 @@ mod tests {
             panic!("expected staged Commit");
         };
         *staged
+    }
+
+    fn arity_state_from_group(group: &MlsGroup) -> ArityState {
+        let extension = group
+            .extensions()
+            .unknown(arity_state::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
+            .expect("authenticated ArityState extension");
+        ArityState::from_extension_value(&extension.0).expect("valid authenticated ArityState")
+    }
+
+    fn transition_mapping_from_group(group: &MlsGroup) -> BinaryToQuaternaryLeafMapping {
+        BinaryToQuaternaryLeafMapping::from_binary_members(
+            group
+                .members()
+                .map(|member| BinaryLeafMember {
+                    member_id: member.credential.serialized_content().to_vec(),
+                    binary_leaf_index: member.index.u32(),
+                })
+                .collect(),
+        )
+        .expect("canonical transition mapping")
+    }
+
+    fn triggered_transition_state(group: &MlsGroup) -> ArityState {
+        let normal = arity_state_from_group(group);
+        let mapping = transition_mapping_from_group(group);
+        let treecover =
+            DeliveryOnlyTreeCover::from_mapping(1, &mapping).expect("delivery-only TreeCover");
+        let window_config = PolicyWindowConfig::new(
+            normal.policy().window_accepted_commits(),
+            normal.policy().warmup_accepted_commits(),
+            normal.policy().q_min(),
+        )
+        .expect("stored valid policy window");
+        let start_config = TransitionStartConfig::new(
+            normal.active_arity(),
+            normal.candidate_arity(),
+            normal.policy().target_group_size(),
+            normal.policy().stable_epoch_count(),
+            normal.policy().resolved_delta_bytes(),
+        )
+        .expect("stored valid transition start config");
+        let mut window = PolicyWindow::new(window_config);
+        let record = window
+            .append_accepted(
+                group.epoch().as_u64(),
+                CommitImpactFacts {
+                    transition_state_changed: true,
+                    ..CommitImpactFacts::default()
+                },
+            )
+            .expect("accepted post-warmup transition observation")
+            .record;
+        let savings = PreflightSavings::from_impactful_costs(
+            &[ImpactfulCommitByteCosts::new(201, 75)],
+            normal.policy().transition_preflight_bytes(),
+        )
+        .expect("exact preflight saving");
+        let evaluation = TransitionStartEvaluator::new(start_config)
+            .evaluate_post_warmup(
+                &record,
+                PolicyTransitionState::Normal,
+                group.members().count() as u32,
+                &window,
+                Some(savings),
+            )
+            .expect("transition start evaluation");
+        assert!(evaluation.is_triggered());
+        let mapping_bytes = mapping.canonical_bytes().expect("mapping bytes");
+        normal
+            .begin_transition(
+                &evaluation,
+                window.q_e(),
+                MappingHash::new(hash_canonical_public_bytes(&mapping_bytes)),
+                TreeCoverBinding::new(
+                    treecover.version(),
+                    treecover.hash().expect("TreeCover hash"),
+                )
+                .expect("versioned TreeCover binding"),
+            )
+            .expect("triggered transition state")
+    }
+
+    #[test]
+    fn experimental_transition_commit_authenticates_mapping_and_treecover_atomically() {
+        let (alice_provider, alice_signer, mut alice, bob_provider, _bob_signer, mut bob) =
+            experimental_binary_pair_with_policy_controls(2, 0);
+        let next_state = triggered_transition_state(&alice);
+
+        let (commit, welcome, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, next_state.clone())
+            .expect("sender stages authenticated transition Commit");
+        assert!(welcome.is_none());
+        let wire = commit
+            .tls_serialize_detached()
+            .expect("transition Commit serialization");
+        let staged = staged_commit_from_wire(&mut bob, &bob_provider, &wire);
+
+        bob.merge_staged_commit_experimental_transition_atomic(&bob_provider, staged)
+            .expect("receiver atomically merges transition Commit");
+        alice
+            .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+            .expect("sender atomically merges transition Commit");
+
+        assert_eq!(alice.epoch(), bob.epoch());
+        assert_eq!(alice.export_ratchet_tree(), bob.export_ratchet_tree());
+        assert_eq!(arity_state_from_group(&alice), next_state);
+        assert_eq!(arity_state_from_group(&bob), next_state);
+        assert!(matches!(
+            next_state.lifecycle(),
+            ArityLifecycle::Transitioning(_)
+        ));
+    }
+
+    #[test]
+    fn binary_atomic_merge_rejects_a_transition_without_mutating_receiver_state() {
+        let (alice_provider, alice_signer, mut alice, bob_provider, _bob_signer, mut bob) =
+            experimental_binary_pair_with_policy_controls(2, 0);
+        let next_state = triggered_transition_state(&alice);
+        let (commit, _, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, next_state)
+            .expect("sender stages authenticated transition Commit");
+        let wire = commit
+            .tls_serialize_detached()
+            .expect("transition Commit serialization");
+        let staged = staged_commit_from_wire(&mut bob, &bob_provider, &wire);
+        let epoch_before = bob.epoch();
+        let tree_before = bob.export_ratchet_tree();
+        let state_before = arity_state_from_group(&bob);
+
+        assert!(bob
+            .merge_staged_commit_experimental_atomic(&bob_provider, staged)
+            .is_err());
+        assert_eq!(bob.epoch(), epoch_before);
+        assert_eq!(bob.export_ratchet_tree(), tree_before);
+        assert_eq!(arity_state_from_group(&bob), state_before);
     }
 
     #[test]

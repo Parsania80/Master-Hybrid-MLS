@@ -412,6 +412,7 @@ dependencies = [
 name = "experimental-mls-adapter"
 version = "0.1.0"
 dependencies = [
+ "adaptive-tree",
  "arity-state",
  "hybrid-path-secret",
  "mkyber",
@@ -424,6 +425,7 @@ dependencies = [
  "thiserror",
  "tls_codec",
  "transition-policy",
+ "transition-tree",
 ]
 
 [[package]]
@@ -1089,6 +1091,7 @@ dependencies = [
 name = "openmls-hybrid"
 version = "0.8.1"
 dependencies = [
+ "adaptive-tree",
  "arity-state",
  "hybrid-path-secret",
  "log",
@@ -1101,6 +1104,7 @@ dependencies = [
  "serde_bytes",
  "thiserror",
  "tls_codec",
+ "transition-tree",
  "zeroize",
 ]
 

@@ -16,9 +16,19 @@ use crate::{
 #[cfg(feature = "experimental-hybrid")]
 use crate::storage::TransactionalStorageProvider;
 #[cfg(feature = "experimental-hybrid")]
-use arity_state::{ArityLifecycle, ArityState};
+use adaptive_tree::{BinaryLeafMember, BinaryToQuaternaryLeafMapping};
+#[cfg(feature = "experimental-hybrid")]
+use arity_state::{hash_canonical_public_bytes, ArityLifecycle, ArityState};
 #[cfg(feature = "experimental-hybrid")]
 use openmls_traits::storage::CURRENT_VERSION;
+#[cfg(feature = "experimental-hybrid")]
+use transition_tree::DeliveryOnlyTreeCover;
+
+#[cfg(feature = "experimental-hybrid")]
+type ExperimentalTransitionCommitResult<StorageError> = Result<
+    (MlsMessageOut, Option<MlsMessageOut>, Option<GroupInfo>),
+    crate::group::errors::CreateGroupContextExtProposalError<StorageError>,
+>;
 
 #[cfg(feature = "extensions-draft-08")]
 use crate::{
@@ -412,16 +422,130 @@ impl MlsGroup {
         Ok(())
     }
 
+    /// Creates a real MLS GroupContext-extension Commit that begins this
+    /// thesis-local binary-to-quaternary transition.
+    ///
+    /// The caller provides the policy-evaluated next `ArityState`; this method
+    /// derives the deterministic mapping and frozen delivery-only TreeCover
+    /// from the current authenticated MLS membership and accepts the state
+    /// only when both committed hashes match. Sender application must use
+    /// [`Self::merge_pending_commit_experimental_transition_atomic`].
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn begin_experimental_transition<Provider>(
+        &mut self,
+        provider: &Provider,
+        signer: &impl Signer,
+        next_state: ArityState,
+    ) -> ExperimentalTransitionCommitResult<Provider::StorageError>
+    where
+        Provider: OpenMlsProvider,
+    {
+        self.validate_experimental_binary_arity_state()?;
+        let current_state = self.experimental_arity_state()?;
+        let mapping = self.experimental_transition_mapping()?;
+        self.validate_experimental_transition_target(
+            self.epoch().as_u64(),
+            &current_state,
+            &mapping,
+            &next_state,
+        )?;
+        let extensions = self.experimental_extensions_with_arity_state(&next_state)?;
+        self.update_group_context_extensions(provider, extensions, signer)
+    }
+
+    /// Atomically applies a receiver's validated dedicated transition Commit.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn merge_staged_commit_experimental_transition_atomic<Provider>(
+        &mut self,
+        provider: &Provider,
+        staged_commit: StagedCommit,
+    ) -> Result<(), MergeCommitError<Provider::StorageError>>
+    where
+        Provider: OpenMlsProvider,
+        Provider::Storage: TransactionalStorageProvider<CURRENT_VERSION>,
+    {
+        let prior_epoch = self.epoch().as_u64();
+        let prior_state = self.experimental_arity_state()?;
+        let prior_mapping = self.experimental_transition_mapping()?;
+        self.validate_experimental_binary_arity_state()?;
+        let storage = provider.storage();
+        let transaction = storage
+            .begin_transaction()
+            .map_err(MergeCommitError::StorageError)?;
+        let mut candidate = Self::load(&transaction, self.group_id())
+            .map_err(MergeCommitError::StorageError)?
+            .ok_or_else(|| LibraryError::custom("experimental group is missing from storage"))?;
+        candidate.aad.clone_from(&self.aad);
+        candidate.merge_staged_commit_with_storage(&transaction, staged_commit)?;
+        let next_state = candidate.experimental_arity_state()?;
+        candidate.validate_experimental_transition_target(
+            prior_epoch,
+            &prior_state,
+            &prior_mapping,
+            &next_state,
+        )?;
+        storage
+            .commit_transaction(transaction)
+            .map_err(MergeCommitError::StorageError)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    /// Atomically applies this sender's pending dedicated transition Commit.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn merge_pending_commit_experimental_transition_atomic<Provider>(
+        &mut self,
+        provider: &Provider,
+    ) -> Result<(), MergePendingCommitError<Provider::StorageError>>
+    where
+        Provider: OpenMlsProvider,
+        Provider::Storage: TransactionalStorageProvider<CURRENT_VERSION>,
+    {
+        let prior_epoch = self.epoch().as_u64();
+        let prior_state = self
+            .experimental_arity_state()
+            .map_err(MlsGroupStateError::from)?;
+        let prior_mapping = self
+            .experimental_transition_mapping()
+            .map_err(MlsGroupStateError::from)?;
+        self.validate_experimental_binary_arity_state()
+            .map_err(MlsGroupStateError::from)?;
+        let storage = provider.storage();
+        let transaction = storage.begin_transaction().map_err(|error| {
+            MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+        })?;
+        let mut candidate = Self::load(&transaction, self.group_id())
+            .map_err(|error| {
+                MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+            })?
+            .ok_or_else(|| {
+                MlsGroupStateError::LibraryError(LibraryError::custom(
+                    "experimental group is missing from storage",
+                ))
+            })?;
+        candidate.aad.clone_from(&self.aad);
+        candidate.merge_pending_commit_with_storage(&transaction)?;
+        let next_state = candidate
+            .experimental_arity_state()
+            .map_err(MlsGroupStateError::from)?;
+        candidate
+            .validate_experimental_transition_target(
+                prior_epoch,
+                &prior_state,
+                &prior_mapping,
+                &next_state,
+            )
+            .map_err(MlsGroupStateError::from)?;
+        storage.commit_transaction(transaction).map_err(|error| {
+            MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+        })?;
+        *self = candidate;
+        Ok(())
+    }
+
     #[cfg(feature = "experimental-hybrid")]
     fn validate_experimental_binary_arity_state(&self) -> Result<(), LibraryError> {
-        let extension = self
-            .extensions()
-            .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
-            .ok_or_else(|| {
-                LibraryError::custom("experimental group has no authenticated ArityState")
-            })?;
-        let state = ArityState::from_extension_value(&extension.0)
-            .map_err(|_| LibraryError::custom("experimental group has invalid ArityState"))?;
+        let state = self.experimental_arity_state()?;
         if state.active_arity() != 2
             || state.candidate_arity() != 4
             || state.tree_version() != 0
@@ -432,6 +556,121 @@ impl MlsGroup {
             ));
         }
         Ok(())
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    fn experimental_arity_state(&self) -> Result<ArityState, LibraryError> {
+        let extension = self
+            .extensions()
+            .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
+            .ok_or_else(|| {
+                LibraryError::custom("experimental group has no authenticated ArityState")
+            })?;
+        ArityState::from_extension_value(&extension.0)
+            .map_err(|_| LibraryError::custom("experimental group has invalid ArityState"))
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    fn experimental_transition_mapping(
+        &self,
+    ) -> Result<BinaryToQuaternaryLeafMapping, LibraryError> {
+        let members = self
+            .members()
+            .map(|member| BinaryLeafMember {
+                member_id: member.credential.serialized_content().to_vec(),
+                binary_leaf_index: member.index.u32(),
+            })
+            .collect();
+        BinaryToQuaternaryLeafMapping::from_binary_members(members).map_err(|_| {
+            LibraryError::custom("experimental transition cannot derive a canonical mapping")
+        })
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    fn validate_experimental_transition_target(
+        &self,
+        prior_epoch: u64,
+        prior_state: &ArityState,
+        prior_mapping: &BinaryToQuaternaryLeafMapping,
+        next_state: &ArityState,
+    ) -> Result<(), LibraryError> {
+        if next_state.policy() != prior_state.policy()
+            || next_state.active_arity() != 4
+            || next_state.candidate_arity() != 4
+            || next_state.tree_version() != 1
+        {
+            return Err(LibraryError::custom(
+                "experimental transition state is not canonical 2-to-4",
+            ));
+        }
+        let ArityLifecycle::Transitioning(transitioning) = next_state.lifecycle() else {
+            return Err(LibraryError::custom(
+                "experimental transition state is not transitioning",
+            ));
+        };
+        if next_state.evaluation().last_evaluated_epoch() != prior_epoch
+            || transitioning.transition_epoch()
+                != prior_epoch
+                    .checked_add(1)
+                    .ok_or_else(|| LibraryError::custom("experimental transition epoch overflow"))?
+        {
+            return Err(LibraryError::custom(
+                "experimental transition epoch is not bound to the Commit",
+            ));
+        }
+        let mapping = self.experimental_transition_mapping()?;
+        if &mapping != prior_mapping {
+            return Err(LibraryError::custom(
+                "experimental transition Commit changes MLS membership",
+            ));
+        }
+        let mapping_bytes = mapping
+            .canonical_bytes()
+            .map_err(|_| LibraryError::custom("experimental transition mapping encoding failed"))?;
+        if transitioning.mapping_hash().as_bytes() != &hash_canonical_public_bytes(&mapping_bytes) {
+            return Err(LibraryError::custom(
+                "experimental transition mapping hash mismatch",
+            ));
+        }
+        let treecover =
+            DeliveryOnlyTreeCover::from_mapping(transitioning.treecover().version(), &mapping)
+                .map_err(|_| {
+                    LibraryError::custom("experimental transition TreeCover derivation failed")
+                })?;
+        if treecover
+            .hash()
+            .map_err(|_| LibraryError::custom("experimental transition TreeCover hash failed"))?
+            != transitioning.treecover().hash()
+        {
+            return Err(LibraryError::custom(
+                "experimental transition TreeCover hash mismatch",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    fn experimental_extensions_with_arity_state(
+        &self,
+        state: &ArityState,
+    ) -> Result<crate::extensions::Extensions<GroupContext>, LibraryError> {
+        let mut extensions = self
+            .extensions()
+            .iter()
+            .filter(|extension| {
+                extension.extension_type()
+                    != crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE.into()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        extensions.push(crate::extensions::Extension::Unknown(
+            state.extension_type(),
+            crate::extensions::UnknownExtension(state.extension_value_bytes().map_err(|_| {
+                LibraryError::custom("experimental transition state encoding failed")
+            })?),
+        ));
+        crate::extensions::Extensions::from_vec(extensions)
+            .map_err(|_| LibraryError::custom("experimental transition extension set is invalid"))
     }
 
     /// Helper function to read decryption keypairs.

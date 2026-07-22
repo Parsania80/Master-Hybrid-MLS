@@ -16,10 +16,12 @@ tls_codec.workspace = true
 transition-policy = { path = "../transition-policy" }
 
 [dev-dependencies]
+adaptive-tree = { path = "../adaptive-tree" }
 hybrid-path-secret = { path = "../hybrid-path-secret" }
 openmls_hybrid_rust_crypto = { package = "openmls_rust_crypto", path = "../openmls-hybrid/openmls_rust_crypto", features = ["transaction-test-utils"] }
 rand_chacha.workspace = true
 rand_core.workspace = true
+transition-tree = { path = "../transition-tree" }
 
 [lints]
 workspace = true

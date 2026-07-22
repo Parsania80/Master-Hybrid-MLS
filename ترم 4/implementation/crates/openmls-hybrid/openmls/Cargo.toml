@@ -26,9 +26,11 @@ serde_bytes = "0.11.17"
 mkyber = { path = "../../mkyber", optional = true }
 hybrid-path-secret = { path = "../../hybrid-path-secret", optional = true }
 arity-state = { path = "../../arity-state", optional = true }
+adaptive-tree = { path = "../../adaptive-tree", optional = true }
+transition-tree = { path = "../../transition-tree", optional = true }
 
 [features]
-experimental-hybrid = ["dep:arity-state", "dep:hybrid-path-secret", "dep:mkyber"]
+experimental-hybrid = ["dep:adaptive-tree", "dep:arity-state", "dep:hybrid-path-secret", "dep:mkyber", "dep:transition-tree"]
 test-utils = []
 backtrace = []
 libcrux-provider = []
