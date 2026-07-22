@@ -5,6 +5,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+adaptive-tree = { path = "../adaptive-tree" }
 arity-state = { path = "../arity-state" }
 mkyber = { path = "../mkyber" }
 openmls-hybrid.workspace = true
@@ -14,15 +15,14 @@ simulation = { path = "../simulation" }
 thiserror.workspace = true
 tls_codec.workspace = true
 transition-policy = { path = "../transition-policy" }
+transition-tree = { path = "../transition-tree" }
 
 [dev-dependencies]
-adaptive-tree = { path = "../adaptive-tree" }
 hybrid-path-secret = { path = "../hybrid-path-secret" }
 openmls-hybrid = { workspace = true, features = ["experimental-test-utils"] }
 openmls_hybrid_rust_crypto = { package = "openmls_rust_crypto", path = "../openmls-hybrid/openmls_rust_crypto", features = ["transaction-test-utils"] }
 rand_chacha.workspace = true
 rand_core.workspace = true
-transition-tree = { path = "../transition-tree" }
 
 [lints]
 workspace = true
