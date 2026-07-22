@@ -221,8 +221,17 @@ pub enum ExperimentalBinaryWorkloadError {
     #[error("valid experimental workload members did not converge")]
     DivergentPublicState,
     /// The real probe estimate did not authorize the configured adaptive transition.
-    #[error("the measured adaptive policy did not authorize a transition")]
-    TransitionNotAuthorized,
+    #[error(
+        "the measured adaptive policy did not authorize a transition: binary {current_binary_update_bytes} bytes, quaternary candidate {quaternary_candidate_bytes} bytes, preflight {transition_preflight_bytes} bytes"
+    )]
+    TransitionNotAuthorized {
+        /// Observed outer byte length of the measured normal binary UpdatePath Commit.
+        current_binary_update_bytes: u64,
+        /// Observed outer byte length of the real fresh-group quaternary probe Commit.
+        quaternary_candidate_bytes: u64,
+        /// Explicitly estimated transition preflight byte length from the real probe.
+        transition_preflight_bytes: u64,
+    },
 }
 
 struct ExperimentalWorkloadMember {
@@ -437,7 +446,12 @@ pub fn execute_experimental_adaptive_workload(
         )
         .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
     if !evaluation.is_triggered() {
-        return Err(ExperimentalBinaryWorkloadError::TransitionNotAuthorized);
+        return Err(ExperimentalBinaryWorkloadError::TransitionNotAuthorized {
+            current_binary_update_bytes: current_bytes,
+            quaternary_candidate_bytes: candidate_bytes,
+            transition_preflight_bytes: u64::try_from(preflight.estimated_bytes())
+                .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+        });
     }
     let mapping = transition_mapping_from_group(&members[0].group)?;
     let treecover = DeliveryOnlyTreeCover::from_mapping(1, &mapping)
@@ -1165,7 +1179,11 @@ fn probe_transition_state(group: &MlsGroup) -> Result<ArityState, ExperimentalBi
         )
         .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
     if !evaluation.is_triggered() {
-        return Err(ExperimentalBinaryWorkloadError::TransitionNotAuthorized);
+        return Err(ExperimentalBinaryWorkloadError::TransitionNotAuthorized {
+            current_binary_update_bytes: 0,
+            quaternary_candidate_bytes: 0,
+            transition_preflight_bytes: normal.policy().transition_preflight_bytes(),
+        });
     }
     normal
         .begin_transition(
@@ -1273,8 +1291,8 @@ mod tests {
     fn adaptive_workload_refuses_a_transition_when_real_probe_has_no_byte_saving() {
         let config = simulation::BaselineWorkloadConfig {
             group_id: b"task-61-adaptive-workload".to_vec(),
-            initial_member_count: 2,
-            maximum_member_count: 2,
+            initial_member_count: 5,
+            maximum_member_count: 5,
             operation_count: 2,
             region_count: 2,
             committer_strategy: simulation::CommitterStrategy::RoundRobin,
@@ -1283,10 +1301,17 @@ mod tests {
         let probe = super::measure_adaptive_probe(&config).expect("real adaptive probe");
         assert!(!probe.transition_wire.is_empty());
         assert!(!probe.quaternary_update_wire.is_empty());
-        assert!(matches!(
-            super::execute_experimental_adaptive_workload(&config),
-            Err(super::ExperimentalBinaryWorkloadError::TransitionNotAuthorized)
-        ));
+        let Err(super::ExperimentalBinaryWorkloadError::TransitionNotAuthorized {
+            current_binary_update_bytes,
+            quaternary_candidate_bytes,
+            transition_preflight_bytes,
+        }) = super::execute_experimental_adaptive_workload(&config)
+        else {
+            panic!("the real policy must reject a non-saving candidate");
+        };
+        assert!(current_binary_update_bytes > 0);
+        assert!(quaternary_candidate_bytes >= current_binary_update_bytes);
+        assert!(transition_preflight_bytes > 0);
     }
 
     #[test]
