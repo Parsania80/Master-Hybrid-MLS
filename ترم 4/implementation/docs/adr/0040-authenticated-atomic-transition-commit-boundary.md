@@ -113,6 +113,9 @@ also derives an experimental quaternary authority from a later MLS epoch.
   tamper, and replay cases preserve public group state and quaternary authority.
   Inbound message-ratchet state can advance before rejection and remains
   outside this assertion.
+- Exhaustive injected failures at every storage mutation in both receiver
+  staged-transition and sender pending-transition merges preserve the exact
+  live and persisted pre-merge state, including absent quaternary authority.
 - Locked/offline adapter tests cover the round trip and rejection boundary.
 
 ## Explicit Non-Claims and Remaining Work
@@ -120,7 +123,6 @@ also derives an experimental quaternary authority from a later MLS epoch.
 This decision now has authenticated, receiver-validated mapped parent-path
 delivery restricted to exact quaternary sibling resolutions and an atomic
 private-pair lifecycle, while its MLS carrier and public TreeKEM remain binary.
-It does not yet inject transition-specific storage faults or replace the MLS
-application/message key schedule. Task 60 remains current only until the
-storage-fault boundary exists. No adaptive workload or three-mode measurement
-is available from this boundary.
+It does not replace the MLS application/message key schedule. Task 60 is
+complete; adaptive workload and measurement work begins at Task 61. No
+three-mode measurement is available from this boundary.

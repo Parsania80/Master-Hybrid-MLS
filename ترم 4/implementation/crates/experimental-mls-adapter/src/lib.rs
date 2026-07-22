@@ -2257,6 +2257,132 @@ mod tests {
     }
 
     #[test]
+    fn transition_atomic_receiver_merge_rolls_back_every_storage_mutation() {
+        let (alice_provider, alice_signer, mut alice, bob_provider, _bob_signer, mut bob) =
+            experimental_binary_pair_with_policy_controls(2, 0);
+        let transition_state = triggered_transition_state(&alice);
+        let (transition_commit, _, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, transition_state)
+            .expect("Alice stages control transition");
+        let transition_wire = transition_commit
+            .tls_serialize_detached()
+            .expect("control transition wire");
+        let control_staged = staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+        bob_provider.storage().set_transaction_failure_at(None);
+        bob.merge_staged_commit_experimental_transition_atomic(&bob_provider, control_staged)
+            .expect("control transition receiver merge");
+        let mutation_count = bob_provider.storage().last_transaction_mutation_count();
+        assert!(mutation_count > 0);
+
+        for failure_at in 0..mutation_count {
+            let (alice_provider, alice_signer, mut alice, bob_provider, _bob_signer, mut bob) =
+                experimental_binary_pair_with_policy_controls(2, 0);
+            let transition_state = triggered_transition_state(&alice);
+            let (transition_commit, _, _) = alice
+                .begin_experimental_transition(&alice_provider, &alice_signer, transition_state)
+                .expect("Alice stages transition");
+            let transition_wire = transition_commit
+                .tls_serialize_detached()
+                .expect("transition wire");
+            let staged = staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+            let before_epoch = bob.epoch();
+            let before_tree = bob.export_ratchet_tree();
+            let before_extensions = bob.extensions().clone();
+            let before_authority = bob.experimental_quaternary_epoch_secret_status();
+            let before_storage = bob_provider.storage().values.read().unwrap().clone();
+            bob_provider
+                .storage()
+                .set_transaction_failure_at(Some(failure_at));
+
+            assert!(bob
+                .merge_staged_commit_experimental_transition_atomic(&bob_provider, staged)
+                .is_err());
+            assert_eq!(bob.epoch(), before_epoch);
+            assert_eq!(bob.export_ratchet_tree(), before_tree);
+            assert_eq!(bob.extensions(), &before_extensions);
+            assert_eq!(
+                bob.experimental_quaternary_epoch_secret_status(),
+                before_authority
+            );
+            assert_eq!(
+                *bob_provider.storage().values.read().unwrap(),
+                before_storage
+            );
+            let reloaded = MlsGroup::load(bob_provider.storage(), bob.group_id())
+                .expect("failed transition transaction remains loadable")
+                .expect("stored pre-transition group");
+            assert_eq!(reloaded.epoch(), before_epoch);
+            assert_eq!(reloaded.export_ratchet_tree(), before_tree);
+            assert_eq!(reloaded.extensions(), &before_extensions);
+            assert_eq!(
+                reloaded.experimental_quaternary_epoch_secret_status(),
+                before_authority
+            );
+        }
+    }
+
+    #[test]
+    fn transition_atomic_pending_merge_rolls_back_every_storage_mutation() {
+        let (control_provider, control_signer, mut control, _bob_provider, _bob_signer, _bob) =
+            experimental_binary_pair_with_policy_controls(2, 0);
+        let transition_state = triggered_transition_state(&control);
+        let (_control_commit, _, _) = control
+            .begin_experimental_transition(&control_provider, &control_signer, transition_state)
+            .expect("control sender stages transition");
+        control_provider.storage().set_transaction_failure_at(None);
+        control
+            .merge_pending_commit_experimental_transition_atomic(&control_provider)
+            .expect("control transition pending merge");
+        let mutation_count = control_provider.storage().last_transaction_mutation_count();
+        assert!(mutation_count > 0);
+
+        for failure_at in 0..mutation_count {
+            let (alice_provider, alice_signer, mut alice, _bob_provider, _bob_signer, _bob) =
+                experimental_binary_pair_with_policy_controls(2, 0);
+            let transition_state = triggered_transition_state(&alice);
+            let (_transition_commit, _, _) = alice
+                .begin_experimental_transition(&alice_provider, &alice_signer, transition_state)
+                .expect("Alice stages transition");
+            let before_epoch = alice.epoch();
+            let before_tree = alice.export_ratchet_tree();
+            let before_extensions = alice.extensions().clone();
+            let before_authority = alice.experimental_quaternary_epoch_secret_status();
+            let before_storage = alice_provider.storage().values.read().unwrap().clone();
+            assert!(alice.pending_commit().is_some());
+            alice_provider
+                .storage()
+                .set_transaction_failure_at(Some(failure_at));
+
+            assert!(alice
+                .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+                .is_err());
+            assert_eq!(alice.epoch(), before_epoch);
+            assert_eq!(alice.export_ratchet_tree(), before_tree);
+            assert_eq!(alice.extensions(), &before_extensions);
+            assert_eq!(
+                alice.experimental_quaternary_epoch_secret_status(),
+                before_authority
+            );
+            assert!(alice.pending_commit().is_some());
+            assert_eq!(
+                *alice_provider.storage().values.read().unwrap(),
+                before_storage
+            );
+            let reloaded = MlsGroup::load(alice_provider.storage(), alice.group_id())
+                .expect("failed transition pending transaction remains loadable")
+                .expect("stored pending transition group");
+            assert_eq!(reloaded.epoch(), before_epoch);
+            assert_eq!(reloaded.export_ratchet_tree(), before_tree);
+            assert_eq!(reloaded.extensions(), &before_extensions);
+            assert_eq!(
+                reloaded.experimental_quaternary_epoch_secret_status(),
+                before_authority
+            );
+            assert!(reloaded.pending_commit().is_some());
+        }
+    }
+
+    #[test]
     fn experimental_binary_commit_rejects_tampered_wire_without_mutation() {
         let (alice_provider, _alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
             experimental_binary_pair();
