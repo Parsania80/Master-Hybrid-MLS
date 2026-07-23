@@ -19,7 +19,7 @@ use arity_state::{
     hash_canonical_public_bytes, ArityPolicySnapshot, ArityState, MappingHash,
     TransitionEvaluationState, TreeCoverBinding,
 };
-use mkyber::MkyberDomain;
+use mkyber::{EducationalMkyber512Reference, MkyberDomain};
 use openmls_hybrid::{
     experimental_hybrid::{mkyber_recipient_capabilities, ExperimentalHybridCommitMetrics},
     prelude::{
@@ -47,6 +47,11 @@ use transition_tree::DeliveryOnlyTreeCover;
 
 /// Exact upstream OpenMLS revision used by the local fork.
 pub const OPENMLS_HYBRID_UPSTREAM_REVISION: &str = "47dbedecad0c1fd8eb5368d582250ebfcc1e1ce6";
+/// Fixed classical MLS/HPKE suite used by the baseline and hybrid clients.
+pub const CLASSICAL_MLS_HPKE_PROFILE: &str =
+    "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519; DHKEM(X25519, HKDF-SHA256); AES-128-GCM";
+/// Educational mKyber backend profile; it is not a production KEM claim.
+pub const EDUCATIONAL_MKYBER_PROFILE: &str = EducationalMkyber512Reference::PROFILE_LABEL;
 
 /// Confirms that the opt-in fork package is linked into this isolated boundary.
 pub fn fork_ciphersuite_type_name() -> &'static str {
