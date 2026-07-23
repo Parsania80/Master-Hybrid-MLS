@@ -1,0 +1,1027 @@
+#![forbid(unsafe_code)]
+
+//! Public node-value health simulation for adaptive delivery.
+//!
+//! This module models the operator-defined delivery-target counts. One usable
+//! internal node costs one send regardless of how many active leaves it
+//! covers. It does not retain, derive, or erase real MLS key material.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as FmtWrite,
+    fs,
+    path::{Path, PathBuf},
+};
+
+use csv::WriterBuilder;
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha20Rng;
+use serde::Serialize;
+use thiserror::Error;
+
+use crate::generation::{validate_artifact_directory, write_new, ReportArtifactError};
+
+/// Version of the public delivery-health simulation schema.
+pub const DELIVERY_HEALTH_SCHEMA_VERSION: u16 = 1;
+/// One-row summary CSV.
+pub const DELIVERY_HEALTH_SUMMARY_FILE_NAME: &str = "summary.csv";
+/// Ordered simulated Commit trace.
+pub const DELIVERY_HEALTH_EVENTS_FILE_NAME: &str = "events.csv";
+/// Clean human-readable report requested by the operator.
+pub const DELIVERY_HEALTH_REPORT_FILE_NAME: &str = "report.md";
+
+const PRE_TRANSITION_UPDATE_COUNT: u32 = 2;
+const THETA_NEW_NUMERATOR: i64 = 7;
+const THETA_NEW_DENOMINATOR: i64 = 10;
+const THETA_OLD_NUMERATOR: i64 = 1;
+const THETA_OLD_DENOMINATOR: i64 = 2;
+const MAX_SIMULATED_MEMBERS: u32 = 4_096;
+
+/// Public controls for one deterministic simulation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeliveryHealthConfig {
+    /// Old active-tree arity: `2` or `4`.
+    pub initial_arity: u8,
+    /// Candidate-tree arity: `4` or `8`, exactly double the initial arity.
+    pub target_arity: u8,
+    /// Initial active clients.
+    pub initial_member_count: u32,
+    /// Public deterministic operation/committer seed.
+    pub random_seed: u64,
+    /// Maximum post-transition Update/Delete Commits.
+    pub maximum_post_transition_commits: u32,
+}
+
+impl DeliveryHealthConfig {
+    /// Validates supported arities and bounded simulation size.
+    pub fn validate(self) -> Result<(), DeliveryHealthError> {
+        if !matches!((self.initial_arity, self.target_arity), (2, 4) | (4, 8)) {
+            return Err(DeliveryHealthError::UnsupportedArityPair);
+        }
+        if !(2..=MAX_SIMULATED_MEMBERS).contains(&self.initial_member_count) {
+            return Err(DeliveryHealthError::InvalidMemberCount);
+        }
+        if self.maximum_post_transition_commits == 0 {
+            return Err(DeliveryHealthError::ZeroCommitLimit);
+        }
+        Ok(())
+    }
+}
+
+/// Paths created by one delivery-health run.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeliveryHealthArtifactPaths {
+    /// Final one-row public summary.
+    pub summary_csv: PathBuf,
+    /// Every simulated Commit and exact count.
+    pub events_csv: PathBuf,
+    /// Clean Markdown report.
+    pub report_markdown: PathBuf,
+}
+
+/// Failures from configuration, checked tree arithmetic, or artifact output.
+#[derive(Debug, Error)]
+pub enum DeliveryHealthError {
+    /// Only `2 -> 4` and `4 -> 8` are supported.
+    #[error("initial/target arity must be 2/4 or 4/8")]
+    UnsupportedArityPair,
+    /// The member count is outside the resource-bounded simulation range.
+    #[error("initial members must be between 2 and 4096")]
+    InvalidMemberCount,
+    /// At least one post-transition Commit must be permitted.
+    #[error("maximum post-transition commits must be positive")]
+    ZeroCommitLimit,
+    /// Tree coordinate or public count arithmetic overflowed.
+    #[error("delivery-health tree arithmetic overflowed")]
+    Overflow,
+    /// No valid random committer or deletion target remained.
+    #[error("delivery-health workload could not select a valid active member")]
+    NoEligibleMember,
+    /// A required fixed member-to-leaf assignment was absent.
+    #[error("delivery-health member mapping is incomplete")]
+    MissingMemberMapping,
+    /// The maturity denominator was not positive.
+    #[error("C_leaf must be greater than C_ideal")]
+    NonPositiveDenominator,
+    /// Create-new public artifact output failed.
+    #[error("delivery-health artifact output failed")]
+    Artifact(#[from] ReportArtifactError),
+    /// CSV serialization failed.
+    #[error("delivery-health CSV serialization failed")]
+    Csv(#[source] csv::Error),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct TreeNode {
+    depth: u8,
+    ordinal: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TreeLayout {
+    arity: u8,
+    height: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Member {
+    id: u32,
+    old_leaf: u32,
+    new_leaf: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Rational {
+    numerator: i64,
+    denominator: i64,
+}
+
+impl Rational {
+    fn text(self) -> String {
+        let divisor =
+            greatest_common_divisor(self.numerator.unsigned_abs(), self.denominator as u64);
+        format!(
+            "{}/{}",
+            self.numerator / divisor as i64,
+            self.denominator / divisor as i64
+        )
+    }
+
+    fn decimal(self) -> String {
+        format!("{:.6}", self.numerator as f64 / self.denominator as f64)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DeliveryCounts {
+    c_leaf: u32,
+    c_new: u32,
+    c_old: u32,
+    c_ideal: u32,
+    h_new: Rational,
+    h_old: Rational,
+    retire_new: bool,
+    retire_old: bool,
+}
+
+#[derive(Clone, Copy)]
+struct MeasuredEventFacts {
+    sequence: u32,
+    phase: &'static str,
+    operation: &'static str,
+    committer: u32,
+    removed: Option<u32>,
+    t: u32,
+    retirement_condition: &'static str,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DeliveryHealthEvent {
+    schema_version: u16,
+    commit_sequence: u32,
+    phase: &'static str,
+    operation: &'static str,
+    committer_member_index: u32,
+    removed_member_index: Option<u32>,
+    active_member_count: u32,
+    impactful_commits_since_transition: Option<u32>,
+    new_usable_internal_node_count: Option<u32>,
+    old_usable_internal_node_count: Option<u32>,
+    c_leaf: Option<u32>,
+    c_new: Option<u32>,
+    c_old: Option<u32>,
+    c_ideal: Option<u32>,
+    h_new_exact: Option<String>,
+    h_new_decimal: Option<String>,
+    h_old_exact: Option<String>,
+    h_old_decimal: Option<String>,
+    retirement_condition: &'static str,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DeliveryHealthSummary {
+    schema_version: u16,
+    provenance: &'static str,
+    initial_arity: u8,
+    target_arity: u8,
+    initial_member_count: u32,
+    final_member_count: u32,
+    random_seed: u64,
+    pre_transition_update_count: u32,
+    post_transition_commit_count: u32,
+    update_commit_count: u32,
+    delete_commit_count: u32,
+    transition_commit_sequence: u32,
+    retirement_condition_met: bool,
+    retirement_after_impactful_commit: Option<u32>,
+    retirement_trigger: &'static str,
+    final_c_leaf: u32,
+    final_c_new: u32,
+    final_c_old: u32,
+    final_c_ideal: u32,
+    final_h_new_exact: String,
+    final_h_old_exact: String,
+    live_protocol_retirement_state: &'static str,
+}
+
+struct SimulationResult {
+    summary: DeliveryHealthSummary,
+    events: Vec<DeliveryHealthEvent>,
+}
+
+/// Runs the deterministic Update/Delete simulation and writes create-new
+/// public CSV plus `report.md` artifacts.
+pub fn generate_delivery_health_report(
+    config: DeliveryHealthConfig,
+    output_directory: &Path,
+    report_directory: &Path,
+) -> Result<DeliveryHealthArtifactPaths, DeliveryHealthError> {
+    config.validate()?;
+    validate_artifact_directory(output_directory, "output", "delivery-health evidence")?;
+    validate_artifact_directory(report_directory, "report", "delivery-health report")?;
+    let paths = DeliveryHealthArtifactPaths {
+        summary_csv: output_directory.join(DELIVERY_HEALTH_SUMMARY_FILE_NAME),
+        events_csv: output_directory.join(DELIVERY_HEALTH_EVENTS_FILE_NAME),
+        report_markdown: report_directory.join(DELIVERY_HEALTH_REPORT_FILE_NAME),
+    };
+    for path in [
+        &paths.summary_csv,
+        &paths.events_csv,
+        &paths.report_markdown,
+    ] {
+        if path.exists() {
+            return Err(DeliveryHealthError::Artifact(
+                ReportArtifactError::ArtifactAlreadyExists,
+            ));
+        }
+    }
+
+    let result = simulate(config)?;
+    fs::create_dir_all(output_directory)
+        .map_err(|error| DeliveryHealthError::Artifact(ReportArtifactError::Write(error)))?;
+    fs::create_dir_all(report_directory)
+        .map_err(|error| DeliveryHealthError::Artifact(ReportArtifactError::Write(error)))?;
+    write_new(&paths.summary_csv, &summary_csv(&result.summary)?)?;
+    write_new(&paths.events_csv, &events_csv(&result.events)?)?;
+    write_new(&paths.report_markdown, markdown(config, &result).as_bytes())?;
+    Ok(paths)
+}
+
+fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHealthError> {
+    let old_layout = TreeLayout::new(config.initial_arity, config.initial_member_count)?;
+    let new_layout = TreeLayout::new(config.target_arity, config.initial_member_count)?;
+    let mut rng = ChaCha20Rng::seed_from_u64(config.random_seed);
+    let mut members = transition_members(config.initial_member_count);
+    let mut events = Vec::new();
+    let mut sequence = 1_u32;
+
+    for _ in 0..PRE_TRANSITION_UPDATE_COUNT {
+        let committer = random_member(&members, &mut rng)?.id;
+        events.push(DeliveryHealthEvent {
+            schema_version: DELIVERY_HEALTH_SCHEMA_VERSION,
+            commit_sequence: sequence,
+            phase: "pre-transition",
+            operation: "update",
+            committer_member_index: committer,
+            removed_member_index: None,
+            active_member_count: member_count(&members)?,
+            impactful_commits_since_transition: None,
+            new_usable_internal_node_count: None,
+            old_usable_internal_node_count: None,
+            c_leaf: None,
+            c_new: None,
+            c_old: None,
+            c_ideal: None,
+            h_new_exact: None,
+            h_new_decimal: None,
+            h_old_exact: None,
+            h_old_decimal: None,
+            retirement_condition: "NotEvaluatedBeforeTransition",
+        });
+        sequence = checked_next(sequence)?;
+    }
+
+    let transition_committer = random_member(&members, &mut rng)?.id;
+    let mut old_usable = all_populated_internal_nodes(old_layout, &members, TreeKind::Old)?;
+    let mut new_usable = BTreeSet::new();
+    let transition_member = member_by_id(&members, transition_committer)?;
+    add_ancestors(&mut new_usable, new_layout, transition_member.new_leaf)?;
+    let transition_counts = calculate_counts(
+        old_layout,
+        new_layout,
+        &members,
+        transition_committer,
+        &new_usable,
+        &old_usable,
+    )?;
+    let transition_sequence = sequence;
+    events.push(measured_event(
+        MeasuredEventFacts {
+            sequence,
+            phase: "transition",
+            operation: "transition",
+            committer: transition_committer,
+            removed: None,
+            t: 0,
+            retirement_condition: "NotEvaluatedAtTransition",
+        },
+        &members,
+        &new_usable,
+        &old_usable,
+        transition_counts,
+    )?);
+    sequence = checked_next(sequence)?;
+
+    let mut update_count = 0_u32;
+    let mut delete_count = 0_u32;
+    let mut final_counts = transition_counts;
+    let mut retirement_after = None;
+    let mut retirement_trigger = "CommitLimitReached";
+
+    for t in 1..=config.maximum_post_transition_commits {
+        let delete = members.len() > 2 && rng.gen_bool(0.5);
+        let committer_id = random_member(&members, &mut rng)?.id;
+        let mut removed_id = None;
+        let operation = if delete {
+            let target_id = random_other_member(&members, committer_id, &mut rng)?.id;
+            let target = member_by_id(&members, target_id)?;
+            remove_ancestors(&mut old_usable, old_layout, target.old_leaf)?;
+            remove_ancestors(&mut new_usable, new_layout, target.new_leaf)?;
+            members.retain(|member| member.id != target_id);
+            removed_id = Some(target_id);
+            delete_count = delete_count
+                .checked_add(1)
+                .ok_or(DeliveryHealthError::Overflow)?;
+            "delete"
+        } else {
+            update_count = update_count
+                .checked_add(1)
+                .ok_or(DeliveryHealthError::Overflow)?;
+            "update"
+        };
+        let committer = member_by_id(&members, committer_id)?;
+        add_ancestors(&mut new_usable, new_layout, committer.new_leaf)?;
+        final_counts = calculate_counts(
+            old_layout,
+            new_layout,
+            &members,
+            committer_id,
+            &new_usable,
+            &old_usable,
+        )?;
+        let trigger = retirement_trigger_text(final_counts);
+        events.push(measured_event(
+            MeasuredEventFacts {
+                sequence,
+                phase: "post-transition",
+                operation,
+                committer: committer_id,
+                removed: removed_id,
+                t,
+                retirement_condition: trigger,
+            },
+            &members,
+            &new_usable,
+            &old_usable,
+            final_counts,
+        )?);
+        sequence = checked_next(sequence)?;
+        if final_counts.retire_new || final_counts.retire_old {
+            retirement_after = Some(t);
+            retirement_trigger = trigger;
+            break;
+        }
+    }
+
+    let post_transition_commit_count =
+        retirement_after.unwrap_or(config.maximum_post_transition_commits);
+    Ok(SimulationResult {
+        summary: DeliveryHealthSummary {
+            schema_version: DELIVERY_HEALTH_SCHEMA_VERSION,
+            provenance: "public_node_value_availability_simulation_not_live_mls_key_erasure",
+            initial_arity: config.initial_arity,
+            target_arity: config.target_arity,
+            initial_member_count: config.initial_member_count,
+            final_member_count: member_count(&members)?,
+            random_seed: config.random_seed,
+            pre_transition_update_count: PRE_TRANSITION_UPDATE_COUNT,
+            post_transition_commit_count,
+            update_commit_count: update_count,
+            delete_commit_count: delete_count,
+            transition_commit_sequence: transition_sequence,
+            retirement_condition_met: retirement_after.is_some(),
+            retirement_after_impactful_commit: retirement_after,
+            retirement_trigger,
+            final_c_leaf: final_counts.c_leaf,
+            final_c_new: final_counts.c_new,
+            final_c_old: final_counts.c_old,
+            final_c_ideal: final_counts.c_ideal,
+            final_h_new_exact: final_counts.h_new.text(),
+            final_h_old_exact: final_counts.h_old.text(),
+            live_protocol_retirement_state: "UnsupportedSimulationOnly",
+        },
+        events,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum TreeKind {
+    Old,
+    New,
+}
+
+impl TreeLayout {
+    fn new(arity: u8, member_count: u32) -> Result<Self, DeliveryHealthError> {
+        let mut height = 0_u8;
+        let mut capacity = 1_u32;
+        while capacity < member_count {
+            capacity = capacity
+                .checked_mul(u32::from(arity))
+                .ok_or(DeliveryHealthError::Overflow)?;
+            height = height.checked_add(1).ok_or(DeliveryHealthError::Overflow)?;
+        }
+        Ok(Self { arity, height })
+    }
+
+    fn span(self, depth: u8) -> Result<u32, DeliveryHealthError> {
+        if depth > self.height {
+            return Err(DeliveryHealthError::Overflow);
+        }
+        u32::from(self.arity)
+            .checked_pow(u32::from(self.height - depth))
+            .ok_or(DeliveryHealthError::Overflow)
+    }
+
+    fn contains(self, node: TreeNode, leaf: u32) -> Result<bool, DeliveryHealthError> {
+        let span = self.span(node.depth)?;
+        let start = node
+            .ordinal
+            .checked_mul(span)
+            .ok_or(DeliveryHealthError::Overflow)?;
+        let end = start
+            .checked_add(span)
+            .ok_or(DeliveryHealthError::Overflow)?;
+        Ok((start..end).contains(&leaf))
+    }
+
+    fn ancestors(self, leaf: u32) -> Result<Vec<TreeNode>, DeliveryHealthError> {
+        (0..self.height)
+            .map(|depth| {
+                Ok(TreeNode {
+                    depth,
+                    ordinal: leaf / self.span(depth)?,
+                })
+            })
+            .collect()
+    }
+
+    fn children(self, node: TreeNode) -> Result<Vec<TreeNode>, DeliveryHealthError> {
+        if node.depth >= self.height {
+            return Ok(Vec::new());
+        }
+        let first = node
+            .ordinal
+            .checked_mul(u32::from(self.arity))
+            .ok_or(DeliveryHealthError::Overflow)?;
+        (0..u32::from(self.arity))
+            .map(|offset| {
+                Ok(TreeNode {
+                    depth: node
+                        .depth
+                        .checked_add(1)
+                        .ok_or(DeliveryHealthError::Overflow)?,
+                    ordinal: first
+                        .checked_add(offset)
+                        .ok_or(DeliveryHealthError::Overflow)?,
+                })
+            })
+            .collect()
+    }
+}
+
+fn transition_members(member_count: u32) -> Vec<Member> {
+    let mut identifiers = (0..member_count).collect::<Vec<_>>();
+    identifiers.sort_by_key(|id| format!("member-{id}").into_bytes());
+    let new_leaf_by_id = identifiers
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, id)| (id, ordinal as u32))
+        .collect::<BTreeMap<_, _>>();
+    (0..member_count)
+        .map(|id| Member {
+            id,
+            old_leaf: id,
+            new_leaf: new_leaf_by_id[&id],
+        })
+        .collect()
+}
+
+fn all_populated_internal_nodes(
+    layout: TreeLayout,
+    members: &[Member],
+    kind: TreeKind,
+) -> Result<BTreeSet<TreeNode>, DeliveryHealthError> {
+    let mut nodes = BTreeSet::new();
+    for member in members {
+        let leaf = member_leaf(*member, kind);
+        add_ancestors(&mut nodes, layout, leaf)?;
+    }
+    Ok(nodes)
+}
+
+fn add_ancestors(
+    nodes: &mut BTreeSet<TreeNode>,
+    layout: TreeLayout,
+    leaf: u32,
+) -> Result<(), DeliveryHealthError> {
+    nodes.extend(layout.ancestors(leaf)?);
+    Ok(())
+}
+
+fn remove_ancestors(
+    nodes: &mut BTreeSet<TreeNode>,
+    layout: TreeLayout,
+    leaf: u32,
+) -> Result<(), DeliveryHealthError> {
+    for node in layout.ancestors(leaf)? {
+        nodes.remove(&node);
+    }
+    Ok(())
+}
+
+fn calculate_counts(
+    old_layout: TreeLayout,
+    new_layout: TreeLayout,
+    members: &[Member],
+    committer_id: u32,
+    new_usable: &BTreeSet<TreeNode>,
+    old_usable: &BTreeSet<TreeNode>,
+) -> Result<DeliveryCounts, DeliveryHealthError> {
+    let committer = member_by_id(members, committer_id)?;
+    let new_required =
+        required_sibling_nodes(new_layout, committer.new_leaf, members, TreeKind::New)?;
+    let c_ideal = u32::try_from(new_required.len()).map_err(|_| DeliveryHealthError::Overflow)?;
+    let mut c_new = 0_u32;
+    for node in new_required {
+        let targets = members_under_node(new_layout, node, members, TreeKind::New)?;
+        let count = if node.depth < new_layout.height && new_usable.contains(&node) {
+            1
+        } else {
+            cover_targets_with_old(
+                old_layout,
+                TreeNode {
+                    depth: 0,
+                    ordinal: 0,
+                },
+                members,
+                &targets,
+                old_usable,
+            )?
+        };
+        c_new = c_new
+            .checked_add(count)
+            .ok_or(DeliveryHealthError::Overflow)?;
+    }
+
+    let old_required =
+        required_sibling_nodes(old_layout, committer.old_leaf, members, TreeKind::Old)?;
+    let mut c_old = 0_u32;
+    for node in old_required {
+        c_old = c_old
+            .checked_add(cover_old_node(old_layout, node, members, old_usable)?)
+            .ok_or(DeliveryHealthError::Overflow)?;
+    }
+
+    let c_leaf = member_count(members)?;
+    let denominator = i64::from(c_leaf) - i64::from(c_ideal);
+    if denominator <= 0 {
+        return Err(DeliveryHealthError::NonPositiveDenominator);
+    }
+    let h_new = Rational {
+        numerator: i64::from(c_leaf) - i64::from(c_new),
+        denominator,
+    };
+    let h_old = Rational {
+        numerator: i64::from(c_leaf) - i64::from(c_old),
+        denominator,
+    };
+    let retire_new =
+        h_new.numerator * THETA_NEW_DENOMINATOR >= THETA_NEW_NUMERATOR * h_new.denominator;
+    let retire_old =
+        h_old.numerator * THETA_OLD_DENOMINATOR < THETA_OLD_NUMERATOR * h_old.denominator;
+    Ok(DeliveryCounts {
+        c_leaf,
+        c_new,
+        c_old,
+        c_ideal,
+        h_new,
+        h_old,
+        retire_new,
+        retire_old,
+    })
+}
+
+fn required_sibling_nodes(
+    layout: TreeLayout,
+    committer_leaf: u32,
+    members: &[Member],
+    kind: TreeKind,
+) -> Result<Vec<TreeNode>, DeliveryHealthError> {
+    let mut required = Vec::new();
+    for parent_depth in 0..layout.height {
+        let child_depth = parent_depth
+            .checked_add(1)
+            .ok_or(DeliveryHealthError::Overflow)?;
+        let child_span = layout.span(child_depth)?;
+        let path_child = committer_leaf / child_span;
+        let parent = path_child / u32::from(layout.arity);
+        let first_child = parent
+            .checked_mul(u32::from(layout.arity))
+            .ok_or(DeliveryHealthError::Overflow)?;
+        for offset in 0..u32::from(layout.arity) {
+            let ordinal = first_child
+                .checked_add(offset)
+                .ok_or(DeliveryHealthError::Overflow)?;
+            if ordinal == path_child {
+                continue;
+            }
+            let node = TreeNode {
+                depth: child_depth,
+                ordinal,
+            };
+            if !members_under_node(layout, node, members, kind)?.is_empty() {
+                required.push(node);
+            }
+        }
+    }
+    Ok(required)
+}
+
+fn cover_targets_with_old(
+    layout: TreeLayout,
+    node: TreeNode,
+    members: &[Member],
+    targets: &BTreeSet<u32>,
+    usable: &BTreeSet<TreeNode>,
+) -> Result<u32, DeliveryHealthError> {
+    let contained = members_under_node(layout, node, members, TreeKind::Old)?;
+    if contained.is_disjoint(targets) {
+        return Ok(0);
+    }
+    if node.depth < layout.height && usable.contains(&node) && contained.is_subset(targets) {
+        return Ok(1);
+    }
+    if node.depth == layout.height {
+        return Ok(1);
+    }
+    layout.children(node)?.iter().try_fold(0_u32, |sum, child| {
+        sum.checked_add(cover_targets_with_old(
+            layout, *child, members, targets, usable,
+        )?)
+        .ok_or(DeliveryHealthError::Overflow)
+    })
+}
+
+fn cover_old_node(
+    layout: TreeLayout,
+    node: TreeNode,
+    members: &[Member],
+    usable: &BTreeSet<TreeNode>,
+) -> Result<u32, DeliveryHealthError> {
+    if members_under_node(layout, node, members, TreeKind::Old)?.is_empty() {
+        return Ok(0);
+    }
+    if node.depth < layout.height && usable.contains(&node) {
+        return Ok(1);
+    }
+    if node.depth == layout.height {
+        return Ok(1);
+    }
+    layout.children(node)?.iter().try_fold(0_u32, |sum, child| {
+        sum.checked_add(cover_old_node(layout, *child, members, usable)?)
+            .ok_or(DeliveryHealthError::Overflow)
+    })
+}
+
+fn members_under_node(
+    layout: TreeLayout,
+    node: TreeNode,
+    members: &[Member],
+    kind: TreeKind,
+) -> Result<BTreeSet<u32>, DeliveryHealthError> {
+    let mut member_ids = BTreeSet::new();
+    for member in members {
+        if layout.contains(node, member_leaf(*member, kind))? {
+            member_ids.insert(member.id);
+        }
+    }
+    Ok(member_ids)
+}
+
+fn member_leaf(member: Member, kind: TreeKind) -> u32 {
+    match kind {
+        TreeKind::Old => member.old_leaf,
+        TreeKind::New => member.new_leaf,
+    }
+}
+
+fn member_by_id(members: &[Member], id: u32) -> Result<Member, DeliveryHealthError> {
+    members
+        .iter()
+        .find(|member| member.id == id)
+        .copied()
+        .ok_or(DeliveryHealthError::MissingMemberMapping)
+}
+
+fn random_member<'a>(
+    members: &'a [Member],
+    rng: &mut impl Rng,
+) -> Result<&'a Member, DeliveryHealthError> {
+    if members.is_empty() {
+        return Err(DeliveryHealthError::NoEligibleMember);
+    }
+    Ok(&members[rng.gen_range(0..members.len())])
+}
+
+fn random_other_member<'a>(
+    members: &'a [Member],
+    excluded_id: u32,
+    rng: &mut impl Rng,
+) -> Result<&'a Member, DeliveryHealthError> {
+    let eligible = members
+        .iter()
+        .filter(|member| member.id != excluded_id)
+        .collect::<Vec<_>>();
+    if eligible.is_empty() {
+        return Err(DeliveryHealthError::NoEligibleMember);
+    }
+    Ok(eligible[rng.gen_range(0..eligible.len())])
+}
+
+fn measured_event(
+    facts: MeasuredEventFacts,
+    members: &[Member],
+    new_usable: &BTreeSet<TreeNode>,
+    old_usable: &BTreeSet<TreeNode>,
+    counts: DeliveryCounts,
+) -> Result<DeliveryHealthEvent, DeliveryHealthError> {
+    Ok(DeliveryHealthEvent {
+        schema_version: DELIVERY_HEALTH_SCHEMA_VERSION,
+        commit_sequence: facts.sequence,
+        phase: facts.phase,
+        operation: facts.operation,
+        committer_member_index: facts.committer,
+        removed_member_index: facts.removed,
+        active_member_count: member_count(members)?,
+        impactful_commits_since_transition: Some(facts.t),
+        new_usable_internal_node_count: Some(node_count(new_usable)?),
+        old_usable_internal_node_count: Some(node_count(old_usable)?),
+        c_leaf: Some(counts.c_leaf),
+        c_new: Some(counts.c_new),
+        c_old: Some(counts.c_old),
+        c_ideal: Some(counts.c_ideal),
+        h_new_exact: Some(counts.h_new.text()),
+        h_new_decimal: Some(counts.h_new.decimal()),
+        h_old_exact: Some(counts.h_old.text()),
+        h_old_decimal: Some(counts.h_old.decimal()),
+        retirement_condition: facts.retirement_condition,
+    })
+}
+
+fn retirement_trigger_text(counts: DeliveryCounts) -> &'static str {
+    match (counts.retire_new, counts.retire_old) {
+        (true, true) => "NewHealthAndOldDegradation",
+        (true, false) => "NewHealth",
+        (false, true) => "OldDegradation",
+        (false, false) => "KeepTreeCover",
+    }
+}
+
+fn member_count(members: &[Member]) -> Result<u32, DeliveryHealthError> {
+    u32::try_from(members.len()).map_err(|_| DeliveryHealthError::Overflow)
+}
+
+fn node_count(nodes: &BTreeSet<TreeNode>) -> Result<u32, DeliveryHealthError> {
+    u32::try_from(nodes.len()).map_err(|_| DeliveryHealthError::Overflow)
+}
+
+fn checked_next(value: u32) -> Result<u32, DeliveryHealthError> {
+    value.checked_add(1).ok_or(DeliveryHealthError::Overflow)
+}
+
+fn greatest_common_divisor(mut left: u64, mut right: u64) -> u64 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left.max(1)
+}
+
+fn summary_csv(summary: &DeliveryHealthSummary) -> Result<Vec<u8>, DeliveryHealthError> {
+    let mut writer = WriterBuilder::new().has_headers(true).from_writer(vec![]);
+    writer
+        .serialize(summary)
+        .map_err(DeliveryHealthError::Csv)?;
+    writer
+        .into_inner()
+        .map_err(|error| DeliveryHealthError::Csv(error.into_error().into()))
+}
+
+fn events_csv(events: &[DeliveryHealthEvent]) -> Result<Vec<u8>, DeliveryHealthError> {
+    let mut writer = WriterBuilder::new().has_headers(true).from_writer(vec![]);
+    for event in events {
+        writer.serialize(event).map_err(DeliveryHealthError::Csv)?;
+    }
+    writer
+        .into_inner()
+        .map_err(|error| DeliveryHealthError::Csv(error.into_error().into()))
+}
+
+fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
+    let summary = &result.summary;
+    let mut document = String::new();
+    writeln!(document, "# Adaptive delivery-health simulation\n").expect("string write");
+    writeln!(
+        document,
+        "Initial arity: `{}`. Target arity: `{}`. Initial clients: `{}`. Public random seed: `{}`.\n",
+        config.initial_arity,
+        config.target_arity,
+        config.initial_member_count,
+        config.random_seed
+    )
+    .expect("string write");
+    writeln!(document, "## Result\n").expect("string write");
+    writeln!(
+        document,
+        "| Transition Commit | Post-transition Commits | Updates | Deletes | Final clients | Retirement condition | Trigger |\n|---:|---:|---:|---:|---:|---|---|\n| {} | {} | {} | {} | {} | {} | {} |\n",
+        summary.transition_commit_sequence,
+        summary.post_transition_commit_count,
+        summary.update_commit_count,
+        summary.delete_commit_count,
+        summary.final_member_count,
+        if summary.retirement_condition_met {
+            "met"
+        } else {
+            "not met"
+        },
+        summary.retirement_trigger,
+    )
+    .expect("string write");
+    writeln!(document, "## Commit trace\n").expect("string write");
+    writeln!(
+        document,
+        "| Commit | Phase | Operation | Committer | Removed | Clients | t | C_leaf | C_new | C_old | C_ideal | h_new | h_old | Decision |\n|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|"
+    )
+    .expect("string write");
+    for event in &result.events {
+        writeln!(
+            document,
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            event.commit_sequence,
+            event.phase,
+            event.operation,
+            event.committer_member_index,
+            optional_u32(event.removed_member_index),
+            event.active_member_count,
+            optional_u32(event.impactful_commits_since_transition),
+            optional_u32(event.c_leaf),
+            optional_u32(event.c_new),
+            optional_u32(event.c_old),
+            optional_u32(event.c_ideal),
+            event.h_new_exact.as_deref().unwrap_or("—"),
+            event.h_old_exact.as_deref().unwrap_or("—"),
+            event.retirement_condition,
+        )
+        .expect("string write");
+    }
+    writeln!(document, "\n## Counting rules\n").expect("string write");
+    writeln!(document, "- `C_leaf` is the current active-client count, matching the operator's worst-case convention.").expect("string write");
+    writeln!(document, "- `C_new` evaluates every required target-tree sibling: one send for a usable new-tree node; otherwise the smallest usable old-TreeCover cover; otherwise direct active leaves.").expect("string write");
+    writeln!(document, "- `C_old` places the same committer in the old tree: one send for each usable required old node, recursively falling back to active leaves when a node was invalidated.").expect("string write");
+    writeln!(document, "- `C_ideal` counts the non-empty target-tree sibling nodes when every required internal value is usable.").expect("string write");
+    writeln!(document, "- An Update populates the target-tree internal nodes on its committer path. A Delete invalidates old and new ancestors known by the removed member, removes that client, then refreshes the deleting committer's new-tree path.").expect("string write");
+    writeln!(document, "- Operations and valid committers are selected by the public seeded RNG; Delete never selects its committer as the target.").expect("string write");
+    writeln!(document, "\n## Boundary\n").expect("string write");
+    writeln!(document, "This is a public node-value availability simulation. The current fork does not yet retain a fixed old-TreeCover key store, authenticate its deletion updates, or execute post-transition Remove Commits. Therefore `UnsupportedSimulationOnly` is not real MLS key erasure or live TreeCover retirement.").expect("string write");
+    document
+}
+
+fn optional_u32(value: Option<u32>) -> String {
+    value.map_or_else(|| "—".to_owned(), |value| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(initial_arity: u8, target_arity: u8, members: u32) -> DeliveryHealthConfig {
+        DeliveryHealthConfig {
+            initial_arity,
+            target_arity,
+            initial_member_count: members,
+            random_seed: 42,
+            maximum_post_transition_commits: 128,
+        }
+    }
+
+    #[test]
+    fn ideal_128_member_quaternary_path_is_three_plus_three_plus_three_plus_one() {
+        let members = transition_members(128);
+        let layout = TreeLayout::new(4, 128).expect("layout");
+        let committer = member_by_id(&members, 0).expect("committer");
+        let required = required_sibling_nodes(layout, committer.new_leaf, &members, TreeKind::New)
+            .expect("ideal siblings");
+        assert_eq!(required.len(), 10);
+    }
+
+    #[test]
+    fn combined_new_route_uses_old_nodes_then_leaf_fallback() {
+        let members = transition_members(64);
+        let old_layout = TreeLayout::new(2, 64).expect("old layout");
+        let new_layout = TreeLayout::new(4, 64).expect("new layout");
+        let old_usable =
+            all_populated_internal_nodes(old_layout, &members, TreeKind::Old).expect("old nodes");
+        let counts = calculate_counts(
+            old_layout,
+            new_layout,
+            &members,
+            10,
+            &BTreeSet::new(),
+            &old_usable,
+        )
+        .expect("counts");
+        assert_eq!(counts.c_leaf, 64);
+        assert_eq!(counts.c_ideal, 9);
+        assert_eq!(counts.c_new, 21);
+        assert_eq!(counts.c_old, 6);
+
+        let fully_mature_new =
+            all_populated_internal_nodes(new_layout, &members, TreeKind::New).expect("new nodes");
+        let mature_counts = calculate_counts(
+            old_layout,
+            new_layout,
+            &members,
+            10,
+            &fully_mature_new,
+            &old_usable,
+        )
+        .expect("mature counts");
+        assert_eq!(mature_counts.c_new, mature_counts.c_ideal);
+
+        let leaf_fallback_counts = calculate_counts(
+            old_layout,
+            new_layout,
+            &members,
+            10,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .expect("leaf fallback counts");
+        assert_eq!(leaf_fallback_counts.c_new, 63);
+        assert_eq!(leaf_fallback_counts.c_old, 63);
+    }
+
+    #[test]
+    fn deletion_invalidates_old_path_and_never_targets_committer() {
+        let result = simulate(config(2, 4, 64)).expect("simulation");
+        for event in &result.events {
+            assert_ne!(
+                event.removed_member_index,
+                Some(event.committer_member_index)
+            );
+        }
+        let transition = result
+            .events
+            .iter()
+            .find(|event| event.phase == "transition")
+            .expect("transition");
+        let first_delete = result
+            .events
+            .iter()
+            .find(|event| event.operation == "delete")
+            .expect("seed-42 delete");
+        assert!(
+            first_delete.old_usable_internal_node_count < transition.old_usable_internal_node_count
+        );
+        assert!(result.summary.post_transition_commit_count >= 1);
+        assert_eq!(
+            result.summary.live_protocol_retirement_state,
+            "UnsupportedSimulationOnly"
+        );
+    }
+
+    #[test]
+    fn supported_pairs_and_resource_bounds_fail_closed() {
+        assert!(config(2, 4, 64).validate().is_ok());
+        assert!(config(4, 8, 128).validate().is_ok());
+        assert!(matches!(
+            config(2, 8, 64).validate(),
+            Err(DeliveryHealthError::UnsupportedArityPair)
+        ));
+        assert!(matches!(
+            config(2, 4, 1).validate(),
+            Err(DeliveryHealthError::InvalidMemberCount)
+        ));
+    }
+}

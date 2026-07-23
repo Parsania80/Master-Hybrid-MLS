@@ -1,7 +1,14 @@
 # ADR 0044: Canonical Topology-Route Cost Accounting
 
-**Status:** Accepted on 2026-07-23  
-**Decision scope:** Task 82 exact `C_leaf`, `C_new`, `C_old`, and `C_ideal` bytes
+**Status:** Rejected on 2026-07-23 after operator correction
+**Decision scope:** Withdrawn Task 82 byte interpretation
+
+> **Withdrawal:** This ADR incorrectly treated serialized route bytes plus
+> outer Commit framing as `C_leaf`, `C_new`, `C_old`, and `C_ideal`. The thesis
+> metric counts delivery endpoints: one usable internal node costs one send
+> regardless of how many leaves it covers. The numerical `C_*` conclusions
+> below are retained only as an audit of the rejected approach and must not be
+> used in maturity or retirement calculations.
 
 ## Context
 

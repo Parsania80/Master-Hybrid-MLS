@@ -195,16 +195,20 @@ The educational reference backend exposes dedicated operating-system RNG entry p
 
 Task 54 records only public baseline Commit/Welcome sizes, delivery/join counts, and elapsed lifecycle time. Its elapsed timings are environment-dependent observations, not reproducible performance claims. Candidate topology, mKyber crypto counts/timings, policy, transition, and retirement facts remain typed unavailable values unless a real corresponding hook supplies them. Report output must not reinterpret unavailable as zero, success, an estimate, or evidence of protocol security.
 
-Task 82 adds only the canonical byte length of each signed hybrid delivery to
-the public recipient-set observation; ciphertext bytes themselves are not
-retained or reported. Alternative topology routes use public fixed-width
-component values solely to exercise the production TLS serializer and bind all
-four alternatives to one public logical-payload identifier. Their byte lengths
-are exact codec counterfactuals, but they are not valid alternate MLS Commits,
-proof of encrypted-plaintext equality, network observations, or security
-evidence. The common outer-Commit remainder is observed and counted once.
-Maturity and retirement remain unavailable until their separate checked
-evaluation, and live TreeCover secret erasure remains unsupported.
+The first Task 82 attempt added only canonical signed-delivery lengths and did
+not retain ciphertext, but it incorrectly treated serialized byte totals as
+the thesis `C_*` values. Those claims are withdrawn. The corrected metric must
+count usable delivery endpoints, where one available internal node is one
+send. Tasks 82–84 implement that definition only in a deterministic public
+node-value simulation. Its seed controls operation/committer selection, not
+cryptographic entropy; it retains no MLS secrets. Simulated Delete invalidates
+the removed member's old/new ancestors, but this is not proof of key erasure or
+forward secrecy. Byte-length observations remain withdrawn diagnostics only.
+The real clear report fails closed with
+`LiveAuthenticatedNodeValueFallbackNotImplemented`, because the fork does not
+yet retain/authenticate the required old-TreeCover node values or process
+post-transition Remove. Live maturity, retirement, and TreeCover secret erasure
+remain unsupported.
 
 ## Minimum Security Gates Before Experiments
 
