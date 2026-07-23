@@ -9,6 +9,7 @@ pub mod environment;
 pub mod generation;
 pub mod normal_operations;
 pub mod plots;
+pub mod transition_tables;
 
 use arity_state::ArityState;
 use experimental_mls_adapter::{

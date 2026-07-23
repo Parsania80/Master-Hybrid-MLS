@@ -100,6 +100,8 @@ Collect Task 63 Linux environment and direct-process peak RSS evidence with `car
 
 Generate the Task 64 table with `cargo run -p report --bin generate_normal_operations --release --locked --offline -- --repetitions <N> --output output/<run> --report report/<run>`. It creates real arity-2 baseline/fork rows and visibly labeled deterministic educational arity-4/8 Update rows; the latter are not live MLS protocol measurements.
 
+Generate the Task 65 transition/maturity table with `cargo run -p report --bin generate_transition_tables --release --locked --offline -- --task61-summary output/task61-adaptive-128-matched-per-commit/summary.json --output output/<run> --report report/<run>`. It preserves real Task 61 2-to-4 transition/cumulative bytes and uses the existing canonical hybrid serializer plus maturity rule for counterfactual `C_leaf`, `C_new`, `C_old`, and `C_ideal` values. Its 4-to-8 row is explicitly an educational topology replay: it is not an octal MLS Commit, convergence test, private-key lifecycle, or TreeCover-secret-erasure result.
+
 ## Security and interoperability warning
 
 This is educational thesis research software, not production cryptography, and it is not recommended for business or production use. All mKyber, hybrid path-secret, adaptive-tree, and TreeCover behavior is non-standard and experimental. Experimental modes must not claim RFC 9420 interoperability or a formal security proof.
