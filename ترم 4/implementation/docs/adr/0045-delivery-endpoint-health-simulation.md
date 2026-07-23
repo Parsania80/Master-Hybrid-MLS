@@ -23,14 +23,14 @@ a live MLS observation.
 2. Freeze each member's old and new leaf ordinals at transition. A later Remove
    creates a hole; it does not remap surviving members.
 3. For every non-empty required sibling node on the target-tree committer
-   path, calculate `C_new` in this order:
+   path, calculate `C_new` using only the new tree:
    - if the target-tree node has a usable value, count one;
-   - otherwise cover exactly those members with the smallest usable old
-     TreeCover nodes and count those nodes;
-   - otherwise recursively count direct active leaves.
+   - otherwise count one direct send to every active leaf beneath that node.
+   The old TreeCover never contributes to `C_new` or `h_newcost`.
 4. Calculate `C_old` separately on the old-tree committer path. Each usable
-   required old node counts one; an unavailable node recursively falls back to
-   active children and then leaves.
+   required old node counts one; an unavailable required node falls directly
+   to every active leaf beneath it. Smaller descendant TreeCover nodes are not
+   recursively reused for that missing required node.
 5. Use the operator's worst-case convention `C_leaf = active member count`.
    `C_ideal` is the number of non-empty target-tree siblings when all required
    target values are usable. Thus a full 128-member arity-4 path has
@@ -49,7 +49,8 @@ a live MLS observation.
    Update/Remove Commits with random valid committers. A Remove chooses a
    distinct active target, invalidates every old and new ancestor known by that
    target, removes it, and refreshes the deleting committer's new-tree path.
-   An Update refreshes its committer's new-tree path.
+   An Update refreshes its committer's new-tree path. The transition starts
+   with no usable new-tree internal values.
 8. Before transition, two Update observations compare educational canonical
    delivery-byte models for the old and target arities. Each model uses
    `744 * delivery_targets + 132 * active_clients`, where delivery targets are
@@ -64,7 +65,8 @@ a live MLS observation.
    Commits, and stops on the first retirement condition. It creates fresh
    `summary.csv`, `events.csv`, and `report.md` artifacts. The Markdown contains
    a pre-transition byte comparison, transition-cost table, one health row per
-   post-transition Commit, and clean post-transition averages.
+   post-transition Commit, and clean post-transition averages. Each per-Commit
+   health cell contains both its reduced exact fraction and six-place decimal.
 11. Run the mode with `CARGO_BUILD_JOBS=1`, nice level 10, and idle I/O priority.
 12. Every artifact must state
     `public_node_value_availability_simulation_not_live_mls_key_erasure` and
@@ -74,8 +76,8 @@ a live MLS observation.
 
 ## Consequences
 
-- The simulator now matches the operator's endpoint-count and fallback
-  semantics and can show both new-tree progress and old-tree degradation.
+- The simulator now keeps the new- and old-tree health routes independent and
+  can show both new-tree progress and old-tree degradation.
 - The public seed makes the operation, committer, and removal sequence
   reproducible without controlling cryptographic entropy.
 - A run may retire after its first impactful Commit if the exact threshold is
@@ -87,8 +89,11 @@ a live MLS observation.
 
 ## Verification
 
-- Unit tests prove the 128-member ideal count of 10 and the complete
-  new-value → old-TreeCover → leaf cascade.
+- Unit tests prove the 128-member ideal count of 10 and each independent
+  node-value → direct-leaf fallback.
+- A 128-member removal regression proves that seven old direct-path values are
+  invalidated and that the affected required old node falls directly to its
+  active leaves.
 - Unit tests prove Remove never targets its committer and reduces the old
   usable-node set in the seed-42 workload.
 - CLI tests cover required arguments, defaults, and malformed values.

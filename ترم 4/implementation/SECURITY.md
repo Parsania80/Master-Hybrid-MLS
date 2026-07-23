@@ -201,9 +201,11 @@ the thesis `C_*` values. Those claims are withdrawn. The corrected metric must
 count usable delivery endpoints, where one available internal node is one
 send. Tasks 82–84 implement that definition only in a deterministic public
 node-value simulation. Its seed controls operation/committer selection, not
-cryptographic entropy; it retains no MLS secrets. Simulated Remove invalidates
-the removed member's old/new ancestors, but this is not proof of key erasure or
-forward secrecy. Its new byte columns are explicitly modeled canonical field
+cryptographic entropy; it retains no MLS secrets. The new- and old-tree health
+routes are independent: each required node uses its own tree value or falls
+directly to the active leaves beneath it. Simulated Remove invalidates the
+removed member's old/new direct-path ancestors, but this is not proof of key
+erasure or forward secrecy. Its new byte columns are explicitly modeled canonical field
 counts (`744 * delivery targets + 132 * active clients`), not emitted MLS
 messages or network observations. The full transition Commit remains
 unavailable rather than being inferred from that model.

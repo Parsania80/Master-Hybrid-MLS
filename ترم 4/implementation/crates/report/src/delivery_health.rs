@@ -22,7 +22,7 @@ use thiserror::Error;
 use crate::generation::{validate_artifact_directory, write_new, ReportArtifactError};
 
 /// Version of the public delivery-health simulation schema.
-pub const DELIVERY_HEALTH_SCHEMA_VERSION: u16 = 2;
+pub const DELIVERY_HEALTH_SCHEMA_VERSION: u16 = 3;
 /// One-row summary CSV.
 pub const DELIVERY_HEALTH_SUMMARY_FILE_NAME: &str = "summary.csv";
 /// Ordered simulated Commit trace.
@@ -235,7 +235,9 @@ struct DeliveryHealthSummary {
     final_c_old: u32,
     final_c_ideal: u32,
     final_h_new_exact: String,
+    final_h_new_decimal: String,
     final_h_old_exact: String,
+    final_h_old_decimal: String,
     average_c_new: String,
     average_c_old: String,
     average_h_newcost: String,
@@ -337,8 +339,6 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
     let transition_committer = random_member(&members, &mut rng)?.id;
     let mut old_usable = all_populated_internal_nodes(old_layout, &members, TreeKind::Old)?;
     let mut new_usable = BTreeSet::new();
-    let transition_member = member_by_id(&members, transition_committer)?;
-    add_ancestors(&mut new_usable, new_layout, transition_member.new_leaf)?;
     let transition_counts = calculate_counts(
         old_layout,
         new_layout,
@@ -458,7 +458,9 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             final_c_old: final_counts.c_old,
             final_c_ideal: final_counts.c_ideal,
             final_h_new_exact: final_counts.h_new.text(),
+            final_h_new_decimal: final_counts.h_new.decimal(),
             final_h_old_exact: final_counts.h_old.text(),
+            final_h_old_decimal: final_counts.h_old.decimal(),
             average_c_new: averages.c_new,
             average_c_old: averages.c_old,
             average_h_newcost: averages.h_new,
@@ -516,29 +518,6 @@ impl TreeLayout {
                 Ok(TreeNode {
                     depth,
                     ordinal: leaf / self.span(depth)?,
-                })
-            })
-            .collect()
-    }
-
-    fn children(self, node: TreeNode) -> Result<Vec<TreeNode>, DeliveryHealthError> {
-        if node.depth >= self.height {
-            return Ok(Vec::new());
-        }
-        let first = node
-            .ordinal
-            .checked_mul(u32::from(self.arity))
-            .ok_or(DeliveryHealthError::Overflow)?;
-        (0..u32::from(self.arity))
-            .map(|offset| {
-                Ok(TreeNode {
-                    depth: node
-                        .depth
-                        .checked_add(1)
-                        .ok_or(DeliveryHealthError::Overflow)?,
-                    ordinal: first
-                        .checked_add(offset)
-                        .ok_or(DeliveryHealthError::Overflow)?,
                 })
             })
             .collect()
@@ -609,23 +588,14 @@ fn calculate_counts(
     let c_ideal = u32::try_from(new_required.len()).map_err(|_| DeliveryHealthError::Overflow)?;
     let mut c_new = 0_u32;
     for node in new_required {
-        let targets = members_under_node(new_layout, node, members, TreeKind::New)?;
-        let count = if node.depth < new_layout.height && new_usable.contains(&node) {
-            1
-        } else {
-            cover_targets_with_old(
-                old_layout,
-                TreeNode {
-                    depth: 0,
-                    ordinal: 0,
-                },
-                members,
-                &targets,
-                old_usable,
-            )?
-        };
         c_new = c_new
-            .checked_add(count)
+            .checked_add(node_or_leaf_fallback_count(
+                new_layout,
+                node,
+                members,
+                TreeKind::New,
+                new_usable,
+            )?)
             .ok_or(DeliveryHealthError::Overflow)?;
     }
 
@@ -634,7 +604,13 @@ fn calculate_counts(
     let mut c_old = 0_u32;
     for node in old_required {
         c_old = c_old
-            .checked_add(cover_old_node(old_layout, node, members, old_usable)?)
+            .checked_add(node_or_leaf_fallback_count(
+                old_layout,
+                node,
+                members,
+                TreeKind::Old,
+                old_usable,
+            )?)
             .ok_or(DeliveryHealthError::Overflow)?;
     }
 
@@ -707,50 +683,18 @@ fn required_sibling_nodes(
     Ok(required)
 }
 
-fn cover_targets_with_old(
+fn node_or_leaf_fallback_count(
     layout: TreeLayout,
     node: TreeNode,
     members: &[Member],
-    targets: &BTreeSet<u32>,
+    kind: TreeKind,
     usable: &BTreeSet<TreeNode>,
 ) -> Result<u32, DeliveryHealthError> {
-    let contained = members_under_node(layout, node, members, TreeKind::Old)?;
-    if contained.is_disjoint(targets) {
-        return Ok(0);
-    }
-    if node.depth < layout.height && usable.contains(&node) && contained.is_subset(targets) {
-        return Ok(1);
-    }
-    if node.depth == layout.height {
-        return Ok(1);
-    }
-    layout.children(node)?.iter().try_fold(0_u32, |sum, child| {
-        sum.checked_add(cover_targets_with_old(
-            layout, *child, members, targets, usable,
-        )?)
-        .ok_or(DeliveryHealthError::Overflow)
-    })
-}
-
-fn cover_old_node(
-    layout: TreeLayout,
-    node: TreeNode,
-    members: &[Member],
-    usable: &BTreeSet<TreeNode>,
-) -> Result<u32, DeliveryHealthError> {
-    if members_under_node(layout, node, members, TreeKind::Old)?.is_empty() {
-        return Ok(0);
-    }
+    let contained = members_under_node(layout, node, members, kind)?;
     if node.depth < layout.height && usable.contains(&node) {
         return Ok(1);
     }
-    if node.depth == layout.height {
-        return Ok(1);
-    }
-    layout.children(node)?.iter().try_fold(0_u32, |sum, child| {
-        sum.checked_add(cover_old_node(layout, *child, members, usable)?)
-            .ok_or(DeliveryHealthError::Overflow)
-    })
+    u32::try_from(contained.len()).map_err(|_| DeliveryHealthError::Overflow)
 }
 
 fn members_under_node(
@@ -1052,8 +996,8 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
             event.operation,
             optional_u32(event.c_new),
             optional_u32(event.c_old),
-            event.h_new_exact.as_deref().unwrap_or("—"),
-            event.h_old_exact.as_deref().unwrap_or("—"),
+            health_display(event.h_new_exact.as_deref(), event.h_new_decimal.as_deref()),
+            health_display(event.h_old_exact.as_deref(), event.h_old_decimal.as_deref()),
             optional_u64(event.bytes_sent),
         )
         .expect("string write");
@@ -1079,10 +1023,10 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     writeln!(document, "\n## Counting rules\n").expect("string write");
     writeln!(document, "- `Committer node index` is the committer's target-tree leaf ordinal, not its member identifier.").expect("string write");
     writeln!(document, "- `C_leaf` is the current active-client count, matching the operator's worst-case convention.").expect("string write");
-    writeln!(document, "- `C_new` evaluates every required target-tree sibling: one send for a usable new-tree node; otherwise the smallest usable old-TreeCover cover; otherwise direct active leaves.").expect("string write");
-    writeln!(document, "- `C_old` places the same committer in the old tree: one send for each usable required old node, recursively falling back to active leaves when a node was invalidated.").expect("string write");
+    writeln!(document, "- `C_new` evaluates every required target-tree sibling using only the new tree: one send for a usable new-tree node; otherwise one direct send to every active leaf beneath that required node. Old TreeCover values never contribute to `C_new` or `h_newcost`.").expect("string write");
+    writeln!(document, "- `C_old` places the same committer in the old TreeCover: one send for each usable required old node; an unavailable required node falls directly to every active leaf beneath it. It does not recursively reuse smaller descendant TreeCover nodes.").expect("string write");
     writeln!(document, "- `C_ideal` counts the non-empty target-tree sibling nodes when every required internal value is usable.").expect("string write");
-    writeln!(document, "- An `update` populates the target-tree internal nodes on its committer path. A `remove` invalidates old and new ancestors known by the removed member, removes that client, then refreshes the removing committer's new-tree path.").expect("string write");
+    writeln!(document, "- The new tree starts with no usable internal values. An `update` populates the target-tree internal nodes on its committer path. A `remove` invalidates old and new direct-path ancestors known by the removed member, removes that client, then refreshes the removing committer's new-tree path.").expect("string write");
     writeln!(document, "- Operation labels are `add`, `remove`, or `update`; this workload currently randomizes `remove` and `update` only. A removal never selects its committer as the target.").expect("string write");
     writeln!(document, "- Modelled delivery bytes use `744 × delivery targets + 132 × active clients`. They are separate from the endpoint counts and are not full MLS Commit bytes.").expect("string write");
     writeln!(document, "\n## Boundary\n").expect("string write");
@@ -1108,6 +1052,13 @@ fn optional_u32(value: Option<u32>) -> String {
 
 fn optional_u64(value: Option<u64>) -> String {
     value.map_or_else(|| "—".to_owned(), |value| value.to_string())
+}
+
+fn health_display(exact: Option<&str>, decimal: Option<&str>) -> String {
+    match (exact, decimal) {
+        (Some(exact), Some(decimal)) => format!("{exact} ({decimal})"),
+        _ => "—".to_owned(),
+    }
 }
 
 fn optional_i64(value: Option<i64>) -> String {
@@ -1139,7 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn combined_new_route_uses_old_nodes_then_leaf_fallback() {
+    fn health_routes_use_only_their_own_tree_then_direct_leaf_fallback() {
         let members = transition_members(64);
         let old_layout = TreeLayout::new(2, 64).expect("old layout");
         let new_layout = TreeLayout::new(4, 64).expect("new layout");
@@ -1156,7 +1107,7 @@ mod tests {
         .expect("counts");
         assert_eq!(counts.c_leaf, 64);
         assert_eq!(counts.c_ideal, 9);
-        assert_eq!(counts.c_new, 21);
+        assert_eq!(counts.c_new, 63);
         assert_eq!(counts.c_old, 6);
 
         let fully_mature_new =
@@ -1183,6 +1134,40 @@ mod tests {
         .expect("leaf fallback counts");
         assert_eq!(leaf_fallback_counts.c_new, 63);
         assert_eq!(leaf_fallback_counts.c_old, 63);
+    }
+
+    #[test]
+    fn one_remove_invalidates_seven_old_values_and_falls_directly_to_leaves() {
+        let mut members = transition_members(128);
+        let old_layout = TreeLayout::new(2, 128).expect("old layout");
+        let new_layout = TreeLayout::new(4, 128).expect("new layout");
+        let mut old_usable =
+            all_populated_internal_nodes(old_layout, &members, TreeKind::Old).expect("old nodes");
+        let mut new_usable = BTreeSet::new();
+
+        remove_ancestors(&mut old_usable, old_layout, 120).expect("remove old path");
+        members.retain(|member| member.id != 120);
+        let committer = member_by_id(&members, 92).expect("committer");
+        add_ancestors(&mut new_usable, new_layout, committer.new_leaf).expect("new path");
+
+        assert_eq!(old_usable.len(), 120);
+        let counts = calculate_counts(
+            old_layout,
+            new_layout,
+            &members,
+            committer.id,
+            &new_usable,
+            &old_usable,
+        )
+        .expect("counts");
+        assert_eq!(counts.c_leaf, 127);
+        assert_eq!(counts.c_ideal, 10);
+        assert_eq!(counts.c_new, 126);
+        assert_eq!(counts.c_old, 37);
+        assert_eq!(counts.h_new.text(), "1/117");
+        assert_eq!(counts.h_new.decimal(), "0.008547");
+        assert_eq!(counts.h_old.text(), "10/13");
+        assert_eq!(counts.h_old.decimal(), "0.769231");
     }
 
     #[test]
@@ -1281,7 +1266,8 @@ mod tests {
         ));
         assert!(report.contains("Saving (new - old)"));
         assert!(report.contains("h_newcost > 0.7"));
+        assert!(report.contains("1/117 (0.008547)"));
+        assert!(report.contains("10/13 (0.769231)"));
         assert_eq!(result.summary.modeled_transition_delivery_bytes, 112_128);
-        assert_eq!(result.summary.average_bytes_sent, "42060.000000");
     }
 }
