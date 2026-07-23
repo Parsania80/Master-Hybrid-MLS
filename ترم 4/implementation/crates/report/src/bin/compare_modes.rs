@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Generate the Task 57 availability-aware three-mode comparison artifacts.
+//! Generate the Task 62 real three-mode comparison artifacts.
 
 use std::{env, fs, path::PathBuf, process::ExitCode};
 
@@ -68,14 +68,14 @@ fn main() -> ExitCode {
         &cli.report,
     ) {
         Ok(paths) => {
-            println!("Generated a partial three-mode comparison.");
+            println!("Generated a real three-mode update-only comparison.");
             println!(
                 "Machine-readable artifacts: {}, {}",
                 paths.comparison_csv.display(),
                 paths.comparison_json.display()
             );
             println!("Markdown report: {}", paths.comparison_markdown.display());
-            println!("Only baseline MLS executed. Experimental bandwidth, mKyber CPU, and adaptive break-even values remain unavailable until the OpenMLS fork is integrated.");
+            println!("All three selected workload clients executed. Lifecycle timing remains environment-dependent; Task 63 collects repeated CPU and peak-RSS evidence.");
             ExitCode::SUCCESS
         }
         Err(error) => fail(format!("comparison failed: {error}")),
@@ -189,7 +189,7 @@ fn print_usage() {
     println!(
         "Usage: compare_modes --baseline-config configs/<baseline>.toml --mkyber-config configs/<mkyber>.toml --adaptive-config configs/<adaptive>.toml --initial-members <N> --maximum-members <N> --operations <N> --regions <N> --output output/<run> --report report/<run>\n\
          \n\
-         The three TOML files must select their named modes and share group, transition, and execution controls. The command executes only the unchanged baseline repetitions; experimental values are explicitly unavailable until the OpenMLS fork exists."
+         The three TOML files must select their named modes and share group, transition, and execution controls. Task 62 accepts only zero-warmup update-only workloads with equal initial and maximum membership. It runs all three real clients; use 128 members and at least three updates to obtain the proven adaptive transition and post-transition update."
     );
 }
 

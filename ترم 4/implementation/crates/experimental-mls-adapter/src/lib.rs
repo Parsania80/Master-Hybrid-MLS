@@ -198,6 +198,20 @@ pub struct AcceptedExperimentalAdaptiveOperation {
     pub transition: Option<ExperimentalAdaptiveTransitionMeasurement>,
 }
 
+impl AcceptedExperimentalAdaptiveOperation {
+    /// Returns public hybrid delivery counts, or zeroes for a transition
+    /// Commit that intentionally has no hybrid UpdatePath delivery.
+    pub fn hybrid_delivery_counts(&self) -> (u32, u32, u32, u32) {
+        let metrics = self.hybrid_delivery.unwrap_or_default();
+        (
+            metrics.hybrid_path_delivery_count(),
+            metrics.mkyber_common_ciphertext_count(),
+            metrics.mkyber_recipient_ciphertext_count(),
+            metrics.classical_hpke_encapsulation_count(),
+        )
+    }
+}
+
 /// Explicit lifecycle result for the old TreeCover at the end of a run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExperimentalAdaptiveRetirementStatus {

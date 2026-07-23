@@ -1,0 +1,24 @@
+# Task 62 real baseline comparison. All modes use the same public controls.
+mode = "baseline-binary-mls"
+
+[group]
+target_group_size = 128
+current_arity = 2
+candidate_arity = 4
+
+[transition]
+window_accepted_commits = 20
+stable_epoch_count = 1
+q_min = 1
+theta_new_micro = 700000
+theta_old_micro = 500000
+delta_bytes = 0
+
+[execution]
+warmup_accepted_commits = 0
+repetitions = 1
+workload_seed = 62
+
+[output]
+output_directory = "output/task62-core-128"
+report_directory = "report/task62-core-128"
