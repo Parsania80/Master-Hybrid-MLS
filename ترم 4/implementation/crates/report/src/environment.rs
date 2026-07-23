@@ -202,6 +202,17 @@ pub fn collect_linux_environment(
     Ok(paths)
 }
 
+/// Returns the current Linux process's resident high-water mark in KiB.
+///
+/// This is a whole-process observation rather than a per-operation allocation
+/// measurement. Callers must retain that distinction in their provenance.
+pub fn current_linux_process_peak_rss_kib() -> Result<Option<u64>, EnvironmentCollectionError> {
+    if !cfg!(target_os = "linux") {
+        return Err(EnvironmentCollectionError::UnsupportedPlatform);
+    }
+    proc_vm_hwm_kib(std::process::id())
+}
+
 fn collect_peak_rss_runs(
     config: &LinuxEnvironmentCollectionConfig,
 ) -> Result<Vec<PeakRssRun>, EnvironmentCollectionError> {

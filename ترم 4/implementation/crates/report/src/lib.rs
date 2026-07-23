@@ -7,6 +7,7 @@
 pub mod comparison;
 pub mod environment;
 pub mod generation;
+pub mod normal_operations;
 pub mod plots;
 
 use arity_state::ArityState;
