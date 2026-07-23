@@ -80,7 +80,7 @@ Experimental setup now uses one authenticated batched Add Commit and individual 
 
 The optimized real 128-member rejection-only run completed in 387.18 seconds: 29,062-byte binary normal Commit, 25,434-byte matched compact candidate, and 25,634-byte preflight. Its compact candidate saves bytes, but two observations still do not repay the preflight, so the policy correctly rejects transition.
 
-`PROJECT.md` now uses only standalone tasks, with no Task 57 gates or subtasks. Tasks 60 and 61 are complete; Task 62 performs the real three-mode comparison, and Tasks 63–65 finish acceptance, documentation, and clean-checkout reproducibility.
+`PROJECT.md` now uses only standalone tasks, with no Task 57 gates or subtasks. Tasks 60 and 61 are complete, and Task 62 performs the core real three-mode comparison. Tasks 63–67 then add only the minimal thesis-table measurements that are still missing: environment/repetitions/peak RSS, clearly labeled educational arity-8 operation and 4-to-8 transition values, real/educational maturity facts, analytical byte/time error formulas, and final table-shaped outputs. Tasks 68–70 finish acceptance, documentation, and clean-checkout reproducibility. Educational codec/model values remain visibly distinct from real MLS/fork observations.
 
 Ubuntu 26.04 development setup is verified with the repository-pinned Rust 1.93.1 toolchain, including `rustfmt` and Clippy. The exact locked dependency graph is cached locally, and the workspace passes a locked offline all-target check.
 
