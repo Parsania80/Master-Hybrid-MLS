@@ -10,6 +10,7 @@ pub mod generation;
 pub mod model_errors;
 pub mod normal_operations;
 pub mod plots;
+pub mod thesis_tables;
 pub mod transition_tables;
 
 use arity_state::ArityState;
