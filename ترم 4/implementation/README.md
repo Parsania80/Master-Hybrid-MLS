@@ -102,6 +102,8 @@ Generate the Task 64 table with `cargo run -p report --bin generate_normal_opera
 
 Generate the Task 65 transition/maturity table with `cargo run -p report --bin generate_transition_tables --release --locked --offline -- --task61-summary output/task61-adaptive-128-matched-per-commit/summary.json --output output/<run> --report report/<run>`. It preserves real Task 61 2-to-4 transition/cumulative bytes and uses the existing canonical hybrid serializer plus maturity rule for counterfactual `C_leaf`, `C_new`, `C_old`, and `C_ideal` values. Its 4-to-8 row is explicitly an educational topology replay: it is not an octal MLS Commit, convergence test, private-key lifecycle, or TreeCover-secret-erasure result.
 
+Generate Task 66 model/error evidence with `cargo run -p report --bin generate_model_errors --release --locked --offline -- --environment-json output/<task63-run>/environment.json --normal-operations-csv output/<task64-run>/normal_operations.csv --transition-maturity-json output/<task65-run>/transition_maturity.json --output output/<run> --report report/<run> --timing-samples 25`. It writes measured/modelled byte and time values, absolute differences, and fixed-point percentage errors. A full real MLS framing or lifecycle model remains explicitly unavailable when completed public artifacts do not expose an honest decomposition.
+
 ## Security and interoperability warning
 
 This is educational thesis research software, not production cryptography, and it is not recommended for business or production use. All mKyber, hybrid path-secret, adaptive-tree, and TreeCover behavior is non-standard and experimental. Experimental modes must not claim RFC 9420 interoperability or a formal security proof.
