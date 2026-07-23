@@ -18,7 +18,7 @@ printf 'Choose a mode:\n'
 printf '  1) Short protocol demo (real comparison plus charts; about 20 seconds)\n'
 printf '  2) Complete thesis tables (comparison, RSS, operation, maturity, model, and final tables)\n'
 printf '  3) Clear 64-member real-protocol report (topology delivery costs unavailable)\n'
-printf '  4) Adaptive delivery-health simulation (random Update/Delete and endpoint counts)\n'
+printf '  4) Adaptive delivery-health simulation (byte gate, random Update/Remove, endpoint health)\n'
 printf 'Selection [1/2/3/4]: '
 IFS= read -r mode_choice || fail 'could not read mode selection'
 
@@ -59,12 +59,13 @@ if [[ "$generate_delivery_health" == true ]]; then
     (( target_arity == initial_arity * 2 )) \
         || fail 'supported transitions are exactly 2 -> 4 and 4 -> 8'
 
-    printf 'Initial MLS client number [2..4096]: '
+    minimum_initial_members=$((initial_arity + 1))
+    printf 'Initial MLS client number [%s..4096]: ' "$minimum_initial_members"
     IFS= read -r initial_members || fail 'could not read initial MLS client number'
     [[ "$initial_members" =~ ^[0-9]+$ ]] \
         || fail 'initial MLS client number must be an integer'
-    (( 10#$initial_members >= 2 && 10#$initial_members <= 4096 )) \
-        || fail 'initial MLS client number must be between 2 and 4096'
+    (( 10#$initial_members >= minimum_initial_members && 10#$initial_members <= 4096 )) \
+        || fail "initial MLS client number must be between $minimum_initial_members and 4096"
 fi
 
 default_run_name="professor-demo-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -145,7 +146,7 @@ if [[ "$generate_delivery_health" == true ]]; then
     printf 'Arity: %s -> %s; initial clients: %s\n' \
         "$initial_arity" "$target_arity" "$initial_members"
     printf 'Public random seed: 42; post-transition Commit limit: 128\n'
-    printf 'Operations: random Update/Delete with a random valid committer\n\n'
+    printf 'Operations: random Update/Remove with a random valid committer\n\n'
     run_step 'Run endpoint-count simulation' env CARGO_BUILD_JOBS=1 CARGO_TERM_COLOR=never \
         nice -n 10 ionice -c 3 cargo run --quiet -p report --bin simulate_delivery_health \
         --release --locked --offline -- \

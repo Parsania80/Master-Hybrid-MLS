@@ -127,12 +127,12 @@ h_new_cost = min_S(h_new_clamped(S))
 h_old_cost = max_S(h_old_clamped(S))
 ```
 
-Thus `h_new_cost >= theta_new` means every relevant set has sufficient new-tree maturity, while `h_old_cost < theta_old` means even the best remaining TreeCover set is below the old-cover threshold. Any undefined non-empty set blocks retirement and is reported for recovery; it is never converted to a favorable score.
+Thus `h_new_cost > theta_new` means every relevant set has sufficient new-tree maturity, while `h_old_cost < theta_old` means even the best remaining TreeCover set is below the old-cover threshold. Any undefined non-empty set blocks retirement and is reported for recovery; it is never converted to a favorable score.
 
 The global retirement rule is exactly:
 
 ```text
-DropTreeCover = h_new_cost >= theta_new OR h_old_cost < theta_old
+DropTreeCover = h_new_cost > theta_new OR h_old_cost < theta_old
 ```
 
 Defaults are `theta_new=0.70` and `theta_old=0.50`, stored as fixed-point values. On retirement, record epoch and triggering side(s), erase eligible old secrets where applicable, set transition state to `Normal`, increment `tree_version`, and verify member convergence.
@@ -158,4 +158,3 @@ Aggregate experiment results at the independent-run level, not by pooling commit
 - Unit tests cover impact classification, window eviction, `q_e`/`r_e`, strict Delta validation, integer equivalence of both saving forms, and preflight-versus-actual transition-byte reporting.
 - Property tests cover canonical member ordering, mapping determinism, TreeCover eligibility, empty/undefined target sets, clamping reasons, conservative aggregate scores, and OR-based retirement.
 - Integration tests run multiple deterministic repetitions, verify all members converge after every accepted commit, and confirm that reports distinguish measured from estimated bytes.
-

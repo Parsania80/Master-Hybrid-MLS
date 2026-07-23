@@ -138,11 +138,11 @@ fn parse_u64(value: String, option: &str) -> Result<u64, String> {
 fn print_usage() {
     println!(
         "Usage: simulate_delivery_health \
-         --initial-arity <2|4> --target-arity <4|8> --initial-members <2..4096> \
+         --initial-arity <2|4> --target-arity <4|8> --initial-members <N> \
          [--seed <PUBLIC_SEED>] [--maximum-commits <N>] \
          --output output/<run> --report report/<run>\n\
          \n\
-         This counts delivery endpoints in a public node-value simulation. It does not execute live post-transition MLS Remove or key erasure."
+         Initial members must exceed the initial arity and be at most 4096. This counts delivery endpoints and modelled canonical delivery bytes in a public node-value simulation. It does not execute live post-transition MLS Remove or key erasure."
     );
 }
 

@@ -22,7 +22,7 @@ use thiserror::Error;
 use crate::generation::{validate_artifact_directory, write_new, ReportArtifactError};
 
 /// Version of the public delivery-health simulation schema.
-pub const DELIVERY_HEALTH_SCHEMA_VERSION: u16 = 1;
+pub const DELIVERY_HEALTH_SCHEMA_VERSION: u16 = 2;
 /// One-row summary CSV.
 pub const DELIVERY_HEALTH_SUMMARY_FILE_NAME: &str = "summary.csv";
 /// Ordered simulated Commit trace.
@@ -36,6 +36,8 @@ const THETA_NEW_DENOMINATOR: i64 = 10;
 const THETA_OLD_NUMERATOR: i64 = 1;
 const THETA_OLD_DENOMINATOR: i64 = 2;
 const MAX_SIMULATED_MEMBERS: u32 = 4_096;
+const HYBRID_PATH_HEADER_BYTES: u64 = 744;
+const HYBRID_RECIPIENT_RECORD_BYTES: u64 = 132;
 
 /// Public controls for one deterministic simulation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,7 +50,7 @@ pub struct DeliveryHealthConfig {
     pub initial_member_count: u32,
     /// Public deterministic operation/committer seed.
     pub random_seed: u64,
-    /// Maximum post-transition Update/Delete Commits.
+    /// Maximum post-transition Update/Remove Commits.
     pub maximum_post_transition_commits: u32,
 }
 
@@ -60,6 +62,9 @@ impl DeliveryHealthConfig {
         }
         if !(2..=MAX_SIMULATED_MEMBERS).contains(&self.initial_member_count) {
             return Err(DeliveryHealthError::InvalidMemberCount);
+        }
+        if self.initial_member_count <= u32::from(self.initial_arity) {
+            return Err(DeliveryHealthError::NewArityCannotWin);
         }
         if self.maximum_post_transition_commits == 0 {
             return Err(DeliveryHealthError::ZeroCommitLimit);
@@ -88,6 +93,9 @@ pub enum DeliveryHealthError {
     /// The member count is outside the resource-bounded simulation range.
     #[error("initial members must be between 2 and 4096")]
     InvalidMemberCount,
+    /// The bounded pre-transition byte model cannot favor the target arity.
+    #[error("initial members must exceed the initial arity so the target arity can win")]
+    NewArityCannotWin,
     /// At least one post-transition Commit must be permitted.
     #[error("maximum post-transition commits must be positive")]
     ZeroCommitLimit,
@@ -182,6 +190,7 @@ struct DeliveryHealthEvent {
     phase: &'static str,
     operation: &'static str,
     committer_member_index: u32,
+    committer_target_node_index: u32,
     removed_member_index: Option<u32>,
     active_member_count: u32,
     impactful_commits_since_transition: Option<u32>,
@@ -195,6 +204,10 @@ struct DeliveryHealthEvent {
     h_new_decimal: Option<String>,
     h_old_exact: Option<String>,
     h_old_decimal: Option<String>,
+    old_arity_bytes_sent: Option<u64>,
+    new_arity_bytes_sent: Option<u64>,
+    saving_new_minus_old_bytes: Option<i64>,
+    bytes_sent: Option<u64>,
     retirement_condition: &'static str,
 }
 
@@ -210,8 +223,10 @@ struct DeliveryHealthSummary {
     pre_transition_update_count: u32,
     post_transition_commit_count: u32,
     update_commit_count: u32,
-    delete_commit_count: u32,
+    remove_commit_count: u32,
     transition_commit_sequence: u32,
+    modeled_transition_delivery_bytes: u64,
+    full_transition_commit_bytes_state: &'static str,
     retirement_condition_met: bool,
     retirement_after_impactful_commit: Option<u32>,
     retirement_trigger: &'static str,
@@ -221,6 +236,11 @@ struct DeliveryHealthSummary {
     final_c_ideal: u32,
     final_h_new_exact: String,
     final_h_old_exact: String,
+    average_c_new: String,
+    average_c_old: String,
+    average_h_newcost: String,
+    average_h_oldcost: String,
+    average_bytes_sent: String,
     live_protocol_retirement_state: &'static str,
 }
 
@@ -229,7 +249,7 @@ struct SimulationResult {
     events: Vec<DeliveryHealthEvent>,
 }
 
-/// Runs the deterministic Update/Delete simulation and writes create-new
+/// Runs the deterministic Update/Remove simulation and writes create-new
 /// public CSV plus `report.md` artifacts.
 pub fn generate_delivery_health_report(
     config: DeliveryHealthConfig,
@@ -276,13 +296,22 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
     let mut sequence = 1_u32;
 
     for _ in 0..PRE_TRANSITION_UPDATE_COUNT {
-        let committer = random_member(&members, &mut rng)?.id;
+        let committer = *random_member(&members, &mut rng)?;
+        let old_arity_bytes =
+            modeled_arity_probe_bytes(member_count(&members)?, config.initial_arity)?;
+        let new_arity_bytes =
+            modeled_arity_probe_bytes(member_count(&members)?, config.target_arity)?;
+        let saving = signed_difference(new_arity_bytes, old_arity_bytes)?;
+        if saving >= 0 {
+            return Err(DeliveryHealthError::NewArityCannotWin);
+        }
         events.push(DeliveryHealthEvent {
             schema_version: DELIVERY_HEALTH_SCHEMA_VERSION,
             commit_sequence: sequence,
             phase: "pre-transition",
             operation: "update",
-            committer_member_index: committer,
+            committer_member_index: committer.id,
+            committer_target_node_index: committer.new_leaf,
             removed_member_index: None,
             active_member_count: member_count(&members)?,
             impactful_commits_since_transition: None,
@@ -296,7 +325,11 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             h_new_decimal: None,
             h_old_exact: None,
             h_old_decimal: None,
-            retirement_condition: "NotEvaluatedBeforeTransition",
+            old_arity_bytes_sent: Some(old_arity_bytes),
+            new_arity_bytes_sent: Some(new_arity_bytes),
+            saving_new_minus_old_bytes: Some(saving),
+            bytes_sent: Some(old_arity_bytes),
+            retirement_condition: "NewArityWins",
         });
         sequence = checked_next(sequence)?;
     }
@@ -314,6 +347,8 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
         &new_usable,
         &old_usable,
     )?;
+    let transition_delivery_bytes =
+        modeled_delivery_bytes(transition_counts.c_leaf, member_count(&members)?)?;
     let transition_sequence = sequence;
     events.push(measured_event(
         MeasuredEventFacts {
@@ -329,30 +364,31 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
         &new_usable,
         &old_usable,
         transition_counts,
+        transition_delivery_bytes,
     )?);
     sequence = checked_next(sequence)?;
 
     let mut update_count = 0_u32;
-    let mut delete_count = 0_u32;
+    let mut remove_count = 0_u32;
     let mut final_counts = transition_counts;
     let mut retirement_after = None;
     let mut retirement_trigger = "CommitLimitReached";
 
     for t in 1..=config.maximum_post_transition_commits {
-        let delete = members.len() > 2 && rng.gen_bool(0.5);
+        let remove = members.len() > 2 && rng.gen_bool(0.5);
         let committer_id = random_member(&members, &mut rng)?.id;
         let mut removed_id = None;
-        let operation = if delete {
+        let operation = if remove {
             let target_id = random_other_member(&members, committer_id, &mut rng)?.id;
             let target = member_by_id(&members, target_id)?;
             remove_ancestors(&mut old_usable, old_layout, target.old_leaf)?;
             remove_ancestors(&mut new_usable, new_layout, target.new_leaf)?;
             members.retain(|member| member.id != target_id);
             removed_id = Some(target_id);
-            delete_count = delete_count
+            remove_count = remove_count
                 .checked_add(1)
                 .ok_or(DeliveryHealthError::Overflow)?;
-            "delete"
+            "remove"
         } else {
             update_count = update_count
                 .checked_add(1)
@@ -369,6 +405,7 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             &new_usable,
             &old_usable,
         )?;
+        let bytes_sent = modeled_delivery_bytes(final_counts.c_new, member_count(&members)?)?;
         let trigger = retirement_trigger_text(final_counts);
         events.push(measured_event(
             MeasuredEventFacts {
@@ -384,6 +421,7 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             &new_usable,
             &old_usable,
             final_counts,
+            bytes_sent,
         )?);
         sequence = checked_next(sequence)?;
         if final_counts.retire_new || final_counts.retire_old {
@@ -395,6 +433,7 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
 
     let post_transition_commit_count =
         retirement_after.unwrap_or(config.maximum_post_transition_commits);
+    let averages = calculate_post_transition_averages(&events)?;
     Ok(SimulationResult {
         summary: DeliveryHealthSummary {
             schema_version: DELIVERY_HEALTH_SCHEMA_VERSION,
@@ -407,8 +446,10 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             pre_transition_update_count: PRE_TRANSITION_UPDATE_COUNT,
             post_transition_commit_count,
             update_commit_count: update_count,
-            delete_commit_count: delete_count,
+            remove_commit_count: remove_count,
             transition_commit_sequence: transition_sequence,
+            modeled_transition_delivery_bytes: transition_delivery_bytes,
+            full_transition_commit_bytes_state: "UnavailableSimulationHasNoFullMlsCommit",
             retirement_condition_met: retirement_after.is_some(),
             retirement_after_impactful_commit: retirement_after,
             retirement_trigger,
@@ -418,6 +459,11 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             final_c_ideal: final_counts.c_ideal,
             final_h_new_exact: final_counts.h_new.text(),
             final_h_old_exact: final_counts.h_old.text(),
+            average_c_new: averages.c_new,
+            average_c_old: averages.c_old,
+            average_h_newcost: averages.h_new,
+            average_h_oldcost: averages.h_old,
+            average_bytes_sent: averages.bytes_sent,
             live_protocol_retirement_state: "UnsupportedSimulationOnly",
         },
         events,
@@ -605,10 +651,7 @@ fn calculate_counts(
         numerator: i64::from(c_leaf) - i64::from(c_old),
         denominator,
     };
-    let retire_new =
-        h_new.numerator * THETA_NEW_DENOMINATOR >= THETA_NEW_NUMERATOR * h_new.denominator;
-    let retire_old =
-        h_old.numerator * THETA_OLD_DENOMINATOR < THETA_OLD_NUMERATOR * h_old.denominator;
+    let (retire_new, retire_old) = retirement_conditions(h_new, h_old);
     Ok(DeliveryCounts {
         c_leaf,
         c_new,
@@ -619,6 +662,13 @@ fn calculate_counts(
         retire_new,
         retire_old,
     })
+}
+
+fn retirement_conditions(h_new: Rational, h_old: Rational) -> (bool, bool) {
+    (
+        h_new.numerator * THETA_NEW_DENOMINATOR > THETA_NEW_NUMERATOR * h_new.denominator,
+        h_old.numerator * THETA_OLD_DENOMINATOR < THETA_OLD_NUMERATOR * h_old.denominator,
+    )
 }
 
 fn required_sibling_nodes(
@@ -764,13 +814,16 @@ fn measured_event(
     new_usable: &BTreeSet<TreeNode>,
     old_usable: &BTreeSet<TreeNode>,
     counts: DeliveryCounts,
+    bytes_sent: u64,
 ) -> Result<DeliveryHealthEvent, DeliveryHealthError> {
+    let committer = member_by_id(members, facts.committer)?;
     Ok(DeliveryHealthEvent {
         schema_version: DELIVERY_HEALTH_SCHEMA_VERSION,
         commit_sequence: facts.sequence,
         phase: facts.phase,
         operation: facts.operation,
         committer_member_index: facts.committer,
+        committer_target_node_index: committer.new_leaf,
         removed_member_index: facts.removed,
         active_member_count: member_count(members)?,
         impactful_commits_since_transition: Some(facts.t),
@@ -784,6 +837,10 @@ fn measured_event(
         h_new_decimal: Some(counts.h_new.decimal()),
         h_old_exact: Some(counts.h_old.text()),
         h_old_decimal: Some(counts.h_old.decimal()),
+        old_arity_bytes_sent: None,
+        new_arity_bytes_sent: None,
+        saving_new_minus_old_bytes: None,
+        bytes_sent: Some(bytes_sent),
         retirement_condition: facts.retirement_condition,
     })
 }
@@ -807,6 +864,89 @@ fn node_count(nodes: &BTreeSet<TreeNode>) -> Result<u32, DeliveryHealthError> {
 
 fn checked_next(value: u32) -> Result<u32, DeliveryHealthError> {
     value.checked_add(1).ok_or(DeliveryHealthError::Overflow)
+}
+
+struct PostTransitionAverages {
+    c_new: String,
+    c_old: String,
+    h_new: String,
+    h_old: String,
+    bytes_sent: String,
+}
+
+fn modeled_arity_probe_bytes(active_members: u32, arity: u8) -> Result<u64, DeliveryHealthError> {
+    let arity = u32::from(arity);
+    let delivery_targets = active_members
+        .checked_add(arity.checked_sub(1).ok_or(DeliveryHealthError::Overflow)?)
+        .ok_or(DeliveryHealthError::Overflow)?
+        / arity;
+    modeled_delivery_bytes(delivery_targets, active_members)
+}
+
+fn modeled_delivery_bytes(
+    delivery_targets: u32,
+    active_members: u32,
+) -> Result<u64, DeliveryHealthError> {
+    u64::from(delivery_targets)
+        .checked_mul(HYBRID_PATH_HEADER_BYTES)
+        .and_then(|headers| {
+            u64::from(active_members)
+                .checked_mul(HYBRID_RECIPIENT_RECORD_BYTES)
+                .and_then(|records| headers.checked_add(records))
+        })
+        .ok_or(DeliveryHealthError::Overflow)
+}
+
+fn signed_difference(left: u64, right: u64) -> Result<i64, DeliveryHealthError> {
+    let left = i64::try_from(left).map_err(|_| DeliveryHealthError::Overflow)?;
+    let right = i64::try_from(right).map_err(|_| DeliveryHealthError::Overflow)?;
+    left.checked_sub(right).ok_or(DeliveryHealthError::Overflow)
+}
+
+fn calculate_post_transition_averages(
+    events: &[DeliveryHealthEvent],
+) -> Result<PostTransitionAverages, DeliveryHealthError> {
+    let evaluated = events
+        .iter()
+        .filter(|event| event.phase == "post-transition")
+        .collect::<Vec<_>>();
+    let count = u64::try_from(evaluated.len()).map_err(|_| DeliveryHealthError::Overflow)?;
+    if count == 0 {
+        return Err(DeliveryHealthError::ZeroCommitLimit);
+    }
+    let mut c_new_sum = 0_u64;
+    let mut c_old_sum = 0_u64;
+    let mut bytes_sum = 0_u64;
+    let mut h_new_sum = 0_f64;
+    let mut h_old_sum = 0_f64;
+    for event in evaluated {
+        let c_leaf = event.c_leaf.ok_or(DeliveryHealthError::Overflow)?;
+        let c_new = event.c_new.ok_or(DeliveryHealthError::Overflow)?;
+        let c_old = event.c_old.ok_or(DeliveryHealthError::Overflow)?;
+        let c_ideal = event.c_ideal.ok_or(DeliveryHealthError::Overflow)?;
+        let denominator = f64::from(c_leaf) - f64::from(c_ideal);
+        if denominator <= 0.0 {
+            return Err(DeliveryHealthError::NonPositiveDenominator);
+        }
+        c_new_sum = c_new_sum
+            .checked_add(u64::from(c_new))
+            .ok_or(DeliveryHealthError::Overflow)?;
+        c_old_sum = c_old_sum
+            .checked_add(u64::from(c_old))
+            .ok_or(DeliveryHealthError::Overflow)?;
+        bytes_sum = bytes_sum
+            .checked_add(event.bytes_sent.ok_or(DeliveryHealthError::Overflow)?)
+            .ok_or(DeliveryHealthError::Overflow)?;
+        h_new_sum += (f64::from(c_leaf) - f64::from(c_new)) / denominator;
+        h_old_sum += (f64::from(c_leaf) - f64::from(c_old)) / denominator;
+    }
+    Ok(PostTransitionAverages {
+        c_new: format!("{:.6}", c_new_sum as f64 / count as f64),
+        c_old: format!("{:.6}", c_old_sum as f64 / count as f64),
+        h_new: format!("{:.6}", h_new_sum / count as f64),
+        h_old: format!("{:.6}", h_old_sum / count as f64),
+        bytes_sent: format!("{:.6}", bytes_sum as f64 / count as f64),
+    })
 }
 
 fn greatest_common_divisor(mut left: u64, mut right: u64) -> u64 {
@@ -851,63 +991,126 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
         config.random_seed
     )
     .expect("string write");
-    writeln!(document, "## Result\n").expect("string write");
+
+    writeln!(document, "## Pre-transition byte comparison\n").expect("string write");
+    writeln!(document, "Negative saving means the target arity sends fewer modelled bytes. The transition starts after the required two winning observations.\n").expect("string write");
     writeln!(
         document,
-        "| Transition Commit | Post-transition Commits | Updates | Deletes | Final clients | Retirement condition | Trigger |\n|---:|---:|---:|---:|---:|---|---|\n| {} | {} | {} | {} | {} | {} | {} |\n",
+        "| Commit | Committer node index | Old arity bytes sent | New arity bytes sent | Saving (new - old) | Decision |\n|---:|---:|---:|---:|---:|---|"
+    )
+    .expect("string write");
+    for event in result
+        .events
+        .iter()
+        .filter(|event| event.phase == "pre-transition")
+    {
+        writeln!(
+            document,
+            "| {} | {} | {} | {} | {} | {} |",
+            event.commit_sequence,
+            event.committer_target_node_index,
+            optional_u64(event.old_arity_bytes_sent),
+            optional_u64(event.new_arity_bytes_sent),
+            optional_i64(event.saving_new_minus_old_bytes),
+            event.retirement_condition,
+        )
+        .expect("string write");
+    }
+
+    let transition = result
+        .events
+        .iter()
+        .find(|event| event.phase == "transition")
+        .expect("simulation always contains transition");
+    writeln!(document, "\n## Transition cost\n").expect("string write");
+    writeln!(
+        document,
+        "| Transition Commit | Committer node index | Modelled transition delivery bytes | Full MLS transition Commit bytes |\n|---:|---:|---:|---|\n| {} | {} | {} | {} |\n",
         summary.transition_commit_sequence,
-        summary.post_transition_commit_count,
-        summary.update_commit_count,
-        summary.delete_commit_count,
-        summary.final_member_count,
+        transition.committer_target_node_index,
+        summary.modeled_transition_delivery_bytes,
+        summary.full_transition_commit_bytes_state,
+    )
+    .expect("string write");
+    writeln!(document, "The modelled transition delivery cost uses worst-case direct-leaf fallback. It is not a measured full MLS Commit.\n").expect("string write");
+
+    writeln!(document, "## Post-transition commits\n").expect("string write");
+    writeln!(
+        document,
+        "| Committer node index | Operation type | C_new | C_old | h_newcost | h_oldcost | Bytes sent |\n|---:|---|---:|---:|---:|---:|---:|"
+    )
+    .expect("string write");
+    for event in result
+        .events
+        .iter()
+        .filter(|event| event.phase == "post-transition")
+    {
+        writeln!(
+            document,
+            "| {} | {} | {} | {} | {} | {} | {} |",
+            event.committer_target_node_index,
+            event.operation,
+            optional_u32(event.c_new),
+            optional_u32(event.c_old),
+            event.h_new_exact.as_deref().unwrap_or("—"),
+            event.h_old_exact.as_deref().unwrap_or("—"),
+            optional_u64(event.bytes_sent),
+        )
+        .expect("string write");
+    }
+
+    writeln!(document, "\n## Transition-end result\n").expect("string write");
+    writeln!(
+        document,
+        "TreeCover is deleted when `h_newcost > 0.7` or `h_oldcost < 0.5`. The condition was **{}** after `{}` post-transition Commit(s); trigger: `{}`. Updates: `{}`. Removes: `{}`. Final clients: `{}`.\n",
         if summary.retirement_condition_met {
             "met"
         } else {
             "not met"
         },
+        summary.post_transition_commit_count,
         summary.retirement_trigger,
+        summary.update_commit_count,
+        summary.remove_commit_count,
+        summary.final_member_count,
     )
     .expect("string write");
-    writeln!(document, "## Commit trace\n").expect("string write");
-    writeln!(
-        document,
-        "| Commit | Phase | Operation | Committer | Removed | Clients | t | C_leaf | C_new | C_old | C_ideal | h_new | h_old | Decision |\n|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|"
-    )
-    .expect("string write");
-    for event in &result.events {
-        writeln!(
-            document,
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
-            event.commit_sequence,
-            event.phase,
-            event.operation,
-            event.committer_member_index,
-            optional_u32(event.removed_member_index),
-            event.active_member_count,
-            optional_u32(event.impactful_commits_since_transition),
-            optional_u32(event.c_leaf),
-            optional_u32(event.c_new),
-            optional_u32(event.c_old),
-            optional_u32(event.c_ideal),
-            event.h_new_exact.as_deref().unwrap_or("—"),
-            event.h_old_exact.as_deref().unwrap_or("—"),
-            event.retirement_condition,
-        )
-        .expect("string write");
-    }
+
     writeln!(document, "\n## Counting rules\n").expect("string write");
+    writeln!(document, "- `Committer node index` is the committer's target-tree leaf ordinal, not its member identifier.").expect("string write");
     writeln!(document, "- `C_leaf` is the current active-client count, matching the operator's worst-case convention.").expect("string write");
     writeln!(document, "- `C_new` evaluates every required target-tree sibling: one send for a usable new-tree node; otherwise the smallest usable old-TreeCover cover; otherwise direct active leaves.").expect("string write");
     writeln!(document, "- `C_old` places the same committer in the old tree: one send for each usable required old node, recursively falling back to active leaves when a node was invalidated.").expect("string write");
     writeln!(document, "- `C_ideal` counts the non-empty target-tree sibling nodes when every required internal value is usable.").expect("string write");
-    writeln!(document, "- An Update populates the target-tree internal nodes on its committer path. A Delete invalidates old and new ancestors known by the removed member, removes that client, then refreshes the deleting committer's new-tree path.").expect("string write");
-    writeln!(document, "- Operations and valid committers are selected by the public seeded RNG; Delete never selects its committer as the target.").expect("string write");
+    writeln!(document, "- An `update` populates the target-tree internal nodes on its committer path. A `remove` invalidates old and new ancestors known by the removed member, removes that client, then refreshes the removing committer's new-tree path.").expect("string write");
+    writeln!(document, "- Operation labels are `add`, `remove`, or `update`; this workload currently randomizes `remove` and `update` only. A removal never selects its committer as the target.").expect("string write");
+    writeln!(document, "- Modelled delivery bytes use `744 × delivery targets + 132 × active clients`. They are separate from the endpoint counts and are not full MLS Commit bytes.").expect("string write");
     writeln!(document, "\n## Boundary\n").expect("string write");
     writeln!(document, "This is a public node-value availability simulation. The current fork does not yet retain a fixed old-TreeCover key store, authenticate its deletion updates, or execute post-transition Remove Commits. Therefore `UnsupportedSimulationOnly` is not real MLS key erasure or live TreeCover retirement.").expect("string write");
+
+    writeln!(document, "\n## Post-transition averages\n").expect("string write");
+    writeln!(
+        document,
+        "| Average C_new | Average C_old | Average h_newcost | Average h_oldcost | Average bytes sent |\n|---:|---:|---:|---:|---:|\n| {} | {} | {} | {} | {} |\n",
+        summary.average_c_new,
+        summary.average_c_old,
+        summary.average_h_newcost,
+        summary.average_h_oldcost,
+        summary.average_bytes_sent,
+    )
+    .expect("string write");
     document
 }
 
 fn optional_u32(value: Option<u32>) -> String {
+    value.map_or_else(|| "—".to_owned(), |value| value.to_string())
+}
+
+fn optional_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "—".to_owned(), |value| value.to_string())
+}
+
+fn optional_i64(value: Option<i64>) -> String {
     value.map_or_else(|| "—".to_owned(), |value| value.to_string())
 }
 
@@ -983,7 +1186,7 @@ mod tests {
     }
 
     #[test]
-    fn deletion_invalidates_old_path_and_never_targets_committer() {
+    fn removal_invalidates_old_path_and_never_targets_committer() {
         let result = simulate(config(2, 4, 64)).expect("simulation");
         for event in &result.events {
             assert_ne!(
@@ -996,13 +1199,13 @@ mod tests {
             .iter()
             .find(|event| event.phase == "transition")
             .expect("transition");
-        let first_delete = result
+        let first_remove = result
             .events
             .iter()
-            .find(|event| event.operation == "delete")
-            .expect("seed-42 delete");
+            .find(|event| event.operation == "remove")
+            .expect("seed-42 remove");
         assert!(
-            first_delete.old_usable_internal_node_count < transition.old_usable_internal_node_count
+            first_remove.old_usable_internal_node_count < transition.old_usable_internal_node_count
         );
         assert!(result.summary.post_transition_commit_count >= 1);
         assert_eq!(
@@ -1023,5 +1226,62 @@ mod tests {
             config(2, 4, 1).validate(),
             Err(DeliveryHealthError::InvalidMemberCount)
         ));
+        assert!(matches!(
+            config(2, 4, 2).validate(),
+            Err(DeliveryHealthError::NewArityCannotWin)
+        ));
+    }
+
+    #[test]
+    fn byte_tables_averages_and_strict_threshold_match_the_report_contract() {
+        assert_eq!(
+            modeled_arity_probe_bytes(128, 2).expect("old bytes"),
+            64_512
+        );
+        assert_eq!(
+            modeled_arity_probe_bytes(128, 4).expect("new bytes"),
+            40_704
+        );
+        assert_eq!(signed_difference(40_704, 64_512).expect("saving"), -23_808);
+        assert_eq!(
+            retirement_conditions(
+                Rational {
+                    numerator: 7,
+                    denominator: 10,
+                },
+                Rational {
+                    numerator: 1,
+                    denominator: 2,
+                },
+            ),
+            (false, false)
+        );
+        assert_eq!(
+            retirement_conditions(
+                Rational {
+                    numerator: 701,
+                    denominator: 1_000,
+                },
+                Rational {
+                    numerator: 1,
+                    denominator: 2,
+                },
+            ),
+            (true, false)
+        );
+
+        let config = config(2, 4, 128);
+        let result = simulate(config).expect("simulation");
+        let report = markdown(config, &result);
+        assert!(report.contains(
+            "| Committer node index | Operation type | C_new | C_old | h_newcost | h_oldcost | Bytes sent |"
+        ));
+        assert!(report.contains(
+            "| Average C_new | Average C_old | Average h_newcost | Average h_oldcost | Average bytes sent |"
+        ));
+        assert!(report.contains("Saving (new - old)"));
+        assert!(report.contains("h_newcost > 0.7"));
+        assert_eq!(result.summary.modeled_transition_delivery_bytes, 112_128);
+        assert_eq!(result.summary.average_bytes_sent, "42060.000000");
     }
 }

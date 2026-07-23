@@ -201,9 +201,12 @@ the thesis `C_*` values. Those claims are withdrawn. The corrected metric must
 count usable delivery endpoints, where one available internal node is one
 send. Tasks 82–84 implement that definition only in a deterministic public
 node-value simulation. Its seed controls operation/committer selection, not
-cryptographic entropy; it retains no MLS secrets. Simulated Delete invalidates
+cryptographic entropy; it retains no MLS secrets. Simulated Remove invalidates
 the removed member's old/new ancestors, but this is not proof of key erasure or
-forward secrecy. Byte-length observations remain withdrawn diagnostics only.
+forward secrecy. Its new byte columns are explicitly modeled canonical field
+counts (`744 * delivery targets + 132 * active clients`), not emitted MLS
+messages or network observations. The full transition Commit remains
+unavailable rather than being inferred from that model.
 The real clear report fails closed with
 `LiveAuthenticatedNodeValueFallbackNotImplemented`, because the fork does not
 yet retain/authenticate the required old-TreeCover node values or process

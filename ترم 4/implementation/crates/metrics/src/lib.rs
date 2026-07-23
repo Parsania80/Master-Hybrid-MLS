@@ -802,7 +802,7 @@ impl TreeCoverRetirementThresholds {
         }
     }
 
-    /// Returns `theta_new` for the inclusive `h_new_cost >= theta_new` condition.
+    /// Returns `theta_new` for the strict `h_new_cost > theta_new` condition.
     pub const fn theta_new(&self) -> MaturityThreshold {
         self.theta_new
     }
@@ -837,7 +837,7 @@ impl TreeCoverRetirementTriggers {
         }
     }
 
-    /// Returns whether `h_new_cost >= theta_new` was true.
+    /// Returns whether `h_new_cost > theta_new` was true.
     pub const fn new_tree_maturity(&self) -> bool {
         self.new_tree_maturity
     }
@@ -896,7 +896,7 @@ impl TreeCoverRetirementEvaluation {
         self.thresholds
     }
 
-    /// Returns `Some(h_new_cost >= theta_new)` when `h_new_cost` was defined.
+    /// Returns `Some(h_new_cost > theta_new)` when `h_new_cost` was defined.
     pub const fn new_tree_condition(&self) -> Option<bool> {
         self.new_tree_condition
     }
@@ -912,7 +912,7 @@ impl TreeCoverRetirementEvaluation {
     }
 }
 
-/// Evaluates `h_new_cost >= theta_new OR h_old_cost < theta_old` exactly.
+/// Evaluates `h_new_cost > theta_new OR h_old_cost < theta_old` exactly.
 ///
 /// Any undefined non-empty target set blocks the rule before either threshold
 /// can authorize retirement. This function neither changes TreeCover state nor
@@ -957,7 +957,7 @@ pub fn evaluate_treecover_retirement(
             ),
         });
     };
-    let new_tree_condition = !thresholds.theta_new().compare_score(new_score)?.is_lt();
+    let new_tree_condition = thresholds.theta_new().compare_score(new_score)?.is_gt();
     let old_treecover_condition = thresholds.theta_old().compare_score(old_score)?.is_lt();
     let decision = if new_tree_condition || old_treecover_condition {
         TreeCoverRetirementDecision::Retire(TreeCoverRetirementTriggers {
@@ -2392,7 +2392,7 @@ mod tests {
         assert_eq!(thresholds.theta_old().micro_units(), 500_000);
 
         let new_only =
-            evaluate_treecover_retirement(&maturity_from_scores(7, 10, 1, 2, false), thresholds)
+            evaluate_treecover_retirement(&maturity_from_scores(71, 100, 1, 2, false), thresholds)
                 .expect("threshold comparison");
         assert_eq!(new_only.new_tree_condition(), Some(true));
         assert_eq!(new_only.old_treecover_condition(), Some(false));
@@ -2417,9 +2417,11 @@ mod tests {
             })
         );
 
-        let both =
-            evaluate_treecover_retirement(&maturity_from_scores(7, 10, 49, 100, false), thresholds)
-                .expect("threshold comparison");
+        let both = evaluate_treecover_retirement(
+            &maturity_from_scores(71, 100, 49, 100, false),
+            thresholds,
+        )
+        .expect("threshold comparison");
         assert_eq!(both.new_tree_condition(), Some(true));
         assert_eq!(both.old_treecover_condition(), Some(true));
         assert_eq!(
@@ -2437,6 +2439,15 @@ mod tests {
         assert_eq!(neither.old_treecover_condition(), Some(false));
         assert_eq!(
             neither.decision(),
+            TreeCoverRetirementDecision::Keep(TreeCoverRetirementBlocker::ThresholdsNotMet)
+        );
+
+        let equal_new_threshold =
+            evaluate_treecover_retirement(&maturity_from_scores(7, 10, 1, 2, false), thresholds)
+                .expect("strict threshold comparison");
+        assert_eq!(equal_new_threshold.new_tree_condition(), Some(false));
+        assert_eq!(
+            equal_new_threshold.decision(),
             TreeCoverRetirementDecision::Keep(TreeCoverRetirementBlocker::ThresholdsNotMet)
         );
     }

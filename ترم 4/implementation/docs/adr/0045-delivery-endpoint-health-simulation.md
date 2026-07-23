@@ -20,7 +20,7 @@ a live MLS observation.
 
 1. Add a deterministic, public node-value availability simulation for arity
    pairs `2 -> 4` and `4 -> 8`.
-2. Freeze each member's old and new leaf ordinals at transition. A later Delete
+2. Freeze each member's old and new leaf ordinals at transition. A later Remove
    creates a hole; it does not remap surviving members.
 3. For every non-empty required sibling node on the target-tree committer
    path, calculate `C_new` in this order:
@@ -43,18 +43,30 @@ a live MLS observation.
    ```
 
    The denominator must be positive. Fractions remain exact and are not
-   clamped. Retirement is selected when `h_newcost >= 0.70` or
+   clamped. Retirement is selected when `h_newcost > 0.70` or
    `h_oldcost < 0.50`.
 7. Simulate two pre-transition Updates, one transition, and then seeded-random
-   Update/Delete Commits with random valid committers. A Delete chooses a
+   Update/Remove Commits with random valid committers. A Remove chooses a
    distinct active target, invalidates every old and new ancestor known by that
    target, removes it, and refreshes the deleting committer's new-tree path.
    An Update refreshes its committer's new-tree path.
-8. Interactive mode fixes public seed `42`, caps post-transition work at 128
+8. Before transition, two Update observations compare educational canonical
+   delivery-byte models for the old and target arities. Each model uses
+   `744 * delivery_targets + 132 * active_clients`, where delivery targets are
+   `ceil(active_clients / arity)`. Saving is reported as `new - old`, so a
+   negative value means the target arity wins. The transition starts only after
+   both required observations win.
+9. The transition delivery model uses worst-case direct-leaf fallback. The
+   report marks the full MLS transition Commit bytes unavailable because this
+   simulator does not emit one. Post-transition bytes use the same canonical
+   field-count model with `C_new` as delivery targets.
+10. Interactive mode fixes public seed `42`, caps post-transition work at 128
    Commits, and stops on the first retirement condition. It creates fresh
-   `summary.csv`, `events.csv`, and `report.md` artifacts.
-9. Run the mode with `CARGO_BUILD_JOBS=1`, nice level 10, and idle I/O priority.
-10. Every artifact must state
+   `summary.csv`, `events.csv`, and `report.md` artifacts. The Markdown contains
+   a pre-transition byte comparison, transition-cost table, one health row per
+   post-transition Commit, and clean post-transition averages.
+11. Run the mode with `CARGO_BUILD_JOBS=1`, nice level 10, and idle I/O priority.
+12. Every artifact must state
     `public_node_value_availability_simulation_not_live_mls_key_erasure` and
     `UnsupportedSimulationOnly`. The older real clear-report mode must keep its
     thesis `C_*`/maturity fields unavailable and must not emit the rejected
@@ -67,7 +79,7 @@ a live MLS observation.
 - The public seed makes the operation, committer, and removal sequence
   reproducible without controlling cryptographic entropy.
 - A run may retire after its first impactful Commit if the exact threshold is
-  already satisfied. The simulator does not force extra Deletes or Updates
+  already satisfied. The simulator does not force extra Removes or Updates
   merely to lengthen the trace.
 - This does not implement an MLS post-transition Remove, authenticated
   TreeCover node-value lifecycle, actual key erasure, or an authenticated
@@ -77,7 +89,7 @@ a live MLS observation.
 
 - Unit tests prove the 128-member ideal count of 10 and the complete
   new-value → old-TreeCover → leaf cascade.
-- Unit tests prove Delete never targets its committer and reduces the old
+- Unit tests prove Remove never targets its committer and reduces the old
   usable-node set in the seed-42 workload.
 - CLI tests cover required arguments, defaults, and malformed values.
 - The interactive seed-42 `2 -> 4`, 128-client run generates fresh artifacts
