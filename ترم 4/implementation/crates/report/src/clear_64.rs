@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Minimal 32-member thesis report with one summary row and an event trace.
+//! Minimal 64-member thesis report with one summary row and an event trace.
 //!
 //! Real RFC MLS supplies Update/Add/Remove evidence. A separate real
 //! experimental fork run supplies normal-binary, transition, and quaternary
@@ -15,8 +15,9 @@ use std::{
 
 use csv::WriterBuilder;
 use experimental_mls_adapter::{
-    execute_experimental_adaptive_workload_with_policy, ExperimentalAdaptiveCommitPhase,
-    ExperimentalAdaptiveTransitionPolicy, ExperimentalBinaryWorkloadError,
+    execute_experimental_adaptive_workload_until_first_post_transition,
+    ExperimentalAdaptiveCommitPhase, ExperimentalAdaptiveTransitionPolicy,
+    ExperimentalBinaryWorkloadError,
 };
 use serde::Serialize;
 use simulation::{
@@ -31,7 +32,7 @@ use crate::{
 };
 
 /// Fixed group size for the requested clear experiment.
-pub const CLEAR_REPORT_MEMBER_COUNT: u32 = 32;
+pub const CLEAR_REPORT_MEMBER_COUNT: u32 = 64;
 /// Primary one-row summary CSV.
 pub const CLEAR_REPORT_CSV_FILE_NAME: &str = "clear_report.csv";
 /// Per-event trace CSV.
@@ -40,11 +41,12 @@ pub const CLEAR_EVENTS_CSV_FILE_NAME: &str = "clear_events.csv";
 pub const CLEAR_REPORT_MARKDOWN_FILE_NAME: &str = "clear_report.md";
 
 const CLEAR_REPORT_SCHEMA_VERSION: u16 = 1;
+const CLEAR_ADAPTIVE_OPERATION_LIMIT: u32 = 128;
 const LIVE_RETIREMENT_STATE: &str = "UnsupportedNoAuthenticatedRetirementCommit";
 const LOGICAL_RETIREMENT_PROVENANCE: &str =
     "modelled_formula_event_no_live_treecover_secret_erasure";
 
-/// Paths created by one clear 32-member run.
+/// Paths created by one clear 64-member run.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClearReportArtifactPaths {
     /// One-row CSV with every requested count.
@@ -55,23 +57,23 @@ pub struct ClearReportArtifactPaths {
     pub report_markdown: PathBuf,
 }
 
-/// Failures from the clear 32-member report.
+/// Failures from the clear 64-member report.
 #[derive(Debug, Error)]
 pub enum ClearReportError {
     /// Real baseline MLS Update/Add/Remove execution failed.
-    #[error("the real 32-member baseline MLS workload failed")]
+    #[error("the real 64-member baseline MLS workload failed: {0}")]
     Baseline(#[source] WorkloadExecutionError),
     /// Real adaptive fork execution failed.
-    #[error("the real 32-member adaptive workload failed")]
+    #[error("the real 64-member adaptive workload failed: {0}")]
     Adaptive(#[source] ExperimentalBinaryWorkloadError),
     /// Canonical cost or maturity replay failed.
-    #[error("the 32-member canonical cost replay failed")]
+    #[error("the 64-member canonical cost replay failed: {0}")]
     Cost(#[source] TransitionTableError),
     /// A required operation or phase was missing.
-    #[error("the 32-member run did not produce every required operation or phase")]
+    #[error("the 64-member run did not produce every required operation or phase")]
     MissingRequiredEvent,
     /// A public byte/count sum overflowed.
-    #[error("a 32-member public byte or count calculation overflowed")]
+    #[error("a 64-member public byte or count calculation overflowed")]
     Overflow,
     /// Safe-path, create-new, or filesystem output failed.
     #[error("the clear report artifact output failed")]
@@ -130,8 +132,8 @@ struct ClearEventRow {
     provenance: &'static str,
 }
 
-/// Runs and writes the requested minimal 32-member report.
-pub fn generate_clear_32_report(
+/// Runs and writes the requested minimal 64-member report.
+pub fn generate_clear_64_report(
     random_seed: u64,
     output_directory: &Path,
     report_directory: &Path,
@@ -156,7 +158,7 @@ pub fn generate_clear_32_report(
     }
 
     let baseline = execute_baseline_workload(&BaselineWorkloadConfig {
-        group_id: format!("clear-32-baseline-{random_seed}").into_bytes(),
+        group_id: format!("clear-64-baseline-{random_seed}").into_bytes(),
         initial_member_count: CLEAR_REPORT_MEMBER_COUNT,
         maximum_member_count: CLEAR_REPORT_MEMBER_COUNT + 1,
         operation_count: 3,
@@ -165,12 +167,12 @@ pub fn generate_clear_32_report(
         workload_profile: WorkloadProfile::Mixed,
     })
     .map_err(ClearReportError::Baseline)?;
-    let adaptive = execute_experimental_adaptive_workload_with_policy(
+    let adaptive = execute_experimental_adaptive_workload_until_first_post_transition(
         &BaselineWorkloadConfig {
-            group_id: format!("clear-32-adaptive-{random_seed}").into_bytes(),
+            group_id: format!("clear-64-adaptive-{random_seed}").into_bytes(),
             initial_member_count: CLEAR_REPORT_MEMBER_COUNT,
             maximum_member_count: CLEAR_REPORT_MEMBER_COUNT,
-            operation_count: 3,
+            operation_count: CLEAR_ADAPTIVE_OPERATION_LIMIT,
             region_count: 4,
             committer_strategy: CommitterStrategy::SeededRandom { seed: random_seed },
             workload_profile: WorkloadProfile::UpdateOnly,
@@ -415,7 +417,7 @@ fn events_csv(events: &[ClearEventRow]) -> Result<Vec<u8>, ClearReportError> {
 
 fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> String {
     let mut document = String::new();
-    writeln!(document, "# Clear 32-member MLS transition report\n").expect("string write");
+    writeln!(document, "# Clear 64-member MLS transition report\n").expect("string write");
     writeln!(
         document,
         "Random committer seed: `{}`. Initial members: `{}`.\n",
@@ -483,10 +485,10 @@ fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> Str
     writeln!(document, "\n## Interpretation\n").expect("string write");
     writeln!(
         document,
-        "- Update/Add/Remove rows are real RFC MLS operations on a 32-member starting group."
+        "- Update/Add/Remove rows are real RFC MLS operations on a 64-member starting group."
     )
     .expect("string write");
-    writeln!(document, "- Normal-binary, transition, and quaternary rows are a separate real 32-member experimental-fork Update-only run with seeded-random committers.").expect("string write");
+    writeln!(document, "- Normal-binary, transition, and quaternary rows are a separate real 64-member experimental-fork Update-only run with seeded-random committers.").expect("string write");
     writeln!(document, "- `C_*` and `h_*` are deterministic canonical-codec/formula results, not emitted Commit sizes.").expect("string write");
     writeln!(
         document,

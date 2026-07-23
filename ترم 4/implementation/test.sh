@@ -17,12 +17,12 @@ printf '\n=== Adaptive Hybrid MLS Interactive Demo ===\n'
 printf 'Choose a mode:\n'
 printf '  1) Short protocol demo (real comparison plus charts; about 20 seconds)\n'
 printf '  2) Complete thesis tables (comparison, RSS, operation, maturity, model, and final tables)\n'
-printf '  3) Clear 32-member report (costs, transition phases, Add/Remove/Update, and retirement estimate)\n'
+printf '  3) Clear 64-member report (costs, transition phases, Add/Remove/Update, and retirement estimate)\n'
 printf 'Selection [1/2/3]: '
 IFS= read -r mode_choice || fail 'could not read mode selection'
 
 generate_thesis_tables=false
-generate_clear_32=false
+generate_clear_64=false
 case "$mode_choice" in
     1)
         mode_label='short protocol demonstration'
@@ -32,8 +32,8 @@ case "$mode_choice" in
         mode_label='complete thesis-table pipeline'
         ;;
     3)
-        generate_clear_32=true
-        mode_label='clear 32-member cost and transition report'
+        generate_clear_64=true
+        mode_label='clear 64-member cost and transition report'
         ;;
     *)
         fail 'select 1, 2, or 3 from the displayed mode menu'
@@ -62,7 +62,7 @@ task61_summary="output/task61-adaptive-128-matched-per-commit/summary.json"
 [[ ! -e "$output_dir" ]] || fail "output directory already exists: $output_dir"
 [[ ! -e "$report_dir" ]] || fail "report directory already exists: $report_dir"
 [[ -f Cargo.lock && -f rust-toolchain.toml ]] || fail 'run this script from the repository root'
-if [[ "$generate_clear_32" == false ]]; then
+if [[ "$generate_clear_64" == false ]]; then
     [[ -f configs/task62-baseline.toml ]] || fail 'missing Task 62 baseline configuration'
     [[ -f configs/task62-mkyber.toml ]] || fail 'missing Task 62 mKyber configuration'
     [[ -f configs/task62-adaptive.toml ]] || fail 'missing Task 62 adaptive configuration'
@@ -110,14 +110,14 @@ metric_value() {
     printf '%s\n' "$value"
 }
 
-if [[ "$generate_clear_32" == true ]]; then
+if [[ "$generate_clear_64" == true ]]; then
     clear_summary_csv="$output_dir/clear_report.csv"
     clear_events_csv="$output_dir/clear_events.csv"
     clear_markdown="$report_dir/clear_report.md"
-    printf '\n=== Clear 32-Member MLS Report ===\n'
-    printf 'Members: 32; real baseline operations: Update, Add, Remove\n'
+    printf '\n=== Clear 64-Member MLS Report ===\n'
+    printf 'Members: 64; real baseline operations: Update, Add, Remove\n'
     printf 'Adaptive operations: seeded-random Updates through transition and one maturity evaluation\n\n'
-    run_step 'Run clear 32-member experiment' env CARGO_TERM_COLOR=never cargo run --quiet -p report --bin run_clear_32 \
+    run_step 'Run clear 64-member experiment' env CARGO_BUILD_JOBS=1 CARGO_TERM_COLOR=never cargo run --quiet -p report --bin run_clear_64 \
         --release --locked --offline -- \
         --seed 42 \
         --output "$output_dir" \
