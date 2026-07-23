@@ -2,13 +2,15 @@
 
 ## Status and Scope
 
-This repository is a thesis research prototype. It contains an upstream-only baseline MLS adapter, the thesis-local `mkyber512-thesis-v1` educational reference backend, and an isolated experimental hybrid path-level delivery boundary. That boundary performs canonical KDF expansion and AES-GCM wrapping, but it is not injected into an experimental OpenMLS fork, does not generate experiment results, does not provide an author-compatible profile, and has no official vector corpus. This document defines the security claims that future work must not exceed.
+This repository is a thesis research prototype. It contains an upstream-only baseline MLS adapter, the thesis-local `mkyber512-thesis-v1` educational reference backend, and a separately named, feature-gated experimental OpenMLS fork. The fork performs non-standard binary hybrid UpdatePath delivery and an authenticated atomic binary-to-quaternary transition in its in-memory provider. It produces public research measurements, but it does not provide an author-compatible mKyber profile, RFC interoperability, a formal security proof, or an official vector corpus. This document defines the security claims that the implementation and reports must not exceed.
 
 `BaselineBinaryMls` is intended to exercise unmodified OpenMLS 0.8.1 with RFC 9420 ciphersuite `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`. It can only be described as an RFC 9420 baseline after the upstream dependency is pinned, the baseline code is implemented without a fork, and the required regression tests pass. It is not a security certification of this repository or OpenMLS.
 
 `BinaryMlsWithMkyber` and `AdaptiveBinaryToQuaternaryMls` are non-standard experimental protocols. They are not production cryptography, are not RFC 9420 interoperable, have no end-to-end formal security proof, and must never be presented as audited or standards-compliant.
 
 The governing design decisions are [ADR 0001](docs/adr/0001-openmls-baseline-and-experimental-fork.md) through [ADR 0005](docs/adr/0005-arity-state-extension-authentication.md). The mKyber evidence and limitations are recorded in the [implementation audit](docs/research/MKYBER-IMPLEMENTATION-AUDIT.md).
+
+The task-numbered paragraphs below preserve the historical incremental boundaries. The current support matrix in this document and the Task 67 provenance/state fields control any present-tense thesis claim.
 
 ## Claim Matrix
 
@@ -36,6 +38,22 @@ The following changes are experimental and are enabled only outside the unchange
 | `adaptive_hybrid_tree_state` extension | Carry authenticated `ArityState` in private-use extension `0xF001` | All experimental members must support it. It is authenticated state, not confidential data, and it must not carry ciphertexts. |
 | Binary-to-quaternary transition | Use a quaternary tree for new secrets while the old binary tree is delivery-only `TreeCover` | Exactly one active root may derive an epoch secret. State disagreement is a commit-processing failure. |
 | Measurement hooks and deterministic tests | Record byte/cost observations and use seeded deterministic test inputs | Metrics and fixtures must not expose private keys, shared secrets, path secrets, AEAD keys, raw entropy, or a seed that reconstructs private state. |
+
+## Current Support and Evidence
+
+Task 68 is the maintained implementation acceptance boundary. It passed locked/offline formatting, compilation, strict warning-free Clippy, 173 maintained package tests, documentation tests, release build, feature isolation checks, and exact public-artifact secret-marker checks. Five expensive tests remain explicitly ignored; the root workspace intentionally excludes the imported fork's unmaintained upstream test targets. This is regression evidence, not a security audit.
+
+| Capability | Current status | Limit that must remain in reports |
+|---|---|---|
+| Upstream binary baseline | Real local workload and regression evidence | It is not a repository or upstream certification. |
+| Binary-with-mKyber fork | Real accepted Commit and workload evidence | It is private-use, non-standard, and non-interoperable with stock MLS. |
+| Binary-to-quaternary transition | Real 128-member transition and one post-transition update converge through the in-memory atomic API | This is not distributed atomicity, durable-storage proof, or a formal MLS proof. |
+| TreeCover retirement and secret erasure | Unsupported in the real fork | A formula result or educational harness must never be reported as a live retirement or erasure event. |
+| Arity-4/8 codec and 4-to-8 transition values | Educational-only canonical-codec/topology replay | They are not octal MLS Commits, live private-key lifecycle, or convergence evidence. |
+| mKyber512 implementation | Thesis-local educational reference | It is not author-compatible, standardized, audited, or suitable for production. |
+| Public thesis artifacts | 208-row availability/provenance-checked Task 67 dataset | Public redaction checks do not prove process-memory secrecy or side-channel resistance. |
+
+The core release comparison records 33,068 baseline bytes, 87,012 binary-with-mKyber bytes, and 109,144 adaptive bytes. The adaptive total includes a 25,622-byte authenticated transition Commit and one accepted post-transition update. Its matched-window saving is positive, while its amortized-preflight saving is negative; transition authorization under the selected matched-per-Commit policy must never be relabeled as an amortized break-even.
 
 ## Threat Model
 
@@ -104,7 +122,7 @@ Task 43 adds a thesis-local pre-apply consistency boundary for a future fork. It
 
 Task 44 adds a thesis-local batch harness that stages metadata validation and each recipient's hybrid path-secret open before changing any supplied public member snapshot. Its tests cover independent Alice/Bob committer scenarios, three recipient-resolution nodes, divergent extension metadata, a recipient-resolution failure after an earlier stage succeeds, and a tampered common mKyber component. This proves only in-process all-or-nothing replacement of harness snapshots. It does not authenticate an outer MLS Commit, coordinate separate processes, make network delivery atomic, ensure every real MLS member received the same Commit, merge MLS state, or establish a security proof.
 
-The Phase 8 quality gate passes formatting, strict lint, focused transition state/rejection/convergence tests, baseline regression, full workspace tests, release build, metadata, and the OpenMLS feature audit. It is regression evidence only: it does not close SEC-01 through SEC-10, supply a production-quality mKyber profile, authenticate an experimental MLS Commit, or make any business, interoperability, formal-security, side-channel, or distributed-atomicity claim.
+The historical Phase 8 quality gate covered its then-maintained workspace boundary. Task 68 supersedes it as the current maintained acceptance boundary for the baseline and explicit experimental package set. Neither gate closes SEC-01 through SEC-10, supplies a production-quality mKyber profile, or makes any business, interoperability, formal-security, side-channel, or distributed-atomicity claim.
 
 Task 46 counts only canonical hybrid TLS component bytes for named public recipient sets. It retains no ciphertext bodies or secret material, rejects partial or duplicate recipient coverage, and records empty or unavailable routes without a numeric fallback. The caller-supplied logical-payload binding is public and must not contain a secret. These costs are counterfactual serializer measurements only; they do not authenticate a route, prove the same encrypted plaintext was used, measure a network packet or full MLS Commit, or close SEC-05, SEC-06, or SEC-10.
 
