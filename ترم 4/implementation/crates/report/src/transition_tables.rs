@@ -169,6 +169,47 @@ struct DecisionText {
     trigger: String,
 }
 
+/// Public result of the canonical 2-to-4 delivery-cost replay for one target size.
+///
+/// These values are deterministic serializer/formula outputs. They are not
+/// emitted MLS Commit sizes and do not prove live TreeCover retirement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalCostReplay {
+    /// Independent leaf-delivery cost.
+    pub c_leaf_bytes: u64,
+    /// Active quaternary-tree delivery cost.
+    pub c_new_bytes: u64,
+    /// Old binary TreeCover delivery cost.
+    pub c_old_bytes: u64,
+    /// Ideal mature-quaternary delivery cost.
+    pub c_ideal_bytes: u64,
+    /// Exact clamped `h_new_cost` rational.
+    pub h_new_cost: String,
+    /// Exact clamped `h_old_cost` rational.
+    pub h_old_cost: String,
+    /// Existing Task 48 formula decision.
+    pub threshold_decision: String,
+    /// Side of the Task 48 OR rule that produced the decision.
+    pub threshold_trigger: String,
+}
+
+/// Replays the canonical thesis 2-to-4 costs for `member_count` recipients.
+pub fn canonical_two_to_four_cost_replay(
+    member_count: u32,
+) -> Result<CanonicalCostReplay, TransitionTableError> {
+    let replay = cost_replay(member_count, 2, 4, 8)?;
+    Ok(CanonicalCostReplay {
+        c_leaf_bytes: replay.c_leaf,
+        c_new_bytes: replay.c_new,
+        c_old_bytes: replay.c_old,
+        c_ideal_bytes: replay.c_ideal,
+        h_new_cost: replay.h_new.0,
+        h_old_cost: replay.h_old.0,
+        threshold_decision: replay.decision.decision,
+        threshold_trigger: replay.decision.trigger,
+    })
+}
+
 /// Generates create-new Task 65 artifacts from a public Task 61 summary.
 pub fn generate_transition_table_artifacts(
     task61_summary: &Path,
@@ -592,6 +633,18 @@ mod tests {
         assert_eq!(replay.h_old.0, "4/7");
         assert_eq!(replay.decision.decision, "RetireAuthorizedByFormula");
         assert_eq!(replay.decision.trigger, "NewTreeMaturity");
+    }
+
+    #[test]
+    fn public_32_member_replay_exposes_requested_costs_and_maturity() {
+        let replay = canonical_two_to_four_cost_replay(32).expect("32-member replay");
+        assert!(replay.c_leaf_bytes > replay.c_old_bytes);
+        assert!(replay.c_old_bytes > replay.c_new_bytes);
+        assert!(replay.c_new_bytes > replay.c_ideal_bytes);
+        assert_eq!(replay.h_new_cost, "6/7");
+        assert_eq!(replay.h_old_cost, "4/7");
+        assert_eq!(replay.threshold_decision, "RetireAuthorizedByFormula");
+        assert_eq!(replay.threshold_trigger, "NewTreeMaturity");
     }
 
     #[test]

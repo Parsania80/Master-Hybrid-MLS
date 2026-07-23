@@ -4,6 +4,7 @@
 //!
 //! Report code must redact secret material and label all experimental results.
 
+pub mod clear_32;
 pub mod comparison;
 pub mod environment;
 pub mod generation;

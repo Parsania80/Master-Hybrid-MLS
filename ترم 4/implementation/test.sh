@@ -17,10 +17,12 @@ printf '\n=== Adaptive Hybrid MLS Interactive Demo ===\n'
 printf 'Choose a mode:\n'
 printf '  1) Short protocol demo (real comparison plus charts; about 20 seconds)\n'
 printf '  2) Complete thesis tables (comparison, RSS, operation, maturity, model, and final tables)\n'
-printf 'Selection [1/2]: '
+printf '  3) Clear 32-member report (costs, transition phases, Add/Remove/Update, and retirement estimate)\n'
+printf 'Selection [1/2/3]: '
 IFS= read -r mode_choice || fail 'could not read mode selection'
 
 generate_thesis_tables=false
+generate_clear_32=false
 case "$mode_choice" in
     1)
         mode_label='short protocol demonstration'
@@ -29,8 +31,12 @@ case "$mode_choice" in
         generate_thesis_tables=true
         mode_label='complete thesis-table pipeline'
         ;;
+    3)
+        generate_clear_32=true
+        mode_label='clear 32-member cost and transition report'
+        ;;
     *)
-        fail 'select 1 for the short protocol demo or 2 for the complete thesis-table pipeline'
+        fail 'select 1, 2, or 3 from the displayed mode menu'
         ;;
 esac
 
@@ -56,9 +62,11 @@ task61_summary="output/task61-adaptive-128-matched-per-commit/summary.json"
 [[ ! -e "$output_dir" ]] || fail "output directory already exists: $output_dir"
 [[ ! -e "$report_dir" ]] || fail "report directory already exists: $report_dir"
 [[ -f Cargo.lock && -f rust-toolchain.toml ]] || fail 'run this script from the repository root'
-[[ -f configs/task62-baseline.toml ]] || fail 'missing Task 62 baseline configuration'
-[[ -f configs/task62-mkyber.toml ]] || fail 'missing Task 62 mKyber configuration'
-[[ -f configs/task62-adaptive.toml ]] || fail 'missing Task 62 adaptive configuration'
+if [[ "$generate_clear_32" == false ]]; then
+    [[ -f configs/task62-baseline.toml ]] || fail 'missing Task 62 baseline configuration'
+    [[ -f configs/task62-mkyber.toml ]] || fail 'missing Task 62 mKyber configuration'
+    [[ -f configs/task62-adaptive.toml ]] || fail 'missing Task 62 adaptive configuration'
+fi
 if [[ "$generate_thesis_tables" == true ]]; then
     printf 'Public Task 61 summary path [%s]: ' "$task61_summary"
     IFS= read -r requested_task61_summary || fail 'could not read Task 61 summary path'
@@ -101,6 +109,29 @@ metric_value() {
     [[ -n "$value" ]] || fail "missing $field for $mode in $comparison_csv"
     printf '%s\n' "$value"
 }
+
+if [[ "$generate_clear_32" == true ]]; then
+    clear_summary_csv="$output_dir/clear_report.csv"
+    clear_events_csv="$output_dir/clear_events.csv"
+    clear_markdown="$report_dir/clear_report.md"
+    printf '\n=== Clear 32-Member MLS Report ===\n'
+    printf 'Members: 32; real baseline operations: Update, Add, Remove\n'
+    printf 'Adaptive operations: seeded-random Updates through transition and one maturity evaluation\n\n'
+    run_step 'Run clear 32-member experiment' env CARGO_TERM_COLOR=never cargo run --quiet -p report --bin run_clear_32 \
+        --release --locked --offline -- \
+        --seed 42 \
+        --output "$output_dir" \
+        --report "$report_dir"
+    [[ -s "$clear_summary_csv" ]] || fail "summary CSV was not created: $clear_summary_csv"
+    [[ -s "$clear_events_csv" ]] || fail "event CSV was not created: $clear_events_csv"
+    [[ -s "$clear_markdown" ]] || fail "Markdown report was not created: $clear_markdown"
+    printf '\nGenerated:\n'
+    printf '  Summary: %s\n' "$clear_summary_csv"
+    printf '  Events:  %s\n' "$clear_events_csv"
+    printf '  Report:  %s\n' "$clear_markdown"
+    printf '\nScope: TreeCover retirement is formula-authorized/modelled; the live fork retirement Commit remains unsupported.\n'
+    exit 0
+fi
 
 printf '\n=== Adaptive Hybrid MLS Professor Demo ===\n'
 printf 'Run: %s\n' "$run_name"
