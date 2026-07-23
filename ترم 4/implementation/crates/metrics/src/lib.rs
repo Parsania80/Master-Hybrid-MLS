@@ -1446,10 +1446,10 @@ pub enum MetricUnavailableReason {
 
 /// An observed crypto-operation count and monotonic elapsed duration.
 ///
-/// A zero invocation count has no timing value. A non-zero operation always
-/// carries the duration actually supplied by an instrumentation hook; zero
-/// elapsed nanoseconds is preserved if the monotonic clock resolved it that
-/// way and is never fabricated by this API.
+/// A zero invocation count has no timing value. A non-zero operation carries
+/// a duration only when an instrumentation hook measured that operation;
+/// count-only observations preserve their actual count without inventing a
+/// per-operation duration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct ObservedCryptoOperationMetrics {
     operation: CryptoOperation,
@@ -1472,6 +1472,17 @@ impl ObservedCryptoOperationMetrics {
         Self {
             operation,
             invocation_count: 0,
+            elapsed_nanoseconds: None,
+        }
+    }
+
+    /// Records an actual aggregate count when no per-operation timing hook is
+    /// available. This is distinct from an unavailable count and never uses a
+    /// fabricated zero-duration sample.
+    pub const fn counted(operation: CryptoOperation, invocation_count: u32) -> Self {
+        Self {
+            operation,
+            invocation_count,
             elapsed_nanoseconds: None,
         }
     }
@@ -1513,6 +1524,14 @@ impl CryptoOperationMetrics {
         let result = action();
         let observed = ObservedCryptoOperationMetrics::new(operation, 1, started.elapsed());
         (result, Self::Observed(observed))
+    }
+
+    /// Records a measured count with no operation-specific timing sample.
+    pub const fn counted(operation: CryptoOperation, invocation_count: u32) -> Self {
+        Self::Observed(ObservedCryptoOperationMetrics::counted(
+            operation,
+            invocation_count,
+        ))
     }
 
     /// Returns the operation kind regardless of availability.

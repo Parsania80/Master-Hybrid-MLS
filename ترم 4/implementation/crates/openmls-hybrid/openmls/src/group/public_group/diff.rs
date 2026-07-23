@@ -1,0 +1,480 @@
+//! # Public group diffs
+//!
+//! This module contains the [`PublicGroupDiff`] struct, as well as the
+//! [`StagedPublicGroupDiff`] and associated functions and types.
+#[cfg(feature = "experimental-hybrid")]
+use std::collections::BTreeMap;
+use std::collections::HashSet;
+
+use openmls_traits::crypto::OpenMlsCrypto;
+use openmls_traits::types::Ciphersuite;
+use serde::{Deserialize, Serialize};
+use tls_codec::Serialize as TlsSerialize;
+
+#[cfg(feature = "extensions-draft-08")]
+use super::errors::ApplyAppDataUpdateError;
+
+use super::PublicGroup;
+use crate::{
+    binary_tree::{array_representation::TreeSize, LeafNodeIndex},
+    error::LibraryError,
+    extensions::Extensions,
+    framing::{mls_auth_content::AuthenticatedContent, public_message::InterimTranscriptHashInput},
+    group::GroupContext,
+    messages::{proposals::AddProposal, ConfirmationTag, EncryptedGroupSecrets},
+    schedule::{psk::PreSharedKeyId, CommitSecret, JoinerSecret},
+    treesync::{
+        diff::{StagedTreeSyncDiff, TreeSyncDiff},
+        errors::{ApplyUpdatePathError, TreeSyncFromNodesError},
+        node::{
+            encryption_keys::{EncryptionKey, EncryptionKeyPair},
+            leaf_node::LeafNode,
+            parent_node::PlainUpdatePathNode,
+        },
+        treekem::{DecryptPathParams, UpdatePath},
+        RatchetTree, TreeSync,
+    },
+};
+#[cfg(feature = "experimental-hybrid")]
+use adaptive_tree::{BinaryLeafMember, QuaternaryNode};
+#[cfg(feature = "experimental-hybrid")]
+use arity_state::{hash_canonical_public_bytes, ArityLifecycle, ArityState};
+#[cfg(feature = "experimental-hybrid")]
+use transition_tree::ActiveQuaternaryTree;
+
+pub(crate) mod apply_proposals;
+pub(crate) mod compute_path;
+
+/// The authenticated mapping-derived quaternary delivery coordinates for one
+/// MLS UpdatePath sender and receiver.
+#[cfg(feature = "experimental-hybrid")]
+pub(crate) struct ExperimentalQuaternaryDeliveryPlan {
+    pub(crate) parent_nodes: Vec<QuaternaryNode>,
+    pub(crate) recipient_leaf_ordinal: u32,
+    pub(crate) recipient_parent_node: Option<QuaternaryNode>,
+    pub(crate) recipient_targets: Vec<(u32, QuaternaryNode, EncryptionKey)>,
+}
+
+pub(crate) struct PublicGroupDiff<'a> {
+    diff: TreeSyncDiff<'a>,
+    group_context: GroupContext,
+    interim_transcript_hash: Vec<u8>,
+    // Most recent confirmation tag. Kept here for verification purposes.
+    confirmation_tag: ConfirmationTag,
+}
+
+impl<'a> PublicGroupDiff<'a> {
+    /// Create a new [`PublicGroupDiff`] based on the given [`PublicGroup`].
+    pub(super) fn new(public_group: &'a PublicGroup) -> PublicGroupDiff<'a> {
+        Self {
+            diff: public_group.treesync().empty_diff(),
+            group_context: public_group.group_context().clone(),
+            interim_transcript_hash: public_group.interim_transcript_hash().to_vec(),
+            confirmation_tag: public_group.confirmation_tag().clone(),
+        }
+    }
+
+    /// Turn this [`PublicGroupDiff`] into a [`StagedPublicGroupDiff`], thus
+    /// freezing it until it is merged with the original [`PublicGroup`].
+    pub(crate) fn into_staged_diff(
+        self,
+        crypto: &impl OpenMlsCrypto,
+        ciphersuite: Ciphersuite,
+    ) -> Result<StagedPublicGroupDiff, LibraryError> {
+        let staged_diff = self.diff.into_staged_diff(crypto, ciphersuite)?;
+        Ok(StagedPublicGroupDiff {
+            staged_diff,
+            group_context: self.group_context,
+            interim_transcript_hash: self.interim_transcript_hash,
+            confirmation_tag: self.confirmation_tag,
+        })
+    }
+
+    /// Prepare the [`EncryptedGroupSecrets`] for a number of `invited_members`
+    /// based on this [`PublicGroupDiff`]. If a slice of [`PlainUpdatePathNode`]
+    /// is given, they are included in the [`GroupSecrets`] of the path.
+    ///
+    /// Returns an error if
+    ///  - the own node is outside the tree
+    ///  - the invited members are not part of the tree yet
+    ///  - the leaf index of a new member is identical to the own leaf index
+    ///  - the plain path does not contain the correct secrets
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn encrypt_group_secrets(
+        &self,
+        joiner_secret: &JoinerSecret,
+        invited_members: Vec<(LeafNodeIndex, AddProposal)>,
+        plain_path_option: Option<&[PlainUpdatePathNode]>,
+        presharedkeys: &[PreSharedKeyId],
+        encrypted_group_info: &[u8],
+        crypto: &impl OpenMlsCrypto,
+        leaf_index: LeafNodeIndex,
+    ) -> Result<Vec<EncryptedGroupSecrets>, LibraryError> {
+        self.diff.encrypt_group_secrets(
+            joiner_secret,
+            invited_members,
+            plain_path_option,
+            presharedkeys,
+            encrypted_group_info,
+            crypto,
+            leaf_index,
+        )
+    }
+
+    /// Returns the tree size
+    pub(crate) fn tree_size(&self) -> TreeSize {
+        self.diff.tree_size()
+    }
+
+    /// Returns a vector of all nodes in the tree resulting from merging this
+    /// diff.
+    pub(crate) fn export_ratchet_tree(&self) -> RatchetTree {
+        self.diff.export_ratchet_tree()
+    }
+
+    /// Decrypt an [`UpdatePath`] originating from the given
+    /// `sender_leaf_index`. The `group_context` is used in the decryption
+    /// process and the `exclusion_list` is used to determine the position of
+    /// the ciphertext in the `UpdatePath` that we can decrypt.
+    ///
+    /// Returns the [`CommitSecret`] resulting from their derivation. Returns an
+    /// error if the `sender_leaf_index` is outside of the tree.
+    ///
+    /// ValSem203: Path secrets must decrypt correctly
+    /// ValSem204: Public keys from Path must be verified and match the private keys from the direct path
+    pub(crate) fn decrypt_path(
+        &self,
+        crypto: &impl OpenMlsCrypto,
+        owned_keys: &[&EncryptionKeyPair],
+        own_leaf_index: LeafNodeIndex,
+        sender_leaf_index: LeafNodeIndex,
+        update_path: &UpdatePath,
+        exclusion_list: &HashSet<&LeafNodeIndex>,
+    ) -> Result<(Vec<EncryptionKeyPair>, CommitSecret, Vec<EncryptionKeyPair>), ApplyUpdatePathError>
+    {
+        #[cfg(feature = "experimental-hybrid")]
+        let expected_quaternary_delivery_plan = self
+            .group_context()
+            .extensions()
+            .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
+            .map(|extension| {
+                let state = ArityState::from_extension_value(&extension.0).map_err(|_| {
+                    ApplyUpdatePathError::LibraryError(LibraryError::custom(
+                        "invalid authenticated experimental ArityState",
+                    ))
+                })?;
+                if matches!(state.lifecycle(), ArityLifecycle::Transitioning(_)) {
+                    self.experimental_quaternary_delivery_plan(
+                        sender_leaf_index,
+                        own_leaf_index,
+                        &state,
+                    )
+                    .map(Some)
+                    .map_err(ApplyUpdatePathError::LibraryError)
+                } else {
+                    Ok(None)
+                }
+            })
+            .transpose()?
+            .flatten();
+        let params = DecryptPathParams {
+            update_path: update_path.nodes(),
+            sender_leaf_encryption_key: update_path.leaf_node().encryption_key(),
+            #[cfg(feature = "experimental-hybrid")]
+            sender_leaf_capabilities: update_path.leaf_node().capabilities(),
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_quaternary_parent_paths: update_path
+                .experimental_quaternary_parent_paths(),
+            #[cfg(feature = "experimental-hybrid")]
+            expected_quaternary_tree_version: expected_quaternary_delivery_plan
+                .as_ref()
+                .map(|_| self.group_context().extensions())
+                .and_then(|extensions| {
+                    extensions.unknown(
+                        crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE,
+                    )
+                })
+                .and_then(|extension| ArityState::from_extension_value(&extension.0).ok())
+                .map(|state| state.tree_version()),
+            #[cfg(feature = "experimental-hybrid")]
+            expected_quaternary_parent_nodes: expected_quaternary_delivery_plan.as_ref().map(
+                |plan| {
+                    plan.parent_nodes
+                        .iter()
+                        .map(|node| (node.depth, node.ordinal))
+                        .collect()
+                },
+            ),
+            #[cfg(feature = "experimental-hybrid")]
+            recipient_quaternary_leaf_ordinal: expected_quaternary_delivery_plan
+                .as_ref()
+                .map(|plan| plan.recipient_leaf_ordinal),
+            #[cfg(feature = "experimental-hybrid")]
+            recipient_quaternary_parent_node: expected_quaternary_delivery_plan
+                .as_ref()
+                .and_then(|plan| plan.recipient_parent_node)
+                .map(|node| (node.depth, node.ordinal)),
+            sender_leaf_index,
+            exclusion_list,
+            group_context: &self
+                .group_context()
+                .tls_serialize_detached()
+                .map_err(LibraryError::missing_bound_check)?,
+        };
+        self.diff.decrypt_path(
+            crypto,
+            self.group_context().ciphersuite(),
+            params,
+            owned_keys,
+            own_leaf_index,
+        )
+    }
+
+    /// Return a reference to the leaf with the given index.
+    pub(crate) fn leaf(&self, index: LeafNodeIndex) -> Option<&LeafNode> {
+        self.diff.leaf(index)
+    }
+
+    /// Derives the sender path and receiver address exclusively from the
+    /// authenticated transitioning membership mapping.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_quaternary_delivery_plan(
+        &self,
+        sender_leaf_index: LeafNodeIndex,
+        recipient_leaf_index: LeafNodeIndex,
+        state: &ArityState,
+    ) -> Result<ExperimentalQuaternaryDeliveryPlan, LibraryError> {
+        let ArityLifecycle::Transitioning(transitioning) = state.lifecycle() else {
+            return Err(LibraryError::custom(
+                "experimental quaternary delivery requires transitioning ArityState",
+            ));
+        };
+        let mut member_ids = BTreeMap::new();
+        let mut leaf_keys = BTreeMap::new();
+        for (leaf_index, member_id, encryption_key) in self.diff.full_leaf_member_records() {
+            member_ids.insert(leaf_index.u32(), member_id);
+            leaf_keys.insert(leaf_index.u32(), encryption_key);
+        }
+        let mapping = adaptive_tree::BinaryToQuaternaryLeafMapping::from_binary_members(
+            member_ids
+                .iter()
+                .map(|(binary_leaf_index, member_id)| BinaryLeafMember {
+                    member_id: member_id.clone(),
+                    binary_leaf_index: *binary_leaf_index,
+                })
+                .collect(),
+        )
+        .map_err(|_| LibraryError::custom("invalid experimental quaternary member mapping"))?;
+        let mapping_bytes = mapping
+            .canonical_bytes()
+            .map_err(|_| LibraryError::custom("experimental quaternary mapping encoding failed"))?;
+        if hash_canonical_public_bytes(&mapping_bytes) != *transitioning.mapping_hash().as_bytes() {
+            return Err(LibraryError::custom(
+                "experimental quaternary mapping does not match authenticated ArityState",
+            ));
+        }
+        let tree = ActiveQuaternaryTree::from_mapping(state.tree_version(), mapping.clone())
+            .map_err(|_| {
+                LibraryError::custom("experimental quaternary topology derivation failed")
+            })?;
+        let sender_member_id = member_ids.get(&sender_leaf_index.u32()).ok_or_else(|| {
+            LibraryError::custom("experimental quaternary sender is absent from mapping")
+        })?;
+        let recipient_assignment = mapping
+            .assignments
+            .iter()
+            .find(|assignment| assignment.binary_leaf_index == recipient_leaf_index.u32())
+            .ok_or_else(|| {
+                LibraryError::custom("experimental quaternary recipient is absent from mapping")
+            })?;
+        let sender_path = tree
+            .topology()
+            .leaf_path_for_member(sender_member_id)
+            .map_err(|_| {
+                LibraryError::custom("experimental quaternary sender path derivation failed")
+            })?;
+        let recipient_member_id = member_ids.get(&recipient_leaf_index.u32()).ok_or_else(|| {
+            LibraryError::custom("experimental quaternary recipient is absent from mapping")
+        })?;
+        let recipient_path = tree
+            .topology()
+            .leaf_path_for_member(recipient_member_id)
+            .map_err(|_| {
+                LibraryError::custom("experimental quaternary recipient path derivation failed")
+            })?;
+        let parent_nodes: Vec<QuaternaryNode> = tree
+            .topology()
+            .nodes_for_member(sender_member_id)
+            .map_err(|_| {
+                LibraryError::custom("experimental quaternary sender path derivation failed")
+            })?
+            .into_iter()
+            .take(usize::from(tree.topology().height()))
+            .collect();
+        let recipient_parent_node = sender_path
+            .iter()
+            .zip(&recipient_path)
+            .position(|(sender_branch, recipient_branch)| sender_branch != recipient_branch)
+            .and_then(|depth| parent_nodes.get(depth).copied());
+        let recipient_targets = mapping
+            .assignments
+            .iter()
+            .filter(|assignment| assignment.binary_leaf_index != sender_leaf_index.u32())
+            .map(|assignment| {
+                let member_id = member_ids
+                    .get(&assignment.binary_leaf_index)
+                    .ok_or_else(|| {
+                        LibraryError::custom(
+                            "experimental quaternary recipient is absent from members",
+                        )
+                    })?;
+                let path = tree
+                    .topology()
+                    .leaf_path_for_member(member_id)
+                    .map_err(|_| {
+                        LibraryError::custom(
+                            "experimental quaternary recipient path derivation failed",
+                        )
+                    })?;
+                let parent = sender_path
+                    .iter()
+                    .zip(path)
+                    .position(|(sender_branch, recipient_branch)| {
+                        sender_branch != &recipient_branch
+                    })
+                    .and_then(|depth| parent_nodes.get(depth).copied())
+                    .ok_or_else(|| {
+                        LibraryError::custom(
+                            "experimental quaternary recipient has no sibling-resolution parent",
+                        )
+                    })?;
+                let key = leaf_keys
+                    .get(&assignment.binary_leaf_index)
+                    .cloned()
+                    .ok_or_else(|| {
+                        LibraryError::custom(
+                            "experimental quaternary recipient has no MLS leaf key",
+                        )
+                    })?;
+                Ok((assignment.quaternary_leaf_ordinal, parent, key))
+            })
+            .collect::<Result<Vec<_>, LibraryError>>()?;
+        Ok(ExperimentalQuaternaryDeliveryPlan {
+            parent_nodes,
+            recipient_leaf_ordinal: recipient_assignment.quaternary_leaf_ordinal,
+            recipient_parent_node,
+            recipient_targets,
+        })
+    }
+
+    /// Set the given path as the direct path of the `sender_leaf_index` and
+    /// replace the [`LeafNode`] in the corresponding leaf with the given one.
+    ///
+    /// Returns an error if the `sender_leaf_index` is outside of the tree.
+    /// ValSem202: Path must be the right length
+    pub(crate) fn apply_received_update_path(
+        &mut self,
+        crypto: &impl OpenMlsCrypto,
+        ciphersuite: Ciphersuite,
+        sender_leaf_index: LeafNodeIndex,
+        update_path: &UpdatePath,
+    ) -> Result<(), ApplyUpdatePathError> {
+        self.diff
+            .apply_received_update_path(crypto, ciphersuite, sender_leaf_index, update_path)
+    }
+
+    /// Update the interim transcript hash of the diff and store the
+    /// confirmation tag s.t. it can later be merged back into the original
+    /// group.
+    pub(crate) fn update_interim_transcript_hash(
+        &mut self,
+        ciphersuite: Ciphersuite,
+        crypto: &impl OpenMlsCrypto,
+        confirmation_tag: ConfirmationTag,
+    ) -> Result<(), LibraryError> {
+        let interim_transcript_hash = {
+            let input = InterimTranscriptHashInput::from(&confirmation_tag);
+
+            input.calculate_interim_transcript_hash(
+                crypto,
+                ciphersuite,
+                self.group_context.confirmed_transcript_hash(),
+            )?
+        };
+
+        self.confirmation_tag = confirmation_tag;
+        self.interim_transcript_hash = interim_transcript_hash;
+
+        Ok(())
+    }
+
+    /// Update the [`GroupContext`] of the diff. This includes tree hash
+    /// computation and epoch incrementation, but this does _not_ update the
+    /// confirmed transcript hash.
+    pub(crate) fn update_group_context(
+        &mut self,
+        crypto: &impl OpenMlsCrypto,
+        extensions: Option<Extensions<GroupContext>>,
+    ) -> Result<(), LibraryError> {
+        // Calculate tree hash
+        let new_tree_hash = self
+            .diff
+            .compute_tree_hashes(crypto, self.group_context().ciphersuite())?;
+        self.group_context.update_tree_hash(new_tree_hash);
+        self.group_context.increment_epoch();
+        if let Some(extensions) = extensions {
+            self.group_context.set_extensions(extensions);
+        }
+        Ok(())
+    }
+
+    /// Update the confirmed transcript hash of the diff's [`GroupContext`]
+    /// using the given `interim_transcript_hash`, as well as the
+    /// `commit_content`.
+    pub(crate) fn update_confirmed_transcript_hash(
+        &mut self,
+        crypto: &impl OpenMlsCrypto,
+        commit_content: &AuthenticatedContent,
+    ) -> Result<(), LibraryError> {
+        self.group_context.update_confirmed_transcript_hash(
+            crypto,
+            &self.interim_transcript_hash,
+            commit_content,
+        )
+    }
+
+    pub(crate) fn group_context(&self) -> &GroupContext {
+        &self.group_context
+    }
+}
+
+/// The staged version of a [`PublicGroupDiff`], which means it can no longer be
+/// modified. Its only use is to merge it into the original [`PublicGroup`].
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "test-utils"), derive(Clone, PartialEq))]
+pub(crate) struct StagedPublicGroupDiff {
+    pub(super) staged_diff: StagedTreeSyncDiff,
+    pub(super) group_context: GroupContext,
+    pub(super) interim_transcript_hash: Vec<u8>,
+    pub(super) confirmation_tag: ConfirmationTag,
+}
+
+impl StagedPublicGroupDiff {
+    /// Get the staged [`GroupContext`].
+    pub(crate) fn group_context(&self) -> &GroupContext {
+        &self.group_context
+    }
+
+    /// Export the staged [`RatchetTree`]
+    pub(crate) fn export_ratchet_tree(
+        &self,
+        crypto: &impl OpenMlsCrypto,
+        ciphersuite: Ciphersuite,
+        original_tree: RatchetTree,
+    ) -> Result<RatchetTree, TreeSyncFromNodesError> {
+        let original_tree_sync = TreeSync::from_ratchet_tree(crypto, ciphersuite, original_tree)?;
+        Ok(self
+            .staged_diff
+            .export_ratchet_tree(original_tree_sync.tree()))
+    }
+}

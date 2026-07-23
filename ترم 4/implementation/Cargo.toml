@@ -4,6 +4,7 @@ members = [
     "crates/adaptive-tree",
     "crates/arity-state",
     "crates/experiment-config",
+    "crates/experimental-mls-adapter",
     "crates/hybrid-path-secret",
     "crates/metrics",
     "crates/mkyber",
@@ -14,6 +15,7 @@ members = [
     "crates/transition-tree",
     "crates/transition-policy",
 ]
+exclude = ["crates/openmls-hybrid"]
 resolver = "3"
 
 [workspace.package]
@@ -28,8 +30,10 @@ csv = "=1.4.0"
 hex = "=0.4.3"
 hkdf = "=0.12.4"
 openmls = { version = "=0.8.1", default-features = false, features = ["openmls_rust_crypto"] }
+openmls-hybrid = { package = "openmls-hybrid", path = "crates/openmls-hybrid/openmls", default-features = false, features = ["openmls_rust_crypto", "experimental-hybrid"] }
 openmls_basic_credential = "=0.5.0"
 openmls_rust_crypto = "=0.5.1"
+openmls_traits = { path = "crates/openmls-hybrid/traits", version = "=0.5.0" }
 proptest = "=1.11.0"
 rand = "=0.8.5"
 rand_chacha = "=0.3.1"

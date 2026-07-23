@@ -409,6 +409,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "experimental-mls-adapter"
+version = "0.1.0"
+dependencies = [
+ "adaptive-tree",
+ "arity-state",
+ "hybrid-path-secret",
+ "mkyber",
+ "openmls-hybrid",
+ "openmls_basic_credential 0.5.0",
+ "openmls_rust_crypto 0.5.1",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+ "simulation",
+ "thiserror",
+ "tls_codec",
+ "transition-policy",
+ "transition-tree",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -671,7 +691,7 @@ dependencies = [
  "hkdf",
  "mkyber",
  "openmls",
- "openmls_rust_crypto",
+ "openmls_rust_crypto 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "proptest",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
@@ -992,6 +1012,7 @@ name = "mkyber"
 version = "0.1.0"
 dependencies = [
  "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "sha3",
  "subtle",
@@ -1004,8 +1025,8 @@ name = "mls-adapter"
 version = "0.1.0"
 dependencies = [
  "openmls",
- "openmls_basic_credential",
- "openmls_rust_crypto",
+ "openmls_basic_credential 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "openmls_rust_crypto 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror",
 ]
 
@@ -1056,8 +1077,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dcb512bfe6a55777518853ea535c6241f069cb0e8984678c117151d2a1e7e903"
 dependencies = [
  "log",
- "openmls_rust_crypto",
- "openmls_traits",
+ "openmls_rust_crypto 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "openmls_traits 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rayon",
  "serde",
  "serde_bytes",
@@ -1067,13 +1088,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "openmls-hybrid"
+version = "0.8.1"
+dependencies = [
+ "adaptive-tree",
+ "arity-state",
+ "hybrid-path-secret",
+ "log",
+ "mkyber",
+ "openmls_rust_crypto 0.5.1",
+ "openmls_traits 0.5.0",
+ "rand 0.8.5",
+ "rayon",
+ "serde",
+ "serde_bytes",
+ "thiserror",
+ "tls_codec",
+ "transition-tree",
+ "zeroize",
+]
+
+[[package]]
+name = "openmls_basic_credential"
+version = "0.5.0"
+dependencies = [
+ "ed25519-dalek",
+ "openmls_traits 0.5.0",
+ "p256",
+ "rand 0.8.5",
+ "serde",
+ "tls_codec",
+]
+
+[[package]]
 name = "openmls_basic_credential"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "983e8be1457dd6f316f409292cec334af3b57b49a19deadc925c83c3c35e15b6"
 dependencies = [
  "ed25519-dalek",
- "openmls_traits",
+ "openmls_traits 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "p256",
  "rand 0.8.5",
  "serde",
@@ -1083,14 +1137,48 @@ dependencies = [
 [[package]]
 name = "openmls_memory_storage"
 version = "0.5.0"
+dependencies = [
+ "log",
+ "openmls_traits 0.5.0",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "openmls_memory_storage"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a52c927ddb9940acb96d51aebd54b8b9c601c7119e6609622fb3f2cbe16abe3"
 dependencies = [
  "log",
- "openmls_traits",
+ "openmls_traits 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "openmls_rust_crypto"
+version = "0.5.1"
+dependencies = [
+ "aes-gcm",
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "hkdf",
+ "hmac",
+ "hpke-rs",
+ "hpke-rs-crypto",
+ "hpke-rs-rust-crypto",
+ "openmls_memory_storage 0.5.0",
+ "openmls_traits 0.5.0",
+ "p256",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "serde",
+ "sha2",
+ "thiserror",
+ "tls_codec",
 ]
 
 [[package]]
@@ -1107,14 +1195,22 @@ dependencies = [
  "hpke-rs",
  "hpke-rs-crypto",
  "hpke-rs-rust-crypto",
- "openmls_memory_storage",
- "openmls_traits",
+ "openmls_memory_storage 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "openmls_traits 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "p256",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "serde",
  "sha2",
  "thiserror",
+ "tls_codec",
+]
+
+[[package]]
+name = "openmls_traits"
+version = "0.5.0"
+dependencies = [
+ "serde",
  "tls_codec",
 ]
 
@@ -1425,11 +1521,16 @@ version = "0.1.0"
 dependencies = [
  "arity-state",
  "csv",
+ "experiment-config",
+ "experimental-mls-adapter",
  "hex",
+ "hybrid-path-secret",
  "metrics",
+ "mkyber",
  "serde",
  "serde_json",
  "simulation",
+ "tempfile",
  "thiserror",
  "transition-auth",
  "transition-policy",

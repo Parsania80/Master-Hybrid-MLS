@@ -7,14 +7,21 @@ version.workspace = true
 [dependencies]
 arity-state = { path = "../arity-state" }
 csv.workspace = true
+experimental-mls-adapter = { path = "../experimental-mls-adapter" }
+experiment-config = { path = "../experiment-config" }
 hex.workspace = true
+hybrid-path-secret = { path = "../hybrid-path-secret" }
 metrics = { path = "../metrics" }
+mkyber = { path = "../mkyber" }
 serde.workspace = true
 serde_json.workspace = true
 simulation = { path = "../simulation" }
 thiserror.workspace = true
 transition-auth = { path = "../transition-auth" }
 transition-policy = { path = "../transition-policy" }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
