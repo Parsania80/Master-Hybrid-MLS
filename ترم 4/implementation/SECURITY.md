@@ -142,6 +142,14 @@ with `CorrectedTopologyRoutesNotImplemented`. Real Commit/Welcome byte
 observations from the run are unaffected. A synthetic partition replay must
 never be used to authorize retirement or claim old-key deletion.
 
+Task 80 exposes only signed public path-node and recipient-node indexes. The
+adapter publishes them after every member accepts the Commit and converges,
+then reconstructs active `T_new` and eligible `T_old` from public membership
+and requires both bindings to match the authenticated GroupContext
+`ArityState`. The snapshot excludes ciphertexts, public-key encodings, private
+keys, path secrets, and entropy. Extraction is observational and does not
+replace receiver validation of malformed signed Commits.
+
 Task 51 accepts only a fixed public bootstrap snapshot schema and performs a fresh baseline recreation from its public schedule seed. It validates public encodings, group shape, membership indexes, and public KeyPackage ordering, then creates new operating-system-generated MLS key material and verifies the fresh group before writing a public manifest. It does not restore the source group's private state, preserve its tree hash, process experimental commits, or supply workload/transition measurements. The manifest explicitly records those limits; no restored secret, private key, raw entropy, or path secret is exposed.
 
 Task 52's scheduler consumes only caller-supplied public member indexes, leaf indexes, regions, seeds, fixed lists, and weights. Its seeds are reproducibility inputs, not cryptographic entropy, and its reported distributions are planned selections rather than accepted MLS operations. It does not authorize a member, authenticate a commit, validate a topology beyond unique public leaves, mutate MLS state, or establish fairness/security properties for a future workload. Task 53 must revalidate current membership before any scheduled operation is applied.

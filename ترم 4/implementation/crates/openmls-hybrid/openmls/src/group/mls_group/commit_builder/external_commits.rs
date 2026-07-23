@@ -392,6 +392,8 @@ impl CommitBuilder<'_, super::Complete, MlsGroup> {
             group_info: create_commit_result.group_info,
             #[cfg(feature = "experimental-hybrid")]
             experimental_hybrid_metrics: None,
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_hybrid_topology: None,
         };
 
         Ok((group, bundle))

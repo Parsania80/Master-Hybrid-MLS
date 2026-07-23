@@ -38,7 +38,7 @@ pub const CLEAR_EVENTS_CSV_FILE_NAME: &str = "clear_events.csv";
 /// Human-readable interpretation.
 pub const CLEAR_REPORT_MARKDOWN_FILE_NAME: &str = "clear_report.md";
 
-const CLEAR_REPORT_SCHEMA_VERSION: u16 = 2;
+const CLEAR_REPORT_SCHEMA_VERSION: u16 = 3;
 const CLEAR_ADAPTIVE_OPERATION_LIMIT: u32 = 128;
 const LIVE_RETIREMENT_STATE: &str = "UnsupportedNoAuthenticatedRetirementCommit";
 const CORRECTED_COST_UNAVAILABLE_REASON: &str = "CorrectedTopologyRoutesNotImplemented";
@@ -125,6 +125,18 @@ struct ClearEventRow {
     commit_bytes: u64,
     welcome_bytes: u64,
     cumulative_commit_bytes: u64,
+    authenticated_tree_version: Option<u32>,
+    active_tree_height: Option<u8>,
+    active_tree_leaf_capacity: Option<u32>,
+    active_tree_occupied_leaf_count: Option<u32>,
+    old_treecover_version: Option<u32>,
+    old_treecover_eligible_member_count: Option<u32>,
+    old_treecover_eligible_node_count: Option<u32>,
+    committer_quaternary_leaf_ordinal: Option<u32>,
+    recipient_set_index: Option<u32>,
+    recipient_tree: Option<&'static str>,
+    path_node_index: Option<u32>,
+    recipient_node_indices: Option<String>,
     state: &'static str,
     provenance: &'static str,
 }
@@ -308,6 +320,18 @@ fn event_rows(
             commit_bytes: event.measurement.emitted_commit_bytes,
             welcome_bytes: event.measurement.emitted_welcome_bytes.unwrap_or(0),
             cumulative_commit_bytes: baseline_cumulative,
+            authenticated_tree_version: None,
+            active_tree_height: None,
+            active_tree_leaf_capacity: None,
+            active_tree_occupied_leaf_count: None,
+            old_treecover_version: None,
+            old_treecover_eligible_member_count: None,
+            old_treecover_eligible_node_count: None,
+            committer_quaternary_leaf_ordinal: None,
+            recipient_set_index: None,
+            recipient_tree: None,
+            path_node_index: None,
+            recipient_node_indices: None,
             state: "observed",
             provenance: "real_rfc_baseline",
         });
@@ -336,10 +360,82 @@ fn event_rows(
             commit_bytes: event.emitted_commit_bytes,
             welcome_bytes: 0,
             cumulative_commit_bytes: adaptive_cumulative,
+            authenticated_tree_version: None,
+            active_tree_height: None,
+            active_tree_leaf_capacity: None,
+            active_tree_occupied_leaf_count: None,
+            old_treecover_version: None,
+            old_treecover_eligible_member_count: None,
+            old_treecover_eligible_node_count: None,
+            committer_quaternary_leaf_ordinal: None,
+            recipient_set_index: None,
+            recipient_tree: None,
+            path_node_index: None,
+            recipient_node_indices: None,
             state: "observed",
             provenance: "real_experimental_fork",
         });
         event_index = next_index(event_index)?;
+        if let Some(snapshot) = &event.topology_snapshot {
+            let active = snapshot.transition_trees.active();
+            let active_topology = active.topology();
+            let treecover = snapshot.transition_trees.treecover();
+            let eligible_member_count = u32::try_from(
+                treecover
+                    .members()
+                    .iter()
+                    .filter(|member| member.eligible)
+                    .count(),
+            )
+            .map_err(|_| ClearReportError::Overflow)?;
+            let eligible_node_count = u32::try_from(
+                treecover
+                    .eligible_node_count()
+                    .map_err(|_| ClearReportError::MissingRequiredEvent)?,
+            )
+            .map_err(|_| ClearReportError::Overflow)?;
+            let occupied_leaf_count = u32::try_from(active_topology.occupied_leaf_count())
+                .map_err(|_| ClearReportError::Overflow)?;
+            for (set_index, recipient_set) in
+                snapshot.commit_topology.recipient_sets().iter().enumerate()
+            {
+                rows.push(ClearEventRow {
+                    event_index,
+                    scope: "authenticated_topology_recipient_set",
+                    commit_sequence: Some(event.sequence),
+                    phase: "quaternary-topology",
+                    operation: "authenticated-recipient-set".to_owned(),
+                    committer_member_index: Some(event.committer_member_index),
+                    epoch_before: Some(event.epoch_before),
+                    epoch_after: Some(snapshot.epoch),
+                    active_member_count: event.active_member_count,
+                    commit_bytes: 0,
+                    welcome_bytes: 0,
+                    cumulative_commit_bytes: adaptive_cumulative,
+                    authenticated_tree_version: Some(active.tree_version()),
+                    active_tree_height: Some(active_topology.height()),
+                    active_tree_leaf_capacity: Some(active_topology.leaf_capacity()),
+                    active_tree_occupied_leaf_count: Some(occupied_leaf_count),
+                    old_treecover_version: Some(treecover.version()),
+                    old_treecover_eligible_member_count: Some(eligible_member_count),
+                    old_treecover_eligible_node_count: Some(eligible_node_count),
+                    committer_quaternary_leaf_ordinal: Some(
+                        snapshot.committer_quaternary_leaf_ordinal,
+                    ),
+                    recipient_set_index: Some(
+                        u32::try_from(set_index).map_err(|_| ClearReportError::Overflow)?,
+                    ),
+                    recipient_tree: Some(recipient_set.delivery_tree().as_str()),
+                    path_node_index: Some(recipient_set.path_node_index()),
+                    recipient_node_indices: Some(join_node_indices(
+                        recipient_set.recipient_node_indices(),
+                    )),
+                    state: "authenticated-observed-public-indexes",
+                    provenance: "accepted_signed_commit_plus_authenticated_group_context",
+                });
+                event_index = next_index(event_index)?;
+            }
+        }
     }
 
     let last = adaptive
@@ -359,6 +455,18 @@ fn event_rows(
         commit_bytes: 0,
         welcome_bytes: 0,
         cumulative_commit_bytes: adaptive_cumulative,
+        authenticated_tree_version: None,
+        active_tree_height: None,
+        active_tree_leaf_capacity: None,
+        active_tree_occupied_leaf_count: None,
+        old_treecover_version: None,
+        old_treecover_eligible_member_count: None,
+        old_treecover_eligible_node_count: None,
+        committer_quaternary_leaf_ordinal: None,
+        recipient_set_index: None,
+        recipient_tree: None,
+        path_node_index: None,
+        recipient_node_indices: None,
         state: "unavailable",
         provenance: CORRECTED_COST_PROVENANCE,
     });
@@ -367,6 +475,14 @@ fn event_rows(
 
 fn next_index(value: u32) -> Result<u32, ClearReportError> {
     value.checked_add(1).ok_or(ClearReportError::Overflow)
+}
+
+fn join_node_indices(indices: &[u32]) -> String {
+    indices
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 fn operation_text(operation: WorkloadOperation) -> String {
@@ -470,6 +586,33 @@ fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> Str
         )
         .expect("string write");
     }
+    writeln!(document, "\n## Authenticated topology and recipient sets\n").expect("string write");
+    writeln!(document, "| Epoch | Tree version | Active height/capacity/occupied | Old cover version/eligible members/eligible nodes | Committer quaternary leaf | Recipient tree | Path node | Recipient node indexes |\n|---:|---:|---|---|---:|---|---:|---|").expect("string write");
+    for event in events
+        .iter()
+        .filter(|event| event.scope == "authenticated_topology_recipient_set")
+    {
+        writeln!(
+            document,
+            "| {} | {} | {}/{}/{} | {}/{}/{} | {} | {} | {} | {} |",
+            optional_u64(event.epoch_after),
+            optional_u32(event.authenticated_tree_version),
+            optional_u8(event.active_tree_height),
+            optional_u32(event.active_tree_leaf_capacity),
+            optional_u32(event.active_tree_occupied_leaf_count),
+            optional_u32(event.old_treecover_version),
+            optional_u32(event.old_treecover_eligible_member_count),
+            optional_u32(event.old_treecover_eligible_node_count),
+            optional_u32(event.committer_quaternary_leaf_ordinal),
+            event.recipient_tree.unwrap_or("unavailable"),
+            optional_u32(event.path_node_index),
+            event
+                .recipient_node_indices
+                .as_deref()
+                .unwrap_or("unavailable"),
+        )
+        .expect("string write");
+    }
     writeln!(document, "\n## Interpretation\n").expect("string write");
     writeln!(
         document,
@@ -497,6 +640,10 @@ fn optional_u64(value: Option<u64>) -> String {
 }
 
 fn optional_u32(value: Option<u32>) -> String {
+    value.map_or_else(|| "unavailable".to_owned(), |value| value.to_string())
+}
+
+fn optional_u8(value: Option<u8>) -> String {
     value.map_or_else(|| "unavailable".to_owned(), |value| value.to_string())
 }
 
@@ -571,5 +718,6 @@ mod tests {
             adaptive_phase(ExperimentalAdaptiveCommitPhase::QuaternaryUpdate),
             "quaternary"
         );
+        assert_eq!(join_node_indices(&[0, 1, 3, 4]), "0;1;3;4");
     }
 }

@@ -10,7 +10,7 @@
 //! can be authenticated by every member.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     time::Instant,
 };
 
@@ -21,7 +21,10 @@ use arity_state::{
 };
 use mkyber::{EducationalMkyber512Reference, MkyberDomain};
 use openmls_hybrid::{
-    experimental_hybrid::{mkyber_recipient_capabilities, ExperimentalHybridCommitMetrics},
+    experimental_hybrid::{
+        mkyber_recipient_capabilities, ExperimentalHybridCommitMetrics,
+        ExperimentalHybridCommitTopology, ExperimentalHybridDeliveryTree,
+    },
     prelude::{
         BasicCredential, Ciphersuite, CredentialWithKey, Extension, ExtensionType, Extensions,
         GroupContext, GroupId, KeyPackage, LeafNodeParameters, MlsGroup, MlsGroupCreateConfig,
@@ -43,7 +46,7 @@ use transition_policy::{
     TransitionByteComponent, TransitionByteRange, TransitionPreflightMeasurement,
     TransitionStartConfig, TransitionStartEvaluation, TransitionStartEvaluator,
 };
-use transition_tree::DeliveryOnlyTreeCover;
+use transition_tree::{DeliveryOnlyTreeCover, TransitionTrees};
 
 /// Exact upstream OpenMLS revision used by the local fork.
 pub const OPENMLS_HYBRID_UPSTREAM_REVISION: &str = "47dbedecad0c1fd8eb5368d582250ebfcc1e1ce6";
@@ -168,6 +171,30 @@ pub struct ExperimentalAdaptiveTransitionMeasurement {
     pub start_evaluation: TransitionStartEvaluation,
 }
 
+/// Authenticated public topology and recipient sets for one accepted
+/// post-transition Update Commit.
+///
+/// The tree bindings come from the accepted GroupContext `ArityState`; the
+/// recipient sets come from the same signed Commit. This contains no
+/// ciphertext, public-key bytes, private keys, or path secrets.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticatedAdaptiveTopologySnapshot {
+    /// Public MLS group identifier.
+    pub group_id: Vec<u8>,
+    /// Converged epoch that accepted the signed recipient sets.
+    pub epoch: u64,
+    /// Stable public workload member identifier of the committer.
+    pub committer_member_index: u32,
+    /// Committer ordinal in the authenticated active-quaternary mapping.
+    pub committer_quaternary_leaf_ordinal: u32,
+    /// Active `T_new` and eligible delivery-only `T_old`, validated against
+    /// the authenticated mapping and TreeCover hashes.
+    pub transition_trees: TransitionTrees,
+    /// Ciphertext-free path-level recipient sets extracted from the signed
+    /// UpdatePath.
+    pub commit_topology: ExperimentalHybridCommitTopology,
+}
+
 /// One accepted and converged adaptive workload Commit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcceptedExperimentalAdaptiveOperation {
@@ -201,6 +228,8 @@ pub struct AcceptedExperimentalAdaptiveOperation {
     pub policy_record: Option<transition_policy::AcceptedCommitRecord>,
     /// Real transition-only measurements.
     pub transition: Option<ExperimentalAdaptiveTransitionMeasurement>,
+    /// Authenticated public topology for a post-transition Update Commit.
+    pub topology_snapshot: Option<AuthenticatedAdaptiveTopologySnapshot>,
 }
 
 impl AcceptedExperimentalAdaptiveOperation {
@@ -257,6 +286,9 @@ pub enum ExperimentalBinaryWorkloadError {
     /// A supposed hybrid Commit did not contain accepted hybrid delivery evidence.
     #[error("an accepted experimental Commit did not contain a hybrid UpdatePath delivery")]
     MissingHybridDelivery,
+    /// A post-transition Commit did not expose its signed public recipient sets.
+    #[error("an accepted post-transition Commit did not expose authenticated recipient sets")]
+    MissingAuthenticatedRecipientSets,
     /// Valid members did not converge after an atomic Commit application.
     #[error("valid experimental workload members did not converge")]
     DivergentPublicState,
@@ -356,7 +388,7 @@ pub fn execute_experimental_binary_workload(
             .ok_or(ExperimentalBinaryWorkloadError::DivergentPublicState)?;
         let epoch_before = members[committer_position].group.epoch().as_u64();
         let started = Instant::now();
-        let (wire, hybrid_metrics) = stage_self_update(&mut members[committer_position])?;
+        let (wire, hybrid_metrics, _) = stage_self_update(&mut members[committer_position])?;
         if hybrid_metrics.hybrid_path_delivery_count() == 0 {
             return Err(ExperimentalBinaryWorkloadError::MissingHybridDelivery);
         }
@@ -486,7 +518,7 @@ fn execute_experimental_adaptive_workload_with_completion(
     let normal_position = member_position(&members, normal_selection.member_index)?;
     let normal_epoch_before = members[normal_position].group.epoch().as_u64();
     let normal_started = Instant::now();
-    let (normal_wire, normal_hybrid_metrics) = stage_self_update(&mut members[normal_position])?;
+    let (normal_wire, normal_hybrid_metrics, _) = stage_self_update(&mut members[normal_position])?;
     let normal_deliveries = deliver_to_receivers(&mut members, normal_position, &normal_wire)?;
     merge_sender_binary(&mut members[normal_position])?;
     let normal_epoch_after = converged_epoch(&members)?;
@@ -519,6 +551,7 @@ fn execute_experimental_adaptive_workload_with_completion(
         arity_state: arity_state_from_group(&members[0].group)?,
         policy_record: Some(policy_record.clone()),
         transition: None,
+        topology_snapshot: None,
     });
     sequence = sequence
         .checked_add(1)
@@ -555,7 +588,7 @@ fn execute_experimental_adaptive_workload_with_completion(
             .map_err(|_| operation_error("committer-position"))?;
         let epoch_before = members[position].group.epoch().as_u64();
         let started = Instant::now();
-        let (wire, hybrid_metrics) = stage_self_update(&mut members[position])
+        let (wire, hybrid_metrics, _) = stage_self_update(&mut members[position])
             .map_err(|_| operation_error("sender-stage"))?;
         let deliveries = deliver_to_receivers(&mut members, position, &wire)
             .map_err(|_| operation_error("receiver-application"))?;
@@ -607,6 +640,7 @@ fn execute_experimental_adaptive_workload_with_completion(
                 .map_err(|_| operation_error("arity-state-observation"))?,
             policy_record: Some(record.clone()),
             transition: None,
+            topology_snapshot: None,
         });
         sequence = sequence
             .checked_add(1)
@@ -738,6 +772,7 @@ fn execute_experimental_adaptive_workload_with_completion(
         arity_state: arity_state_from_group(&members[0].group)?,
         policy_record: None,
         transition: Some(transition_measurement),
+        topology_snapshot: None,
     });
     sequence = sequence
         .checked_add(1)
@@ -749,12 +784,20 @@ fn execute_experimental_adaptive_workload_with_completion(
         let committer_position = member_position(&members, selection.member_index)?;
         let epoch_before = members[committer_position].group.epoch().as_u64();
         let started = Instant::now();
-        let (wire, hybrid_metrics) = stage_self_update(&mut members[committer_position])?;
+        let (wire, hybrid_metrics, commit_topology) =
+            stage_self_update(&mut members[committer_position])?;
         let direct_commit_delivery_count =
             deliver_quaternary_to_receivers(&mut members, committer_position, &wire)?;
         merge_sender_quaternary(&mut members[committer_position])?;
         let epoch_after = converged_epoch(&members)?;
         ensure_epoch_advance(epoch_before, epoch_after)?;
+        let topology_snapshot = authenticated_topology_snapshot(
+            &members,
+            selection.member_index,
+            selection.leaf_index,
+            epoch_after,
+            commit_topology,
+        )?;
         accepted_operations.push(AcceptedExperimentalAdaptiveOperation {
             sequence,
             phase: ExperimentalAdaptiveCommitPhase::QuaternaryUpdate,
@@ -772,6 +815,7 @@ fn execute_experimental_adaptive_workload_with_completion(
             arity_state: arity_state_from_group(&members[0].group)?,
             policy_record: None,
             transition: None,
+            topology_snapshot: Some(topology_snapshot),
         });
         sequence = sequence
             .checked_add(1)
@@ -941,7 +985,7 @@ fn measure_adaptive_probe_candidate(
             stage: "candidate-committer-position",
         }
     })?;
-    let (quaternary_update_wire, _) =
+    let (quaternary_update_wire, _, _) =
         stage_self_update(&mut members[update_position]).map_err(|_| {
             ExperimentalBinaryWorkloadError::AdaptiveProbe {
                 member_index: candidate_member_index,
@@ -1144,7 +1188,14 @@ fn merge_sender_quaternary(
 
 fn stage_self_update(
     member: &mut ExperimentalWorkloadMember,
-) -> Result<(Vec<u8>, ExperimentalHybridCommitMetrics), ExperimentalBinaryWorkloadError> {
+) -> Result<
+    (
+        Vec<u8>,
+        ExperimentalHybridCommitMetrics,
+        ExperimentalHybridCommitTopology,
+    ),
+    ExperimentalBinaryWorkloadError,
+> {
     let bundle = member
         .group
         .self_update(
@@ -1156,11 +1207,15 @@ fn stage_self_update(
     let metrics = bundle
         .experimental_hybrid_metrics()
         .ok_or(ExperimentalBinaryWorkloadError::MissingHybridDelivery)?;
+    let topology = bundle
+        .experimental_hybrid_topology()
+        .cloned()
+        .ok_or(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets)?;
     let (commit, _, _) = bundle.into_contents();
     let wire = commit
         .tls_serialize_detached()
         .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
-    Ok((wire, metrics))
+    Ok((wire, metrics, topology))
 }
 
 fn deliver_to_receivers(
@@ -1467,6 +1522,72 @@ fn transition_mapping_from_group(
     .map_err(|_| ExperimentalBinaryWorkloadError::Fork)
 }
 
+fn authenticated_topology_snapshot(
+    members: &[ExperimentalWorkloadMember],
+    committer_member_index: u32,
+    committer_binary_leaf_index: u32,
+    epoch: u64,
+    commit_topology: ExperimentalHybridCommitTopology,
+) -> Result<AuthenticatedAdaptiveTopologySnapshot, ExperimentalBinaryWorkloadError> {
+    let group = &members
+        .first()
+        .ok_or(ExperimentalBinaryWorkloadError::InvalidControls)?
+        .group;
+    if group.epoch().as_u64() != epoch {
+        return Err(ExperimentalBinaryWorkloadError::DivergentPublicState);
+    }
+    let arity_state = arity_state_from_group(group)?;
+    let mapping = transition_mapping_from_group(group)?;
+    let committer_quaternary_leaf_ordinal = mapping
+        .assignments
+        .iter()
+        .find(|assignment| assignment.binary_leaf_index == committer_binary_leaf_index)
+        .map(|assignment| assignment.quaternary_leaf_ordinal)
+        .ok_or(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets)?;
+    let treecover = DeliveryOnlyTreeCover::from_mapping(1, &mapping)
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let transition_trees =
+        TransitionTrees::from_transitioning_state(&arity_state, mapping.clone(), treecover)
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+
+    let expected_recipients = mapping
+        .assignments
+        .iter()
+        .map(|assignment| assignment.quaternary_leaf_ordinal)
+        .filter(|ordinal| *ordinal != committer_quaternary_leaf_ordinal)
+        .collect::<BTreeSet<_>>();
+    let mut observed_recipients = BTreeSet::new();
+    if commit_topology.recipient_sets().is_empty() {
+        return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
+    }
+    for recipient_set in commit_topology.recipient_sets() {
+        if recipient_set.delivery_tree() != ExperimentalHybridDeliveryTree::ActiveQuaternaryTree
+            || recipient_set.recipient_node_indices().is_empty()
+        {
+            return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
+        }
+        for recipient in recipient_set.recipient_node_indices() {
+            if *recipient == committer_quaternary_leaf_ordinal
+                || !observed_recipients.insert(*recipient)
+            {
+                return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
+            }
+        }
+    }
+    if observed_recipients != expected_recipients {
+        return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
+    }
+
+    Ok(AuthenticatedAdaptiveTopologySnapshot {
+        group_id: group.group_id().as_slice().to_vec(),
+        epoch,
+        committer_member_index,
+        committer_quaternary_leaf_ordinal,
+        transition_trees,
+        commit_topology,
+    })
+}
+
 fn adaptive_start_config(
     normal: &ArityState,
 ) -> Result<TransitionStartConfig, ExperimentalBinaryWorkloadError> {
@@ -1561,11 +1682,11 @@ mod tests {
         experimental_hybrid::{
             mkyber_recipient_capabilities, required_mkyber_recipient_capabilities,
             supports_mkyber_recipient_capabilities, ExperimentalHybridDeliveryError,
-            ExperimentalHybridPathDelivery, ExperimentalMkyberError,
-            ExperimentalMkyberNodeKeyStore, ExperimentalMkyberNodePublicKey,
-            ExperimentalNodeKeyError, ExperimentalResolutionNodeId, ForkClassicalHpkeProvider,
-            MkyberRecipientKeyMaterial, MKYBER_RECIPIENT_KEY_MATERIAL_BYTES,
-            MKYBER_RECIPIENT_KEY_MATERIAL_VERSION,
+            ExperimentalHybridDeliveryTree, ExperimentalHybridPathDelivery,
+            ExperimentalMkyberError, ExperimentalMkyberNodeKeyStore,
+            ExperimentalMkyberNodePublicKey, ExperimentalNodeKeyError,
+            ExperimentalResolutionNodeId, ForkClassicalHpkeProvider, MkyberRecipientKeyMaterial,
+            MKYBER_RECIPIENT_KEY_MATERIAL_BYTES, MKYBER_RECIPIENT_KEY_MATERIAL_VERSION,
         },
         prelude::{
             ApplyUpdatePathError, BasicCredential, Capabilities, Ciphersuite, CredentialWithKey,
@@ -2408,6 +2529,23 @@ mod tests {
         let update = bob
             .self_update(bob_provider, bob_signer, leaf_node_parameters)
             .expect("Bob stages hybrid self-update");
+        let topology = update
+            .experimental_hybrid_topology()
+            .expect("signed public recipient-set topology");
+        assert!(!topology.recipient_sets().is_empty());
+        let expected_tree = match arity_state_from_group(bob).lifecycle() {
+            ArityLifecycle::Normal => ExperimentalHybridDeliveryTree::BinaryTree,
+            ArityLifecycle::Transitioning(_) => {
+                ExperimentalHybridDeliveryTree::ActiveQuaternaryTree
+            }
+        };
+        assert!(topology
+            .recipient_sets()
+            .iter()
+            .all(
+                |recipient_set| recipient_set.delivery_tree() == expected_tree
+                    && !recipient_set.recipient_node_indices().is_empty()
+            ));
         let (update_commit, _, _) = update.into_contents();
         update_commit
             .tls_serialize_detached()
