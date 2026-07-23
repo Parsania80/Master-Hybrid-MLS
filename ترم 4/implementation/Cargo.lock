@@ -1534,6 +1534,7 @@ dependencies = [
  "thiserror",
  "transition-auth",
  "transition-policy",
+ "transition-tree",
 ]
 
 [[package]]

@@ -8,7 +8,7 @@
 //! an epoch-secret-authority marker; actual TreeKEM secret derivation remains
 //! future fork work.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use adaptive_tree::{
     AdaptiveTreeError, BinaryToQuaternaryLeafMapping, ShadowOperation, ShadowQuaternaryTree,
@@ -300,6 +300,32 @@ pub struct TransitionTrees {
     treecover: DeliveryOnlyTreeCover,
 }
 
+/// One node in an exact disjoint delivery cover.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ExactCoverNode {
+    /// Tree arity used to interpret the node coordinate.
+    pub arity: u8,
+    /// Root-relative depth, with the root at zero.
+    pub depth: u8,
+    /// Left-to-right node ordinal at this depth.
+    pub ordinal: u32,
+    /// Active-quaternary recipient leaf ordinals covered by this node.
+    pub recipient_quaternary_leaf_ordinals: Vec<u32>,
+}
+
+/// Exact topology-derived alternatives for one authenticated recipient set.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ExactRecipientCovers {
+    /// Singleton active-tree leaves, one per recipient.
+    pub c_leaf: Vec<ExactCoverNode>,
+    /// Minimal populated-node cover in the current active quaternary tree.
+    pub c_new: Vec<ExactCoverNode>,
+    /// Minimal eligible-node cover in the frozen binary TreeCover.
+    pub c_old: Vec<ExactCoverNode>,
+    /// Minimal cover in the fully populated mature target-arity topology.
+    pub c_ideal: Vec<ExactCoverNode>,
+}
+
 impl TransitionTrees {
     /// Builds separate trees only from a validated transitioning `ArityState`.
     ///
@@ -346,6 +372,122 @@ impl TransitionTrees {
     /// Returns the sole permitted future epoch-secret authority.
     pub const fn epoch_secret_authority(&self) -> EpochSecretAuthority {
         self.active.epoch_secret_authority()
+    }
+
+    /// Derives exact, disjoint alternative covers for active-quaternary
+    /// recipient leaf ordinals.
+    ///
+    /// Current-new and ideal covers are equal when every occupied current-tree
+    /// node is populated, as in the present full transition mapping. This
+    /// function selects nodes only; Task 82 assigns canonical route bytes.
+    pub fn exact_recipient_covers(
+        &self,
+        recipient_quaternary_leaf_ordinals: &[u32],
+    ) -> Result<ExactRecipientCovers, TransitionTreeError> {
+        let topology = self.active.topology();
+        let occupied = topology.occupied_leaf_ordinals();
+        let occupied_set = occupied.iter().copied().collect::<BTreeSet<_>>();
+        let targets = recipient_quaternary_leaf_ordinals
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if targets.is_empty() {
+            return Err(TransitionTreeError::EmptyRecipientSet);
+        }
+        if targets.len() != recipient_quaternary_leaf_ordinals.len() {
+            return Err(TransitionTreeError::DuplicateRecipientLeaf);
+        }
+        if !targets.is_subset(&occupied_set) {
+            return Err(TransitionTreeError::RecipientOutsideActiveTree);
+        }
+
+        let active_members = topology
+            .mapping()
+            .assignments
+            .iter()
+            .map(|assignment| {
+                (
+                    assignment.quaternary_leaf_ordinal,
+                    assignment.quaternary_leaf_ordinal,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        if active_members.len() != occupied_set.len() {
+            return Err(TransitionTreeError::ActiveTopologyMappingIncomplete);
+        }
+        let c_leaf = targets
+            .iter()
+            .map(|recipient| ExactCoverNode {
+                arity: topology.arity(),
+                depth: topology.height(),
+                ordinal: *recipient,
+                recipient_quaternary_leaf_ordinals: vec![*recipient],
+            })
+            .collect::<Vec<_>>();
+        let c_new = minimal_exact_cover(
+            topology.arity(),
+            topology.height(),
+            &active_members,
+            &targets,
+        )?;
+
+        let assignment_by_member = topology
+            .mapping()
+            .assignments
+            .iter()
+            .map(|assignment| {
+                (
+                    assignment.member_id.as_slice(),
+                    assignment.quaternary_leaf_ordinal,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut old_members = BTreeMap::new();
+        for member in self
+            .treecover
+            .members()
+            .iter()
+            .filter(|member| member.eligible)
+        {
+            let quaternary_ordinal = assignment_by_member
+                .get(member.member_id.as_slice())
+                .copied()
+                .ok_or(TransitionTreeError::TreeCoverMemberOutsideActiveMapping)?;
+            if old_members
+                .insert(member.binary_leaf_index, quaternary_ordinal)
+                .is_some()
+            {
+                return Err(TransitionTreeError::DuplicateTreeCoverLeaf);
+            }
+        }
+        let old_target_ordinals = old_members.values().copied().collect::<BTreeSet<_>>();
+        if !targets.is_subset(&old_target_ordinals) {
+            return Err(TransitionTreeError::RecipientUnavailableInOldTreeCover);
+        }
+        let old_height = binary_height(
+            *old_members
+                .keys()
+                .next_back()
+                .ok_or(TransitionTreeError::RecipientUnavailableInOldTreeCover)?,
+        )?;
+        let c_old = minimal_exact_cover(2, old_height, &old_members, &targets)?;
+        let c_ideal = minimal_exact_cover(
+            topology.arity(),
+            topology.height(),
+            &active_members,
+            &targets,
+        )?;
+
+        validate_exact_cover(&c_leaf, &targets)?;
+        validate_exact_cover(&c_new, &targets)?;
+        validate_exact_cover(&c_old, &targets)?;
+        validate_exact_cover(&c_ideal, &targets)?;
+        Ok(ExactRecipientCovers {
+            c_leaf,
+            c_new,
+            c_old,
+            c_ideal,
+        })
     }
 
     /// Replays a public operation without converting TreeCover into an active tree.
@@ -433,6 +575,134 @@ pub enum TransitionTreeError {
     /// The reconstructed active topology has an unexpected arity.
     #[error("the active quaternary tree arity does not match ArityState")]
     ActiveArityMismatch,
+    /// A cost alternative needs at least one recipient.
+    #[error("an exact cover requires a non-empty recipient set")]
+    EmptyRecipientSet,
+    /// Recipient leaf ordinals must be unique.
+    #[error("an exact cover recipient leaf occurs more than once")]
+    DuplicateRecipientLeaf,
+    /// A recipient does not occupy the authenticated active topology.
+    #[error("an exact cover recipient is outside the active tree")]
+    RecipientOutsideActiveTree,
+    /// The active topology's public mapping does not describe every occupant.
+    #[error("the active topology mapping is incomplete")]
+    ActiveTopologyMappingIncomplete,
+    /// An eligible old-cover member is not present in the active mapping.
+    #[error("an eligible TreeCover member is outside the active mapping")]
+    TreeCoverMemberOutsideActiveMapping,
+    /// At least one recipient cannot be reached through the eligible old cover.
+    #[error("a recipient is unavailable in the eligible old TreeCover")]
+    RecipientUnavailableInOldTreeCover,
+    /// Cover arithmetic exceeded the supported public index range.
+    #[error("exact cover topology arithmetic overflowed")]
+    ExactCoverOverflow,
+    /// An internally derived cover did not cover every target exactly once.
+    #[error("an exact cover failed its disjoint recipient invariant")]
+    InvalidExactCover,
+}
+
+fn minimal_exact_cover(
+    arity: u8,
+    height: u8,
+    occupied_leaf_to_recipient: &BTreeMap<u32, u32>,
+    targets: &BTreeSet<u32>,
+) -> Result<Vec<ExactCoverNode>, TransitionTreeError> {
+    let mut cover = Vec::new();
+    select_cover_node(
+        arity,
+        height,
+        0,
+        0,
+        occupied_leaf_to_recipient,
+        targets,
+        &mut cover,
+    )?;
+    Ok(cover)
+}
+
+fn select_cover_node(
+    arity: u8,
+    height: u8,
+    depth: u8,
+    ordinal: u32,
+    occupied_leaf_to_recipient: &BTreeMap<u32, u32>,
+    targets: &BTreeSet<u32>,
+    cover: &mut Vec<ExactCoverNode>,
+) -> Result<(), TransitionTreeError> {
+    let remaining_depth = height
+        .checked_sub(depth)
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    let width = u32::from(arity)
+        .checked_pow(u32::from(remaining_depth))
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    let start = ordinal
+        .checked_mul(width)
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    let end = start
+        .checked_add(width)
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    let descendants = occupied_leaf_to_recipient
+        .range(start..end)
+        .map(|(_, recipient)| *recipient)
+        .collect::<Vec<_>>();
+    if descendants.is_empty() {
+        return Ok(());
+    }
+    if descendants
+        .iter()
+        .all(|recipient| targets.contains(recipient))
+    {
+        cover.push(ExactCoverNode {
+            arity,
+            depth,
+            ordinal,
+            recipient_quaternary_leaf_ordinals: descendants,
+        });
+        return Ok(());
+    }
+    if depth == height {
+        return Ok(());
+    }
+    let child_depth = depth
+        .checked_add(1)
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    for branch in 0..u32::from(arity) {
+        let child_ordinal = ordinal
+            .checked_mul(u32::from(arity))
+            .and_then(|value| value.checked_add(branch))
+            .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+        select_cover_node(
+            arity,
+            height,
+            child_depth,
+            child_ordinal,
+            occupied_leaf_to_recipient,
+            targets,
+            cover,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_exact_cover(
+    cover: &[ExactCoverNode],
+    targets: &BTreeSet<u32>,
+) -> Result<(), TransitionTreeError> {
+    let mut observed = BTreeSet::new();
+    for node in cover {
+        if node.recipient_quaternary_leaf_ordinals.is_empty() {
+            return Err(TransitionTreeError::InvalidExactCover);
+        }
+        for recipient in &node.recipient_quaternary_leaf_ordinals {
+            if !observed.insert(*recipient) {
+                return Err(TransitionTreeError::InvalidExactCover);
+            }
+        }
+    }
+    if &observed != targets {
+        return Err(TransitionTreeError::InvalidExactCover);
+    }
+    Ok(())
 }
 
 fn binary_height(max_leaf_index: u32) -> Result<u8, TransitionTreeError> {
@@ -545,6 +815,22 @@ mod tests {
             .expect("separate transition trees")
     }
 
+    fn full_64_trees() -> TransitionTrees {
+        let mapping = BinaryToQuaternaryLeafMapping::from_binary_members(
+            (0..64)
+                .map(|index| BinaryLeafMember {
+                    member_id: format!("member-{index:02}").into_bytes(),
+                    binary_leaf_index: index,
+                })
+                .collect(),
+        )
+        .expect("full canonical mapping");
+        let treecover = DeliveryOnlyTreeCover::from_mapping(1, &mapping).expect("full TreeCover");
+        let state = triggered_state(&mapping, &treecover);
+        TransitionTrees::from_transitioning_state(&state, mapping, treecover)
+            .expect("full transition trees")
+    }
+
     #[test]
     fn transition_trees_bind_separate_public_states_and_one_secret_authority() {
         let trees = trees();
@@ -557,6 +843,53 @@ mod tests {
         );
         assert_eq!(trees.treecover().eligible_binary_leaf_indexes(), vec![0, 2]);
         assert_eq!(trees.treecover().eligible_node_count(), Ok(5));
+    }
+
+    #[test]
+    fn full_64_tree_minus_committer_has_exact_minimal_covers() {
+        let trees = full_64_trees();
+        let recipients = (0..64).filter(|ordinal| *ordinal != 2).collect::<Vec<_>>();
+        let covers = trees
+            .exact_recipient_covers(&recipients)
+            .expect("exact recipient covers");
+
+        assert_eq!(covers.c_leaf.len(), 63);
+        assert_eq!(covers.c_new.len(), 9);
+        assert_eq!(covers.c_old.len(), 6);
+        assert_eq!(covers.c_ideal.len(), 9);
+        assert_eq!(covers.c_new, covers.c_ideal);
+        for cover in [
+            &covers.c_leaf,
+            &covers.c_new,
+            &covers.c_old,
+            &covers.c_ideal,
+        ] {
+            let flattened = cover
+                .iter()
+                .flat_map(|node| node.recipient_quaternary_leaf_ordinals.iter().copied())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(flattened, recipients.iter().copied().collect());
+            assert!(cover
+                .iter()
+                .all(|node| { !node.recipient_quaternary_leaf_ordinals.contains(&2) }));
+        }
+    }
+
+    #[test]
+    fn exact_cover_rejects_empty_duplicate_and_unknown_recipients() {
+        let trees = full_64_trees();
+        assert_eq!(
+            trees.exact_recipient_covers(&[]),
+            Err(TransitionTreeError::EmptyRecipientSet)
+        );
+        assert_eq!(
+            trees.exact_recipient_covers(&[1, 1]),
+            Err(TransitionTreeError::DuplicateRecipientLeaf)
+        );
+        assert_eq!(
+            trees.exact_recipient_covers(&[64]),
+            Err(TransitionTreeError::RecipientOutsideActiveTree)
+        );
     }
 
     #[test]

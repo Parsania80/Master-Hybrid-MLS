@@ -38,11 +38,12 @@ pub const CLEAR_EVENTS_CSV_FILE_NAME: &str = "clear_events.csv";
 /// Human-readable interpretation.
 pub const CLEAR_REPORT_MARKDOWN_FILE_NAME: &str = "clear_report.md";
 
-const CLEAR_REPORT_SCHEMA_VERSION: u16 = 3;
+const CLEAR_REPORT_SCHEMA_VERSION: u16 = 4;
 const CLEAR_ADAPTIVE_OPERATION_LIMIT: u32 = 128;
 const LIVE_RETIREMENT_STATE: &str = "UnsupportedNoAuthenticatedRetirementCommit";
-const CORRECTED_COST_UNAVAILABLE_REASON: &str = "CorrectedTopologyRoutesNotImplemented";
-const CORRECTED_COST_PROVENANCE: &str = "unavailable_pending_authenticated_topology_derived_routes";
+const CORRECTED_COST_UNAVAILABLE_REASON: &str = "CorrectedTopologyRouteSerializationNotImplemented";
+const CORRECTED_COST_PROVENANCE: &str =
+    "unavailable_pending_canonical_topology_route_serialization";
 
 /// Paths created by one clear 64-member run.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,6 +138,9 @@ struct ClearEventRow {
     recipient_tree: Option<&'static str>,
     path_node_index: Option<u32>,
     recipient_node_indices: Option<String>,
+    cover_variant: Option<&'static str>,
+    cover_node_count: Option<u32>,
+    cover_nodes: Option<String>,
     state: &'static str,
     provenance: &'static str,
 }
@@ -332,6 +336,9 @@ fn event_rows(
             recipient_tree: None,
             path_node_index: None,
             recipient_node_indices: None,
+            cover_variant: None,
+            cover_node_count: None,
+            cover_nodes: None,
             state: "observed",
             provenance: "real_rfc_baseline",
         });
@@ -372,6 +379,9 @@ fn event_rows(
             recipient_tree: None,
             path_node_index: None,
             recipient_node_indices: None,
+            cover_variant: None,
+            cover_node_count: None,
+            cover_nodes: None,
             state: "observed",
             provenance: "real_experimental_fork",
         });
@@ -430,8 +440,54 @@ fn event_rows(
                     recipient_node_indices: Some(join_node_indices(
                         recipient_set.recipient_node_indices(),
                     )),
+                    cover_variant: None,
+                    cover_node_count: None,
+                    cover_nodes: None,
                     state: "authenticated-observed-public-indexes",
                     provenance: "accepted_signed_commit_plus_authenticated_group_context",
+                });
+                event_index = next_index(event_index)?;
+            }
+            for (variant, cover) in [
+                ("C_leaf", &snapshot.exact_covers.c_leaf),
+                ("C_new", &snapshot.exact_covers.c_new),
+                ("C_old", &snapshot.exact_covers.c_old),
+                ("C_ideal", &snapshot.exact_covers.c_ideal),
+            ] {
+                rows.push(ClearEventRow {
+                    event_index,
+                    scope: "exact_topology_cover",
+                    commit_sequence: Some(event.sequence),
+                    phase: "topology-cover",
+                    operation: format!("derive-{variant}"),
+                    committer_member_index: Some(event.committer_member_index),
+                    epoch_before: Some(event.epoch_before),
+                    epoch_after: Some(snapshot.epoch),
+                    active_member_count: event.active_member_count,
+                    commit_bytes: 0,
+                    welcome_bytes: 0,
+                    cumulative_commit_bytes: adaptive_cumulative,
+                    authenticated_tree_version: Some(active.tree_version()),
+                    active_tree_height: Some(active_topology.height()),
+                    active_tree_leaf_capacity: Some(active_topology.leaf_capacity()),
+                    active_tree_occupied_leaf_count: Some(occupied_leaf_count),
+                    old_treecover_version: Some(treecover.version()),
+                    old_treecover_eligible_member_count: Some(eligible_member_count),
+                    old_treecover_eligible_node_count: Some(eligible_node_count),
+                    committer_quaternary_leaf_ordinal: Some(
+                        snapshot.committer_quaternary_leaf_ordinal,
+                    ),
+                    recipient_set_index: None,
+                    recipient_tree: None,
+                    path_node_index: None,
+                    recipient_node_indices: None,
+                    cover_variant: Some(variant),
+                    cover_node_count: Some(
+                        u32::try_from(cover.len()).map_err(|_| ClearReportError::Overflow)?,
+                    ),
+                    cover_nodes: Some(format_cover_nodes(cover)),
+                    state: "exact-counterfactual-public-topology",
+                    provenance: "authenticated_topology_minimal_disjoint_cover",
                 });
                 event_index = next_index(event_index)?;
             }
@@ -467,6 +523,9 @@ fn event_rows(
         recipient_tree: None,
         path_node_index: None,
         recipient_node_indices: None,
+        cover_variant: None,
+        cover_node_count: None,
+        cover_nodes: None,
         state: "unavailable",
         provenance: CORRECTED_COST_PROVENANCE,
     });
@@ -483,6 +542,22 @@ fn join_node_indices(indices: &[u32]) -> String {
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(";")
+}
+
+fn format_cover_nodes(nodes: &[transition_tree::ExactCoverNode]) -> String {
+    nodes
+        .iter()
+        .map(|node| {
+            format!(
+                "{}:{}:{}[{}]",
+                node.arity,
+                node.depth,
+                node.ordinal,
+                join_node_indices(&node.recipient_quaternary_leaf_ordinals)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 fn operation_text(operation: WorkloadOperation) -> String {
@@ -613,6 +688,30 @@ fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> Str
         )
         .expect("string write");
     }
+    writeln!(document, "\n## Exact topology-derived covers\n").expect("string write");
+    writeln!(
+        document,
+        "Node encoding: `arity:depth:ordinal[covered quaternary recipient ordinals]`.\n"
+    )
+    .expect("string write");
+    writeln!(
+        document,
+        "| Alternative | Node count | Exact disjoint nodes |\n|---|---:|---|"
+    )
+    .expect("string write");
+    for event in events
+        .iter()
+        .filter(|event| event.scope == "exact_topology_cover")
+    {
+        writeln!(
+            document,
+            "| {} | {} | {} |",
+            event.cover_variant.unwrap_or("unavailable"),
+            optional_u32(event.cover_node_count),
+            event.cover_nodes.as_deref().unwrap_or("unavailable"),
+        )
+        .expect("string write");
+    }
     writeln!(document, "\n## Interpretation\n").expect("string write");
     writeln!(
         document,
@@ -620,6 +719,7 @@ fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> Str
     )
     .expect("string write");
     writeln!(document, "- Normal-binary, transition, and quaternary rows are a separate real 64-member experimental-fork Update-only run with seeded-random committers.").expect("string write");
+    writeln!(document, "- `C_leaf`, `C_new`, `C_old`, and `C_ideal` cover rows are exact minimal disjoint node selections for the authenticated recipient set. They are topology counterfactuals, not byte costs.").expect("string write");
     writeln!(
         document,
         "- `C_*`, `h_*`, and formula retirement are unavailable: `{}`. The former fixed-width 1/2/4/8 partition replay is educational-only and is not actual `T_new`/`T_old` evidence.",

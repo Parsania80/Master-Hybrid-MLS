@@ -19,6 +19,7 @@ simulation = { path = "../simulation" }
 thiserror.workspace = true
 transition-auth = { path = "../transition-auth" }
 transition-policy = { path = "../transition-policy" }
+transition-tree = { path = "../transition-tree" }
 
 [dev-dependencies]
 tempfile.workspace = true

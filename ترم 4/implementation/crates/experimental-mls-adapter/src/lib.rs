@@ -46,7 +46,7 @@ use transition_policy::{
     TransitionByteComponent, TransitionByteRange, TransitionPreflightMeasurement,
     TransitionStartConfig, TransitionStartEvaluation, TransitionStartEvaluator,
 };
-use transition_tree::{DeliveryOnlyTreeCover, TransitionTrees};
+use transition_tree::{DeliveryOnlyTreeCover, ExactRecipientCovers, TransitionTrees};
 
 /// Exact upstream OpenMLS revision used by the local fork.
 pub const OPENMLS_HYBRID_UPSTREAM_REVISION: &str = "47dbedecad0c1fd8eb5368d582250ebfcc1e1ce6";
@@ -193,6 +193,9 @@ pub struct AuthenticatedAdaptiveTopologySnapshot {
     /// Ciphertext-free path-level recipient sets extracted from the signed
     /// UpdatePath.
     pub commit_topology: ExperimentalHybridCommitTopology,
+    /// Exact topology-derived alternatives for the same authenticated
+    /// recipient set. No byte cost is assigned at this stage.
+    pub exact_covers: ExactRecipientCovers,
 }
 
 /// One accepted and converged adaptive workload Commit.
@@ -1577,6 +1580,9 @@ fn authenticated_topology_snapshot(
     if observed_recipients != expected_recipients {
         return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
     }
+    let exact_covers = transition_trees
+        .exact_recipient_covers(&observed_recipients.iter().copied().collect::<Vec<_>>())
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
 
     Ok(AuthenticatedAdaptiveTopologySnapshot {
         group_id: group.group_id().as_slice().to_vec(),
@@ -1585,6 +1591,7 @@ fn authenticated_topology_snapshot(
         committer_quaternary_leaf_ordinal,
         transition_trees,
         commit_topology,
+        exact_covers,
     })
 }
 
