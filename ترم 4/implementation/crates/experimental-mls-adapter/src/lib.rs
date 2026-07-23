@@ -2552,6 +2552,7 @@ mod tests {
             .all(
                 |recipient_set| recipient_set.delivery_tree() == expected_tree
                     && !recipient_set.recipient_node_indices().is_empty()
+                    && recipient_set.canonical_delivery_bytes() > 0
             ));
         let (update_commit, _, _) = update.into_contents();
         update_commit

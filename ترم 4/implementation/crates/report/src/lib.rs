@@ -12,6 +12,7 @@ pub mod model_errors;
 pub mod normal_operations;
 pub mod plots;
 pub mod thesis_tables;
+mod topology_routes;
 pub mod transition_tables;
 
 use arity_state::ArityState;

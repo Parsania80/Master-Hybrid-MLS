@@ -4,9 +4,9 @@
 //!
 //! Real RFC MLS supplies Update/Add/Remove evidence. A separate real
 //! experimental fork run supplies normal-binary, transition, and quaternary
-//! Update evidence. Corrected topology-derived cost and maturity values remain
-//! unavailable until Tasks 80–83; the fork's missing authenticated
-//! TreeCover-retirement Commit stays explicit.
+//! Update evidence. Exact topology-derived routes supply canonical
+//! counterfactual costs; direct maturity evaluation remains a separate step.
+//! The fork's missing authenticated TreeCover-retirement Commit stays explicit.
 
 use std::{
     fmt::Write as FmtWrite,
@@ -28,6 +28,9 @@ use simulation::{
 use thiserror::Error;
 
 use crate::generation::{validate_artifact_directory, write_new, ReportArtifactError};
+use crate::topology_routes::{
+    measure_exact_topology_routes, ExactTopologyAggregateCost, ExactTopologyRouteError,
+};
 
 /// Fixed group size for the requested clear experiment.
 pub const CLEAR_REPORT_MEMBER_COUNT: u32 = 64;
@@ -38,12 +41,12 @@ pub const CLEAR_EVENTS_CSV_FILE_NAME: &str = "clear_events.csv";
 /// Human-readable interpretation.
 pub const CLEAR_REPORT_MARKDOWN_FILE_NAME: &str = "clear_report.md";
 
-const CLEAR_REPORT_SCHEMA_VERSION: u16 = 4;
+const CLEAR_REPORT_SCHEMA_VERSION: u16 = 5;
 const CLEAR_ADAPTIVE_OPERATION_LIMIT: u32 = 128;
 const LIVE_RETIREMENT_STATE: &str = "UnsupportedNoAuthenticatedRetirementCommit";
-const CORRECTED_COST_UNAVAILABLE_REASON: &str = "CorrectedTopologyRouteSerializationNotImplemented";
 const CORRECTED_COST_PROVENANCE: &str =
-    "unavailable_pending_canonical_topology_route_serialization";
+    "observed_outer_commit_remainder_plus_authenticated_topology_exact_cover_canonical_codec";
+const MATURITY_UNAVAILABLE_REASON: &str = "DirectMaturityCalculationPendingTask83";
 
 /// Paths created by one clear 64-member run.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,6 +74,9 @@ pub enum ClearReportError {
     /// A public byte/count sum overflowed.
     #[error("a 64-member public byte or count calculation overflowed")]
     Overflow,
+    /// Exact topology-route materialization or accounting failed.
+    #[error("the exact topology-route measurement failed")]
+    TopologyRoute,
     /// Safe-path, create-new, or filesystem output failed.
     #[error("the clear report artifact output failed")]
     Artifact(#[from] ReportArtifactError),
@@ -79,13 +85,20 @@ pub enum ClearReportError {
     Csv(#[source] csv::Error),
 }
 
+impl From<ExactTopologyRouteError> for ClearReportError {
+    fn from(_: ExactTopologyRouteError) -> Self {
+        Self::TopologyRoute
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct ClearReportSummary {
     schema_version: u16,
     member_count: u32,
     random_committer_seed: u64,
     cost_measurement_state: &'static str,
-    cost_unavailable_reason: &'static str,
+    cost_unavailable_reason: Option<&'static str>,
+    maturity_unavailable_reason: Option<&'static str>,
     c_ideal_bytes: Option<u64>,
     c_leaf_bytes: Option<u64>,
     c_new_bytes: Option<u64>,
@@ -141,6 +154,9 @@ struct ClearEventRow {
     cover_variant: Option<&'static str>,
     cover_node_count: Option<u32>,
     cover_nodes: Option<String>,
+    route_payload_bytes: Option<u64>,
+    common_outer_commit_bytes: Option<u64>,
+    aggregate_cost_bytes: Option<u64>,
     state: &'static str,
     provenance: &'static str,
 }
@@ -234,20 +250,29 @@ pub fn generate_clear_64_report(
         .checked_add(transition_bytes)
         .and_then(|value| value.checked_add(quaternary_bytes))
         .ok_or(ClearReportError::Overflow)?;
+    let cost_event = quaternary
+        .last()
+        .ok_or(ClearReportError::MissingRequiredEvent)?;
+    let cost_snapshot = cost_event
+        .topology_snapshot
+        .as_ref()
+        .ok_or(ClearReportError::MissingRequiredEvent)?;
+    let costs = measure_exact_topology_routes(cost_snapshot, cost_event.emitted_commit_bytes)?;
     let summary = ClearReportSummary {
         schema_version: CLEAR_REPORT_SCHEMA_VERSION,
         member_count: CLEAR_REPORT_MEMBER_COUNT,
         random_committer_seed: random_seed,
-        cost_measurement_state: "unavailable",
-        cost_unavailable_reason: CORRECTED_COST_UNAVAILABLE_REASON,
-        c_ideal_bytes: None,
-        c_leaf_bytes: None,
-        c_new_bytes: None,
-        c_old_bytes: None,
+        cost_measurement_state: "exact-counterfactual",
+        cost_unavailable_reason: None,
+        maturity_unavailable_reason: Some(MATURITY_UNAVAILABLE_REASON),
+        c_ideal_bytes: Some(costs.c_ideal_bytes),
+        c_leaf_bytes: Some(costs.c_leaf_bytes),
+        c_new_bytes: Some(costs.c_new_bytes),
+        c_old_bytes: Some(costs.c_old_bytes),
         h_new_cost: None,
         h_old_cost: None,
         retirement_formula_decision: "NotEvaluated",
-        retirement_formula_trigger: CORRECTED_COST_UNAVAILABLE_REASON,
+        retirement_formula_trigger: MATURITY_UNAVAILABLE_REASON,
         estimated_commits_to_retirement_condition: None,
         live_treecover_retirement_state: LIVE_RETIREMENT_STATE,
         baseline_update_commit_bytes: baseline_update.measurement.emitted_commit_bytes,
@@ -339,6 +364,9 @@ fn event_rows(
             cover_variant: None,
             cover_node_count: None,
             cover_nodes: None,
+            route_payload_bytes: None,
+            common_outer_commit_bytes: None,
+            aggregate_cost_bytes: None,
             state: "observed",
             provenance: "real_rfc_baseline",
         });
@@ -382,6 +410,9 @@ fn event_rows(
             cover_variant: None,
             cover_node_count: None,
             cover_nodes: None,
+            route_payload_bytes: None,
+            common_outer_commit_bytes: None,
+            aggregate_cost_bytes: None,
             state: "observed",
             provenance: "real_experimental_fork",
         });
@@ -443,8 +474,12 @@ fn event_rows(
                     cover_variant: None,
                     cover_node_count: None,
                     cover_nodes: None,
-                    state: "authenticated-observed-public-indexes",
-                    provenance: "accepted_signed_commit_plus_authenticated_group_context",
+                    route_payload_bytes: Some(u64::from(recipient_set.canonical_delivery_bytes())),
+                    common_outer_commit_bytes: None,
+                    aggregate_cost_bytes: None,
+                    state: "authenticated-observed-public-indexes-and-byte-length",
+                    provenance:
+                        "accepted_signed_commit_plus_authenticated_group_context_and_codec_length",
                 });
                 event_index = next_index(event_index)?;
             }
@@ -486,8 +521,103 @@ fn event_rows(
                         u32::try_from(cover.len()).map_err(|_| ClearReportError::Overflow)?,
                     ),
                     cover_nodes: Some(format_cover_nodes(cover)),
+                    route_payload_bytes: None,
+                    common_outer_commit_bytes: None,
+                    aggregate_cost_bytes: None,
                     state: "exact-counterfactual-public-topology",
                     provenance: "authenticated_topology_minimal_disjoint_cover",
+                });
+                event_index = next_index(event_index)?;
+            }
+            let route_costs = measure_exact_topology_routes(snapshot, event.emitted_commit_bytes)?;
+            for set in &route_costs.recipient_sets {
+                for (variant, cover, route_bytes) in [
+                    ("C_leaf", &set.covers.c_leaf, set.c_leaf_route_bytes),
+                    ("C_new", &set.covers.c_new, set.c_new_route_bytes),
+                    ("C_old", &set.covers.c_old, set.c_old_route_bytes),
+                    ("C_ideal", &set.covers.c_ideal, set.c_ideal_route_bytes),
+                ] {
+                    rows.push(ClearEventRow {
+                        event_index,
+                        scope: "exact_topology_route_cost",
+                        commit_sequence: Some(event.sequence),
+                        phase: "topology-route",
+                        operation: format!("serialize-{variant}"),
+                        committer_member_index: Some(event.committer_member_index),
+                        epoch_before: Some(event.epoch_before),
+                        epoch_after: Some(snapshot.epoch),
+                        active_member_count: event.active_member_count,
+                        commit_bytes: 0,
+                        welcome_bytes: 0,
+                        cumulative_commit_bytes: adaptive_cumulative,
+                        authenticated_tree_version: Some(active.tree_version()),
+                        active_tree_height: Some(active_topology.height()),
+                        active_tree_leaf_capacity: Some(active_topology.leaf_capacity()),
+                        active_tree_occupied_leaf_count: Some(occupied_leaf_count),
+                        old_treecover_version: Some(treecover.version()),
+                        old_treecover_eligible_member_count: Some(eligible_member_count),
+                        old_treecover_eligible_node_count: Some(eligible_node_count),
+                        committer_quaternary_leaf_ordinal: Some(
+                            snapshot.committer_quaternary_leaf_ordinal,
+                        ),
+                        recipient_set_index: Some(set.recipient_set_index),
+                        recipient_tree: Some("counterfactual_exact_cover"),
+                        path_node_index: Some(set.path_node_index),
+                        recipient_node_indices: None,
+                        cover_variant: Some(variant),
+                        cover_node_count: Some(
+                            u32::try_from(cover.len())
+                                .map_err(|_| ClearReportError::Overflow)?,
+                        ),
+                        cover_nodes: Some(format_cover_nodes(cover)),
+                        route_payload_bytes: Some(route_bytes),
+                        common_outer_commit_bytes: None,
+                        aggregate_cost_bytes: None,
+                        state: "exact-counterfactual-canonical-codec",
+                        provenance:
+                            "same_public_payload_binding_authenticated_topology_canonical_hybrid_tls",
+                    });
+                    event_index = next_index(event_index)?;
+                }
+            }
+            for (variant, node_count, route_bytes, aggregate_bytes) in
+                aggregate_cost_rows(&route_costs)?
+            {
+                rows.push(ClearEventRow {
+                    event_index,
+                    scope: "aggregate_topology_route_cost",
+                    commit_sequence: Some(event.sequence),
+                    phase: "topology-route-aggregate",
+                    operation: format!("aggregate-{variant}"),
+                    committer_member_index: Some(event.committer_member_index),
+                    epoch_before: Some(event.epoch_before),
+                    epoch_after: Some(snapshot.epoch),
+                    active_member_count: event.active_member_count,
+                    commit_bytes: event.emitted_commit_bytes,
+                    welcome_bytes: 0,
+                    cumulative_commit_bytes: adaptive_cumulative,
+                    authenticated_tree_version: Some(active.tree_version()),
+                    active_tree_height: Some(active_topology.height()),
+                    active_tree_leaf_capacity: Some(active_topology.leaf_capacity()),
+                    active_tree_occupied_leaf_count: Some(occupied_leaf_count),
+                    old_treecover_version: Some(treecover.version()),
+                    old_treecover_eligible_member_count: Some(eligible_member_count),
+                    old_treecover_eligible_node_count: Some(eligible_node_count),
+                    committer_quaternary_leaf_ordinal: Some(
+                        snapshot.committer_quaternary_leaf_ordinal,
+                    ),
+                    recipient_set_index: None,
+                    recipient_tree: Some("all_authenticated_path_level_sets"),
+                    path_node_index: None,
+                    recipient_node_indices: None,
+                    cover_variant: Some(variant),
+                    cover_node_count: Some(node_count),
+                    cover_nodes: None,
+                    route_payload_bytes: Some(route_bytes),
+                    common_outer_commit_bytes: Some(route_costs.common_outer_commit_bytes),
+                    aggregate_cost_bytes: Some(aggregate_bytes),
+                    state: "mixed-observed-outer-exact-counterfactual-route",
+                    provenance: CORRECTED_COST_PROVENANCE,
                 });
                 event_index = next_index(event_index)?;
             }
@@ -503,7 +633,7 @@ fn event_rows(
         scope: "treecover_retirement_evaluation",
         commit_sequence: None,
         phase: "retirement-unavailable",
-        operation: "await-corrected-topology-costs".to_owned(),
+        operation: "await-direct-maturity-calculation".to_owned(),
         committer_member_index: None,
         epoch_before: Some(last.epoch_after),
         epoch_after: None,
@@ -526,8 +656,11 @@ fn event_rows(
         cover_variant: None,
         cover_node_count: None,
         cover_nodes: None,
+        route_payload_bytes: None,
+        common_outer_commit_bytes: None,
+        aggregate_cost_bytes: None,
         state: "unavailable",
-        provenance: CORRECTED_COST_PROVENANCE,
+        provenance: MATURITY_UNAVAILABLE_REASON,
     });
     Ok(rows)
 }
@@ -558,6 +691,49 @@ fn format_cover_nodes(nodes: &[transition_tree::ExactCoverNode]) -> String {
         })
         .collect::<Vec<_>>()
         .join("|")
+}
+
+type AggregateCostRow = (&'static str, u32, u64, u64);
+
+fn aggregate_cost_rows(
+    costs: &ExactTopologyAggregateCost,
+) -> Result<[AggregateCostRow; 4], ClearReportError> {
+    Ok([
+        (
+            "C_leaf",
+            sum_cover_node_counts(&costs.recipient_sets, |set| set.c_leaf_node_count)?,
+            costs.c_leaf_route_bytes,
+            costs.c_leaf_bytes,
+        ),
+        (
+            "C_new",
+            sum_cover_node_counts(&costs.recipient_sets, |set| set.c_new_node_count)?,
+            costs.c_new_route_bytes,
+            costs.c_new_bytes,
+        ),
+        (
+            "C_old",
+            sum_cover_node_counts(&costs.recipient_sets, |set| set.c_old_node_count)?,
+            costs.c_old_route_bytes,
+            costs.c_old_bytes,
+        ),
+        (
+            "C_ideal",
+            sum_cover_node_counts(&costs.recipient_sets, |set| set.c_ideal_node_count)?,
+            costs.c_ideal_route_bytes,
+            costs.c_ideal_bytes,
+        ),
+    ])
+}
+
+fn sum_cover_node_counts(
+    sets: &[crate::topology_routes::ExactTopologyRouteSetCost],
+    select: impl Fn(&crate::topology_routes::ExactTopologyRouteSetCost) -> u32,
+) -> Result<u32, ClearReportError> {
+    sets.iter().try_fold(0_u32, |sum, set| {
+        sum.checked_add(select(set))
+            .ok_or(ClearReportError::Overflow)
+    })
 }
 
 fn operation_text(operation: WorkloadOperation) -> String {
@@ -662,14 +838,14 @@ fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> Str
         .expect("string write");
     }
     writeln!(document, "\n## Authenticated topology and recipient sets\n").expect("string write");
-    writeln!(document, "| Epoch | Tree version | Active height/capacity/occupied | Old cover version/eligible members/eligible nodes | Committer quaternary leaf | Recipient tree | Path node | Recipient node indexes |\n|---:|---:|---|---|---:|---|---:|---|").expect("string write");
+    writeln!(document, "| Epoch | Tree version | Active height/capacity/occupied | Old cover version/eligible members/eligible nodes | Committer quaternary leaf | Recipient tree | Path node | Signed route bytes | Recipient node indexes |\n|---:|---:|---|---|---:|---|---:|---:|---|").expect("string write");
     for event in events
         .iter()
         .filter(|event| event.scope == "authenticated_topology_recipient_set")
     {
         writeln!(
             document,
-            "| {} | {} | {}/{}/{} | {}/{}/{} | {} | {} | {} | {} |",
+            "| {} | {} | {}/{}/{} | {}/{}/{} | {} | {} | {} | {} | {} |",
             optional_u64(event.epoch_after),
             optional_u32(event.authenticated_tree_version),
             optional_u8(event.active_tree_height),
@@ -681,6 +857,7 @@ fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> Str
             optional_u32(event.committer_quaternary_leaf_ordinal),
             event.recipient_tree.unwrap_or("unavailable"),
             optional_u32(event.path_node_index),
+            optional_u64(event.route_payload_bytes),
             event
                 .recipient_node_indices
                 .as_deref()
@@ -708,7 +885,59 @@ fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> Str
             "| {} | {} | {} |",
             event.cover_variant.unwrap_or("unavailable"),
             optional_u32(event.cover_node_count),
-            event.cover_nodes.as_deref().unwrap_or("unavailable"),
+            event
+                .cover_nodes
+                .as_deref()
+                .unwrap_or("unavailable")
+                .replace('|', "<br>"),
+        )
+        .expect("string write");
+    }
+    writeln!(document, "\n## Per-set canonical route costs\n").expect("string write");
+    writeln!(
+        document,
+        "| Recipient set | Path node | Alternative | Recipients | Cover nodes | Route bytes |\n|---:|---:|---|---:|---:|---:|"
+    )
+    .expect("string write");
+    for event in events
+        .iter()
+        .filter(|event| event.scope == "exact_topology_route_cost")
+    {
+        let recipient_count = event
+            .cover_nodes
+            .as_deref()
+            .map(count_encoded_cover_recipients)
+            .unwrap_or(0);
+        writeln!(
+            document,
+            "| {} | {} | {} | {} | {} | {} |",
+            optional_u32(event.recipient_set_index),
+            optional_u32(event.path_node_index),
+            event.cover_variant.unwrap_or("unavailable"),
+            recipient_count,
+            optional_u32(event.cover_node_count),
+            optional_u64(event.route_payload_bytes),
+        )
+        .expect("string write");
+    }
+    writeln!(document, "\n## Aggregate corrected costs\n").expect("string write");
+    writeln!(
+        document,
+        "| Alternative | Cover nodes | Common outer Commit bytes | Route bytes | Total cost bytes |\n|---|---:|---:|---:|---:|"
+    )
+    .expect("string write");
+    for event in events
+        .iter()
+        .filter(|event| event.scope == "aggregate_topology_route_cost")
+    {
+        writeln!(
+            document,
+            "| {} | {} | {} | {} | {} |",
+            event.cover_variant.unwrap_or("unavailable"),
+            optional_u32(event.cover_node_count),
+            optional_u64(event.common_outer_commit_bytes),
+            optional_u64(event.route_payload_bytes),
+            optional_u64(event.aggregate_cost_bytes),
         )
         .expect("string write");
     }
@@ -719,11 +948,17 @@ fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> Str
     )
     .expect("string write");
     writeln!(document, "- Normal-binary, transition, and quaternary rows are a separate real 64-member experimental-fork Update-only run with seeded-random committers.").expect("string write");
-    writeln!(document, "- `C_leaf`, `C_new`, `C_old`, and `C_ideal` cover rows are exact minimal disjoint node selections for the authenticated recipient set. They are topology counterfactuals, not byte costs.").expect("string write");
+    writeln!(document, "- `C_leaf`, `C_new`, `C_old`, and `C_ideal` use exact minimal disjoint covers derived from authenticated topology. Every route carries the same public logical-payload binding and is measured by the production hybrid TLS serializer.").expect("string write");
     writeln!(
         document,
-        "- `C_*`, `h_*`, and formula retirement are unavailable: `{}`. The former fixed-width 1/2/4/8 partition replay is educational-only and is not actual `T_new`/`T_old` evidence.",
-        summary.cost_unavailable_reason
+        "- Each corrected `C_*` total is the observed emitted outer Commit minus its signed canonical hybrid deliveries, plus the corresponding exact-counterfactual route bytes. The common outer remainder is counted once, not once per cover node or recipient set."
+    )
+    .expect("string write");
+    writeln!(document, "- The former fixed-width 1/2/4/8 partition replay remains educational-only and is not used by this report.").expect("string write");
+    writeln!(
+        document,
+        "- `h_new_cost`, `h_old_cost`, `t`, and formula retirement remain unavailable: `{}`.",
+        optional_text(summary.maturity_unavailable_reason)
     )
     .expect("string write");
     writeln!(
@@ -751,26 +986,37 @@ fn optional_text(value: Option<&str>) -> &str {
     value.unwrap_or("unavailable")
 }
 
+fn count_encoded_cover_recipients(nodes: &str) -> usize {
+    nodes
+        .split('|')
+        .filter_map(|node| node.split_once('[').map(|(_, recipients)| recipients))
+        .map(|recipients| recipients.trim_end_matches(']'))
+        .filter(|recipients| !recipients.is_empty())
+        .map(|recipients| recipients.split(';').count())
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn summary_csv_marks_corrected_costs_and_retirement_unavailable() {
+    fn summary_csv_publishes_corrected_costs_but_keeps_maturity_unavailable() {
         let summary = ClearReportSummary {
             schema_version: CLEAR_REPORT_SCHEMA_VERSION,
             member_count: CLEAR_REPORT_MEMBER_COUNT,
             random_committer_seed: 42,
-            cost_measurement_state: "unavailable",
-            cost_unavailable_reason: CORRECTED_COST_UNAVAILABLE_REASON,
-            c_ideal_bytes: None,
-            c_leaf_bytes: None,
-            c_new_bytes: None,
-            c_old_bytes: None,
+            cost_measurement_state: "exact-counterfactual",
+            cost_unavailable_reason: None,
+            maturity_unavailable_reason: Some(MATURITY_UNAVAILABLE_REASON),
+            c_ideal_bytes: Some(22_085),
+            c_leaf_bytes: Some(62_261),
+            c_new_bytes: Some(22_085),
+            c_old_bytes: Some(19_853),
             h_new_cost: None,
             h_old_cost: None,
             retirement_formula_decision: "NotEvaluated",
-            retirement_formula_trigger: CORRECTED_COST_UNAVAILABLE_REASON,
+            retirement_formula_trigger: MATURITY_UNAVAILABLE_REASON,
             estimated_commits_to_retirement_condition: None,
             live_treecover_retirement_state: LIVE_RETIREMENT_STATE,
             baseline_update_commit_bytes: 1,
@@ -790,19 +1036,22 @@ mod tests {
         };
         let csv =
             String::from_utf8(summary_csv(&summary).expect("summary CSV")).expect("UTF-8 summary");
-        assert!(csv.contains("cost_measurement_state,cost_unavailable_reason"));
+        assert!(csv.contains(
+            "cost_measurement_state,cost_unavailable_reason,maturity_unavailable_reason"
+        ));
         assert!(csv.contains("c_ideal_bytes,c_leaf_bytes,c_new_bytes,c_old_bytes"));
         assert!(csv.contains("h_new_cost,h_old_cost"));
         assert!(csv.contains("normal_binary_commit_bytes"));
         assert!(csv.contains("baseline_add_commit_bytes"));
-        assert!(csv.contains(CORRECTED_COST_UNAVAILABLE_REASON));
+        assert!(csv.contains("22085,62261,22085,19853"));
+        assert!(csv.contains(MATURITY_UNAVAILABLE_REASON));
         assert!(csv.contains("NotEvaluated"));
         assert!(!csv.contains("RetireAuthorizedByFormula"));
         assert!(csv.contains(LIVE_RETIREMENT_STATE));
 
         let markdown = clear_markdown(&summary, &[]);
-        assert!(markdown.contains(CORRECTED_COST_UNAVAILABLE_REASON));
-        assert!(markdown.contains("| unavailable | unavailable | unavailable | unavailable |"));
+        assert!(markdown.contains("| 22085 | 62261 | 22085 | 19853 |"));
+        assert!(markdown.contains(MATURITY_UNAVAILABLE_REASON));
         assert!(markdown.contains("No retirement formula was evaluated"));
         assert!(!markdown.contains("authorizes logical retirement"));
     }

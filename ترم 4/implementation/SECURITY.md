@@ -195,6 +195,17 @@ The educational reference backend exposes dedicated operating-system RNG entry p
 
 Task 54 records only public baseline Commit/Welcome sizes, delivery/join counts, and elapsed lifecycle time. Its elapsed timings are environment-dependent observations, not reproducible performance claims. Candidate topology, mKyber crypto counts/timings, policy, transition, and retirement facts remain typed unavailable values unless a real corresponding hook supplies them. Report output must not reinterpret unavailable as zero, success, an estimate, or evidence of protocol security.
 
+Task 82 adds only the canonical byte length of each signed hybrid delivery to
+the public recipient-set observation; ciphertext bytes themselves are not
+retained or reported. Alternative topology routes use public fixed-width
+component values solely to exercise the production TLS serializer and bind all
+four alternatives to one public logical-payload identifier. Their byte lengths
+are exact codec counterfactuals, but they are not valid alternate MLS Commits,
+proof of encrypted-plaintext equality, network observations, or security
+evidence. The common outer-Commit remainder is observed and counted once.
+Maturity and retirement remain unavailable until their separate checked
+evaluation, and live TreeCover secret erasure remains unsupported.
+
 ## Minimum Security Gates Before Experiments
 
 No experimental benchmark may be described as a successful security evaluation until all of the following are true:

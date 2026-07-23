@@ -153,6 +153,9 @@ impl AuthenticatedContent {
                     .iter()
                     .map(|recipient| recipient.recipient_node_index().as_u32())
                     .collect(),
+                u32::try_from(bytes.len()).map_err(|_| {
+                    LibraryError::custom("experimental hybrid delivery length overflowed")
+                })?,
             ));
         }
         for parent_path in path.experimental_quaternary_parent_paths() {
@@ -170,6 +173,9 @@ impl AuthenticatedContent {
                     .iter()
                     .map(|recipient| recipient.recipient_node_index().as_u32())
                     .collect(),
+                u32::try_from(parent_path.delivery().len()).map_err(|_| {
+                    LibraryError::custom("experimental hybrid delivery length overflowed")
+                })?,
             ));
         }
         Ok(ExperimentalHybridCommitTopology::new(recipient_sets))

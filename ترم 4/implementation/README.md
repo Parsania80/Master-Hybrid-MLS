@@ -123,7 +123,7 @@ The locked 128-member, three-update release comparison is the core real experime
 
 Every final table row carries a value state and provenance. `observed` is a measured public fact; `educational` is a deterministic teaching replay; `counterfactual` is a codec/formula replay; `modelled` is an explicit analytical calculation; and `unavailable` is intentionally not zero. Use the source path in each Task 67 row to cite a result rather than copying a number without its status.
 
-The clear 64-member report is generated with `CARGO_BUILD_JOBS=1 cargo run -p report --bin run_clear_64 --release --locked --offline -- --seed 42 --output output/<run> --report report/<run>`. Its baseline scope performs real RFC MLS Update/Add/Remove operations from a 64-member group. Its adaptive scope is a separate real fork Update-only run with seed-42 random committers and at most 128 scheduled updates through a real transition and one post-transition update. Candidate probes are sequential, on demand, and retain only public byte counts after each temporary group is dropped. Schema version 4 records authenticated public `T_new`/`T_old` topology, exact signed recipient indexes, and complete topology-derived cover encodings. Until Task 82 materializes and serializes the same-payload alternatives, `C_*`, `h_*`, estimated retirement, and formula retirement remain unavailable with `CorrectedTopologyRouteSerializationNotImplemented`. Live retirement remains `UnsupportedNoAuthenticatedRetirementCommit`; no secret erasure is claimed.
+The clear 64-member report is generated with `CARGO_BUILD_JOBS=1 cargo run -p report --bin run_clear_64 --release --locked --offline -- --seed 42 --output output/<run> --report report/<run>`. Its baseline scope performs real RFC MLS Update/Add/Remove operations from a 64-member group. Its adaptive scope is a separate real fork Update-only run with seed-42 random committers and at most 128 scheduled updates through a real transition and one post-transition update. Candidate probes are sequential, on demand, and retain only public byte counts after each temporary group is dropped. Schema version 5 records authenticated public `T_new`/`T_old` topology, exact signed recipient indexes and delivery lengths, topology-derived cover encodings, per-set canonical route bytes, the observed common outer-Commit remainder, and aggregate corrected costs. `h_*`, `t`, estimated retirement, and formula retirement remain unavailable with `DirectMaturityCalculationPendingTask83`. Live retirement remains `UnsupportedNoAuthenticatedRetirementCommit`; no secret erasure is claimed.
 
 Linux continuation after the Windows environment blocker: run the three locked/offline quality commands, then execute the low-priority 64-member command documented above with fresh `output/task75-clear-64-seed42` and `report/task75-clear-64-seed42` paths. Inspect `clear_report.csv`, `clear_events.csv`, and `clear_report.md`; do not overwrite an existing run directory. Measured Commit bytes, formula values, timings, and the random committer trace must come from the real Linux run.
 
@@ -141,10 +141,18 @@ leaf ordinals except committer ordinal 2; active height/capacity/occupancy is
 Task 81 derived exact minimal disjoint cover shapes for that recipient set:
 `C_leaf/C_new/C_old/C_ideal` use 63/9/6/9 nodes. `C_new` and `C_ideal`
 match because the current 64-member quaternary topology is fully occupied.
-These are node selections, not byte values. The schema-v4 audit is under
+The schema-v4 node-selection audit is under
 `output/task81-exact-covers-seed42/` and
-`report/task81-exact-covers-seed42/`. Task 82 is now materializing and
-serializing the four alternative routes.
+`report/task81-exact-covers-seed42/`. Task 82 then measured one 9,060-byte
+signed route inside the 16,133-byte quaternary Commit, leaving 7,073 common
+outer bytes. Canonical route-only bytes for the 63/9/6/9 exact covers are
+55,188/15,012/12,780/15,012, so aggregate
+`C_leaf/C_new/C_old/C_ideal` is 62,261/22,085/19,853/22,085. The schema-v5
+audit is under `output/task82-exact-route-costs-seed42-final/` and
+`report/task82-exact-route-costs-seed42-final/`. These are mixed-provenance exact
+serialized costs: observed outer remainder plus authenticated-topology
+canonical-codec counterfactual routes. Task 83 is now calculating the direct
+maturity ratios and formula decision.
 
 When filling the Persian normal-operation table, do not label the Task 64 rows as 128-member measurements: its real arity-2 baseline/fork operations use four members, while its arity-4 row is an educational 16-member serializer. The real 128-member Task 62 rows are whole-workload aggregates, not single normal-operation rows. In the transition table, `109144` is the Task 62 adaptive workload's total Commit bytes and is not the first transition message; the Task 65 first transition message is `25629` bytes, cumulative bytes through maturity evaluation are `109172`, real TreeCover retirement is unsupported, and the measured run has no observed amortized break-even.
 

@@ -426,6 +426,7 @@ pub struct ExperimentalHybridRecipientSet {
     delivery_tree: ExperimentalHybridDeliveryTree,
     path_node_index: u32,
     recipient_node_indices: Vec<u32>,
+    canonical_delivery_bytes: u32,
 }
 
 impl ExperimentalHybridRecipientSet {
@@ -433,11 +434,13 @@ impl ExperimentalHybridRecipientSet {
         delivery_tree: ExperimentalHybridDeliveryTree,
         path_node_index: u32,
         recipient_node_indices: Vec<u32>,
+        canonical_delivery_bytes: u32,
     ) -> Self {
         Self {
             delivery_tree,
             path_node_index,
             recipient_node_indices,
+            canonical_delivery_bytes,
         }
     }
 
@@ -454,6 +457,12 @@ impl ExperimentalHybridRecipientSet {
     /// Returns the authenticated public recipient node indexes.
     pub fn recipient_node_indices(&self) -> &[u32] {
         &self.recipient_node_indices
+    }
+
+    /// Returns the exact canonical hybrid-delivery length authenticated by the
+    /// surrounding signed Commit.
+    pub const fn canonical_delivery_bytes(&self) -> u32 {
+        self.canonical_delivery_bytes
     }
 }
 
