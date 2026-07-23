@@ -134,6 +134,14 @@ Task 49 adds a thesis-local in-process retirement harness. It requires a Task 48
 
 Task 50's tests are regression evidence for the educational boundary only. They prove that unavailable old-cover routes and non-positive maturity denominators remain `Keep` blockers, and that invalid retirement facts leave all in-process snapshots unchanged. They cannot prove real secret erasure, MLS authentication, distributed atomicity, resource bounds under attacker-controlled inputs, or security of a future fork.
 
+The clear 64-member report schema version 2 withdraws the earlier fixed-width
+1/2/4/8 partition values as transition-maturity evidence. Until authenticated
+current-tree and eligible old-TreeCover topology produce exact disjoint routes,
+`C_*`, `h_*`, estimated retirement, and formula retirement remain unavailable
+with `CorrectedTopologyRoutesNotImplemented`. Real Commit/Welcome byte
+observations from the run are unaffected. A synthetic partition replay must
+never be used to authorize retirement or claim old-key deletion.
+
 Task 51 accepts only a fixed public bootstrap snapshot schema and performs a fresh baseline recreation from its public schedule seed. It validates public encodings, group shape, membership indexes, and public KeyPackage ordering, then creates new operating-system-generated MLS key material and verifies the fresh group before writing a public manifest. It does not restore the source group's private state, preserve its tree hash, process experimental commits, or supply workload/transition measurements. The manifest explicitly records those limits; no restored secret, private key, raw entropy, or path secret is exposed.
 
 Task 52's scheduler consumes only caller-supplied public member indexes, leaf indexes, regions, seeds, fixed lists, and weights. Its seeds are reproducibility inputs, not cryptographic entropy, and its reported distributions are planned selections rather than accepted MLS operations. It does not authorize a member, authenticate a commit, validate a topology beyond unique public leaves, mutate MLS state, or establish fairness/security properties for a future workload. Task 53 must revalidate current membership before any scheduled operation is applied.

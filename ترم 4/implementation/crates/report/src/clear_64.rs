@@ -4,8 +4,9 @@
 //!
 //! Real RFC MLS supplies Update/Add/Remove evidence. A separate real
 //! experimental fork run supplies normal-binary, transition, and quaternary
-//! Update evidence. Canonical cost and maturity values are modelled, and the
-//! fork's missing authenticated TreeCover-retirement Commit stays explicit.
+//! Update evidence. Corrected topology-derived cost and maturity values remain
+//! unavailable until Tasks 80–83; the fork's missing authenticated
+//! TreeCover-retirement Commit stays explicit.
 
 use std::{
     fmt::Write as FmtWrite,
@@ -26,10 +27,7 @@ use simulation::{
 };
 use thiserror::Error;
 
-use crate::{
-    generation::{validate_artifact_directory, write_new, ReportArtifactError},
-    transition_tables::{canonical_two_to_four_cost_replay, TransitionTableError},
-};
+use crate::generation::{validate_artifact_directory, write_new, ReportArtifactError};
 
 /// Fixed group size for the requested clear experiment.
 pub const CLEAR_REPORT_MEMBER_COUNT: u32 = 64;
@@ -40,11 +38,11 @@ pub const CLEAR_EVENTS_CSV_FILE_NAME: &str = "clear_events.csv";
 /// Human-readable interpretation.
 pub const CLEAR_REPORT_MARKDOWN_FILE_NAME: &str = "clear_report.md";
 
-const CLEAR_REPORT_SCHEMA_VERSION: u16 = 1;
+const CLEAR_REPORT_SCHEMA_VERSION: u16 = 2;
 const CLEAR_ADAPTIVE_OPERATION_LIMIT: u32 = 128;
 const LIVE_RETIREMENT_STATE: &str = "UnsupportedNoAuthenticatedRetirementCommit";
-const LOGICAL_RETIREMENT_PROVENANCE: &str =
-    "modelled_formula_event_no_live_treecover_secret_erasure";
+const CORRECTED_COST_UNAVAILABLE_REASON: &str = "CorrectedTopologyRoutesNotImplemented";
+const CORRECTED_COST_PROVENANCE: &str = "unavailable_pending_authenticated_topology_derived_routes";
 
 /// Paths created by one clear 64-member run.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,9 +64,6 @@ pub enum ClearReportError {
     /// Real adaptive fork execution failed.
     #[error("the real 64-member adaptive workload failed: {0}")]
     Adaptive(#[source] ExperimentalBinaryWorkloadError),
-    /// Canonical cost or maturity replay failed.
-    #[error("the 64-member canonical cost replay failed: {0}")]
-    Cost(#[source] TransitionTableError),
     /// A required operation or phase was missing.
     #[error("the 64-member run did not produce every required operation or phase")]
     MissingRequiredEvent,
@@ -88,15 +83,17 @@ struct ClearReportSummary {
     schema_version: u16,
     member_count: u32,
     random_committer_seed: u64,
-    c_ideal_bytes: u64,
-    c_leaf_bytes: u64,
-    c_new_bytes: u64,
-    c_old_bytes: u64,
-    h_new_cost: String,
-    h_old_cost: String,
-    retirement_formula_decision: String,
-    retirement_formula_trigger: String,
-    estimated_commits_to_retirement_condition: u32,
+    cost_measurement_state: &'static str,
+    cost_unavailable_reason: &'static str,
+    c_ideal_bytes: Option<u64>,
+    c_leaf_bytes: Option<u64>,
+    c_new_bytes: Option<u64>,
+    c_old_bytes: Option<u64>,
+    h_new_cost: Option<String>,
+    h_old_cost: Option<String>,
+    retirement_formula_decision: &'static str,
+    retirement_formula_trigger: &'static str,
+    estimated_commits_to_retirement_condition: Option<u32>,
     live_treecover_retirement_state: &'static str,
     baseline_update_commit_bytes: u64,
     baseline_add_commit_bytes: u64,
@@ -109,7 +106,7 @@ struct ClearReportSummary {
     quaternary_commit_count: u32,
     quaternary_commit_bytes: u64,
     total_adaptive_commit_bytes: u64,
-    logical_retirement_after_adaptive_commit_sequence: u32,
+    logical_retirement_after_adaptive_commit_sequence: Option<u32>,
     real_operation_provenance: &'static str,
     cost_provenance: &'static str,
 }
@@ -180,9 +177,6 @@ pub fn generate_clear_64_report(
         ExperimentalAdaptiveTransitionPolicy::MatchedPerCommitSaving,
     )
     .map_err(ClearReportError::Adaptive)?;
-    let costs = canonical_two_to_four_cost_replay(CLEAR_REPORT_MEMBER_COUNT)
-        .map_err(ClearReportError::Cost)?;
-
     let baseline_update = baseline
         .accepted_operations
         .iter()
@@ -217,10 +211,6 @@ pub fn generate_clear_64_report(
     if normal_binary.is_empty() || transitions.len() != 1 || quaternary.is_empty() {
         return Err(ClearReportError::MissingRequiredEvent);
     }
-    if costs.threshold_decision != "RetireAuthorizedByFormula" {
-        return Err(ClearReportError::MissingRequiredEvent);
-    }
-
     let normal_binary_bytes = sum_adaptive_bytes(&normal_binary)?;
     let transition_bytes = sum_adaptive_bytes(&transitions)?;
     let quaternary_bytes = sum_adaptive_bytes(&quaternary)?;
@@ -228,23 +218,21 @@ pub fn generate_clear_64_report(
         .checked_add(transition_bytes)
         .and_then(|value| value.checked_add(quaternary_bytes))
         .ok_or(ClearReportError::Overflow)?;
-    let logical_retirement_sequence = quaternary
-        .first()
-        .ok_or(ClearReportError::MissingRequiredEvent)?
-        .sequence;
     let summary = ClearReportSummary {
         schema_version: CLEAR_REPORT_SCHEMA_VERSION,
         member_count: CLEAR_REPORT_MEMBER_COUNT,
         random_committer_seed: random_seed,
-        c_ideal_bytes: costs.c_ideal_bytes,
-        c_leaf_bytes: costs.c_leaf_bytes,
-        c_new_bytes: costs.c_new_bytes,
-        c_old_bytes: costs.c_old_bytes,
-        h_new_cost: costs.h_new_cost.clone(),
-        h_old_cost: costs.h_old_cost.clone(),
-        retirement_formula_decision: costs.threshold_decision.clone(),
-        retirement_formula_trigger: costs.threshold_trigger.clone(),
-        estimated_commits_to_retirement_condition: 1,
+        cost_measurement_state: "unavailable",
+        cost_unavailable_reason: CORRECTED_COST_UNAVAILABLE_REASON,
+        c_ideal_bytes: None,
+        c_leaf_bytes: None,
+        c_new_bytes: None,
+        c_old_bytes: None,
+        h_new_cost: None,
+        h_old_cost: None,
+        retirement_formula_decision: "NotEvaluated",
+        retirement_formula_trigger: CORRECTED_COST_UNAVAILABLE_REASON,
+        estimated_commits_to_retirement_condition: None,
         live_treecover_retirement_state: LIVE_RETIREMENT_STATE,
         baseline_update_commit_bytes: baseline_update.measurement.emitted_commit_bytes,
         baseline_add_commit_bytes: baseline_add.measurement.emitted_commit_bytes,
@@ -260,10 +248,10 @@ pub fn generate_clear_64_report(
         quaternary_commit_count: count_events(&quaternary)?,
         quaternary_commit_bytes: quaternary_bytes,
         total_adaptive_commit_bytes,
-        logical_retirement_after_adaptive_commit_sequence: logical_retirement_sequence,
+        logical_retirement_after_adaptive_commit_sequence: None,
         real_operation_provenance:
             "real_rfc_baseline_mixed_plus_separate_real_adaptive_fork_update_run",
-        cost_provenance: "canonical_hybrid_codec_and_checked_task46_to48_formula",
+        cost_provenance: CORRECTED_COST_PROVENANCE,
     };
     let events = event_rows(&baseline.accepted_operations, &adaptive.accepted_operations)?;
 
@@ -362,8 +350,8 @@ fn event_rows(
         event_index,
         scope: "treecover_retirement_evaluation",
         commit_sequence: None,
-        phase: "logical-retirement",
-        operation: "evaluate-retirement-formula".to_owned(),
+        phase: "retirement-unavailable",
+        operation: "await-corrected-topology-costs".to_owned(),
         committer_member_index: None,
         epoch_before: Some(last.epoch_after),
         epoch_after: None,
@@ -371,8 +359,8 @@ fn event_rows(
         commit_bytes: 0,
         welcome_bytes: 0,
         cumulative_commit_bytes: adaptive_cumulative,
-        state: "modelled",
-        provenance: LOGICAL_RETIREMENT_PROVENANCE,
+        state: "unavailable",
+        provenance: CORRECTED_COST_PROVENANCE,
     });
     Ok(rows)
 }
@@ -428,13 +416,13 @@ fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> Str
     writeln!(
         document,
         "| C_ideal | C_leaf | C_new | C_old | h_new_cost | h_old_cost | Estimated commits to retirement condition |\n|---:|---:|---:|---:|---|---|---:|\n| {} | {} | {} | {} | {} | {} | {} |\n",
-        summary.c_ideal_bytes,
-        summary.c_leaf_bytes,
-        summary.c_new_bytes,
-        summary.c_old_bytes,
-        summary.h_new_cost,
-        summary.h_old_cost,
-        summary.estimated_commits_to_retirement_condition,
+        optional_u64(summary.c_ideal_bytes),
+        optional_u64(summary.c_leaf_bytes),
+        optional_u64(summary.c_new_bytes),
+        optional_u64(summary.c_old_bytes),
+        optional_text(summary.h_new_cost.as_deref()),
+        optional_text(summary.h_old_cost.as_deref()),
+        optional_u32(summary.estimated_commits_to_retirement_condition),
     )
     .expect("string write");
     writeln!(document, "## Bytes by real adaptive phase\n").expect("string write");
@@ -489,14 +477,31 @@ fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> Str
     )
     .expect("string write");
     writeln!(document, "- Normal-binary, transition, and quaternary rows are a separate real 64-member experimental-fork Update-only run with seeded-random committers.").expect("string write");
-    writeln!(document, "- `C_*` and `h_*` are deterministic canonical-codec/formula results, not emitted Commit sizes.").expect("string write");
     writeln!(
         document,
-        "- The formula authorizes logical retirement after one post-transition update, but live retirement is `{}`. No TreeCover secret deletion is claimed.",
+        "- `C_*`, `h_*`, and formula retirement are unavailable: `{}`. The former fixed-width 1/2/4/8 partition replay is educational-only and is not actual `T_new`/`T_old` evidence.",
+        summary.cost_unavailable_reason
+    )
+    .expect("string write");
+    writeln!(
+        document,
+        "- No retirement formula was evaluated. Live retirement is `{}`. No TreeCover secret deletion is claimed.",
         summary.live_treecover_retirement_state
     )
     .expect("string write");
     document
+}
+
+fn optional_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "unavailable".to_owned(), |value| value.to_string())
+}
+
+fn optional_u32(value: Option<u32>) -> String {
+    value.map_or_else(|| "unavailable".to_owned(), |value| value.to_string())
+}
+
+fn optional_text(value: Option<&str>) -> &str {
+    value.unwrap_or("unavailable")
 }
 
 #[cfg(test)]
@@ -504,30 +509,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn summary_csv_has_the_requested_clear_columns() {
-        let costs = crate::transition_tables::CanonicalCostReplay {
-            c_leaf_bytes: 10,
-            c_new_bytes: 4,
-            c_old_bytes: 6,
-            c_ideal_bytes: 2,
-            h_new_cost: "3/4".to_owned(),
-            h_old_cost: "1/2".to_owned(),
-            threshold_decision: "RetireAuthorizedByFormula".to_owned(),
-            threshold_trigger: "NewTreeMaturity".to_owned(),
-        };
+    fn summary_csv_marks_corrected_costs_and_retirement_unavailable() {
         let summary = ClearReportSummary {
-            schema_version: 1,
-            member_count: 32,
+            schema_version: CLEAR_REPORT_SCHEMA_VERSION,
+            member_count: CLEAR_REPORT_MEMBER_COUNT,
             random_committer_seed: 42,
-            c_ideal_bytes: costs.c_ideal_bytes,
-            c_leaf_bytes: costs.c_leaf_bytes,
-            c_new_bytes: costs.c_new_bytes,
-            c_old_bytes: costs.c_old_bytes,
-            h_new_cost: costs.h_new_cost,
-            h_old_cost: costs.h_old_cost,
-            retirement_formula_decision: costs.threshold_decision,
-            retirement_formula_trigger: costs.threshold_trigger,
-            estimated_commits_to_retirement_condition: 1,
+            cost_measurement_state: "unavailable",
+            cost_unavailable_reason: CORRECTED_COST_UNAVAILABLE_REASON,
+            c_ideal_bytes: None,
+            c_leaf_bytes: None,
+            c_new_bytes: None,
+            c_old_bytes: None,
+            h_new_cost: None,
+            h_old_cost: None,
+            retirement_formula_decision: "NotEvaluated",
+            retirement_formula_trigger: CORRECTED_COST_UNAVAILABLE_REASON,
+            estimated_commits_to_retirement_condition: None,
             live_treecover_retirement_state: LIVE_RETIREMENT_STATE,
             baseline_update_commit_bytes: 1,
             baseline_add_commit_bytes: 2,
@@ -540,17 +537,27 @@ mod tests {
             quaternary_commit_count: 1,
             quaternary_commit_bytes: 7,
             total_adaptive_commit_bytes: 18,
-            logical_retirement_after_adaptive_commit_sequence: 4,
+            logical_retirement_after_adaptive_commit_sequence: None,
             real_operation_provenance: "real",
-            cost_provenance: "modelled",
+            cost_provenance: CORRECTED_COST_PROVENANCE,
         };
         let csv =
             String::from_utf8(summary_csv(&summary).expect("summary CSV")).expect("UTF-8 summary");
+        assert!(csv.contains("cost_measurement_state,cost_unavailable_reason"));
         assert!(csv.contains("c_ideal_bytes,c_leaf_bytes,c_new_bytes,c_old_bytes"));
         assert!(csv.contains("h_new_cost,h_old_cost"));
         assert!(csv.contains("normal_binary_commit_bytes"));
         assert!(csv.contains("baseline_add_commit_bytes"));
+        assert!(csv.contains(CORRECTED_COST_UNAVAILABLE_REASON));
+        assert!(csv.contains("NotEvaluated"));
+        assert!(!csv.contains("RetireAuthorizedByFormula"));
         assert!(csv.contains(LIVE_RETIREMENT_STATE));
+
+        let markdown = clear_markdown(&summary, &[]);
+        assert!(markdown.contains(CORRECTED_COST_UNAVAILABLE_REASON));
+        assert!(markdown.contains("| unavailable | unavailable | unavailable | unavailable |"));
+        assert!(markdown.contains("No retirement formula was evaluated"));
+        assert!(!markdown.contains("authorizes logical retirement"));
     }
 
     #[test]
