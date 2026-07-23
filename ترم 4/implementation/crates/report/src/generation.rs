@@ -20,8 +20,10 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    MetricAvailability, MetricUnavailableReason, PerCommitMetricRecord, PerCommitSchemaError,
+    AdaptiveCommitObservation, MetricAvailability, MetricUnavailableReason, PerCommitMetricRecord,
+    PerCommitSchemaError,
 };
+use experimental_mls_adapter::ExperimentalAdaptiveWorkloadExecution;
 use simulation::{
     execute_baseline_workload, BaselineWorkloadConfig, BaselineWorkloadExecution,
     CommitterStrategy, WorkloadExecutionError, WorkloadOperation, WorkloadProfile,
@@ -76,7 +78,9 @@ pub const REQUIRED_REPORT_SUBJECTS: [&str; 27] = [
 ];
 
 const BASELINE_MODE: &str = "baseline-binary-mls";
+const ADAPTIVE_MODE: &str = "adaptive-binary-to-quaternary-mls";
 const EXPERIMENTAL_LIMITATION: &str = "This report contains an unchanged RFC 9420 baseline workload only. Experimental mKyber, hybrid UpdatePath, adaptive transition, TreeCover, and security properties are unavailable unless a real typed instrumentation boundary records them. This educational thesis software is not production cryptography and does not establish interoperability, a security proof, or X-Wing/C2PRI coverage.";
+const ADAPTIVE_LIMITATION: &str = "This report contains real fork-native experimental observations. The compact candidate is a separately executed fresh-group probe, transition preflight remains an estimate, and actual transition/update Commit bytes are measured. The matched-per-Commit policy is not an amortized break-even claim. The fork has no authenticated atomic TreeCover-retirement Commit, so retirement is explicitly unsupported. This educational thesis software is not production cryptography and does not establish interoperability, a security proof, or X-Wing/C2PRI coverage.";
 
 /// Public locations for a generated Task 55 artifact set.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -189,6 +193,60 @@ pub fn write_baseline_report_artifacts(
     Ok(paths)
 }
 
+/// Writes public Task 54/55 artifacts from an accepted adaptive fork workload.
+///
+/// The execution has already converged before this function is called. This
+/// writer performs no MLS operation and emits only the adapter's public
+/// measurements, including both authorization byte-gate forms on the actual
+/// transition record.
+pub fn write_adaptive_report_artifacts(
+    workload: &BaselineWorkloadConfig,
+    execution: &ExperimentalAdaptiveWorkloadExecution,
+    output_directory: &Path,
+    report_directory: &Path,
+) -> Result<ReportArtifactPaths, ReportArtifactError> {
+    validate_artifact_directory(output_directory, "output", "machine-readable")?;
+    validate_artifact_directory(report_directory, "report", "Markdown")?;
+    let records = PerCommitMetricRecord::from_experimental_adaptive_workload(workload, execution)
+        .map_err(ReportArtifactError::Schema)?;
+    let paths = ReportArtifactPaths {
+        commits_csv: output_directory.join(COMMITS_CSV_FILE_NAME),
+        epochs_csv: output_directory.join(EPOCHS_CSV_FILE_NAME),
+        transition_events_csv: output_directory.join(TRANSITION_EVENTS_CSV_FILE_NAME),
+        summary_json: output_directory.join(SUMMARY_JSON_FILE_NAME),
+        report_markdown: report_directory.join(REPORT_MARKDOWN_FILE_NAME),
+    };
+    for path in [
+        &paths.commits_csv,
+        &paths.epochs_csv,
+        &paths.transition_events_csv,
+        &paths.summary_json,
+        &paths.report_markdown,
+    ] {
+        if path.exists() {
+            return Err(ReportArtifactError::ArtifactAlreadyExists);
+        }
+    }
+    fs::create_dir_all(output_directory).map_err(ReportArtifactError::Write)?;
+    fs::create_dir_all(report_directory).map_err(ReportArtifactError::Write)?;
+
+    write_new(&paths.commits_csv, &commits_csv(&records)?)?;
+    write_new(&paths.epochs_csv, &epochs_csv(&records)?)?;
+    write_new(
+        &paths.transition_events_csv,
+        &transition_events_csv(&records)?,
+    )?;
+    write_new(
+        &paths.summary_json,
+        &adaptive_summary_json(workload, execution, &records)?,
+    )?;
+    write_new(
+        &paths.report_markdown,
+        &adaptive_markdown_report(workload, execution, &records)?,
+    )?;
+    Ok(paths)
+}
+
 pub(crate) fn validate_artifact_directory(
     path: &Path,
     required_prefix: &'static str,
@@ -245,6 +303,7 @@ struct CommitCsvRow {
     policy_window: String,
     transition: String,
     retirement: String,
+    adaptive: String,
 }
 
 fn commits_csv(records: &[PerCommitMetricRecord]) -> Result<Vec<u8>, ReportArtifactError> {
@@ -281,6 +340,7 @@ fn commits_csv(records: &[PerCommitMetricRecord]) -> Result<Vec<u8>, ReportArtif
                 policy_window: json_value(&record.policy_window)?,
                 transition: json_value(&record.transition)?,
                 retirement: json_value(&record.retirement)?,
+                adaptive: json_value(&record.adaptive)?,
             })
             .map_err(ReportArtifactError::Csv)?;
     }
@@ -400,6 +460,22 @@ struct SummaryDocument<'a> {
 }
 
 #[derive(Serialize)]
+struct AdaptiveSummaryDocument<'a> {
+    schema_version: u16,
+    mode: &'static str,
+    workload: WorkloadSummary,
+    final_state: FinalStateSummary,
+    aggregate: AggregateSummary,
+    measurement_availability: Vec<MetricFamilyAvailability>,
+    selected_authorization_policy: Option<&'a crate::AdaptiveAuthorizationPolicy>,
+    transition_policy_byte_gates: Option<&'a [crate::AdaptivePolicyByteGateObservation; 2]>,
+    retirement_status: &'static str,
+    required_report_subjects: [&'static str; 27],
+    limitations: Vec<&'static str>,
+    per_commit_records: &'a [PerCommitMetricRecord],
+}
+
+#[derive(Serialize)]
 struct WorkloadSummary {
     group_id_hex: String,
     initial_member_count: u32,
@@ -478,6 +554,47 @@ fn summary_json(
     Ok(bytes)
 }
 
+fn adaptive_summary_json(
+    workload: &BaselineWorkloadConfig,
+    execution: &ExperimentalAdaptiveWorkloadExecution,
+    records: &[PerCommitMetricRecord],
+) -> Result<Vec<u8>, ReportArtifactError> {
+    let transition = records.iter().find_map(|record| match &record.adaptive {
+        MetricAvailability::Observed(observation)
+            if observation.transition_measurement.is_some() =>
+        {
+            Some(observation)
+        }
+        _ => None,
+    });
+    let document = AdaptiveSummaryDocument {
+        schema_version: REPORT_ARTIFACT_SCHEMA_VERSION,
+        mode: ADAPTIVE_MODE,
+        workload: workload_summary(workload),
+        final_state: FinalStateSummary {
+            final_epoch: execution.final_epoch,
+            final_member_count: execution.final_member_count,
+            final_active_committer_counts: final_committer_counts(records),
+        },
+        aggregate: aggregate_summary(records),
+        measurement_availability: availability_summary(records),
+        selected_authorization_policy: transition.map(|observation| &observation.selected_policy),
+        transition_policy_byte_gates: transition
+            .and_then(|observation| observation.policy_byte_gates.as_ref()),
+        retirement_status: "UnsupportedNoAuthenticatedRetirementCommit",
+        required_report_subjects: REQUIRED_REPORT_SUBJECTS,
+        limitations: vec![
+            ADAPTIVE_LIMITATION,
+            "Unavailable values are neither zero nor estimates. They indicate that no matching trusted instrumentation supplied a value.",
+            "No private MLS state, private keys, shared secrets, path secrets, AEAD keys, raw entropy, or reconstructible secret seed is serialized.",
+        ],
+        per_commit_records: records,
+    };
+    let mut bytes = serde_json::to_vec_pretty(&document).map_err(ReportArtifactError::Json)?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
 fn workload_summary(workload: &BaselineWorkloadConfig) -> WorkloadSummary {
     WorkloadSummary {
         group_id_hex: hex::encode(&workload.group_id),
@@ -523,6 +640,24 @@ fn aggregate_summary(records: &[PerCommitMetricRecord]) -> AggregateSummary {
     }
 }
 
+fn final_committer_counts(records: &[PerCommitMetricRecord]) -> Vec<FinalCommitterCount> {
+    let mut counts = std::collections::BTreeMap::<u32, u32>::new();
+    for record in records {
+        *counts
+            .entry(record.identity.committer_member_index)
+            .or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(
+            |(member_index, accepted_commit_count)| FinalCommitterCount {
+                member_index,
+                accepted_commit_count,
+            },
+        )
+        .collect()
+}
+
 fn availability_summary(records: &[PerCommitMetricRecord]) -> Vec<MetricFamilyAvailability> {
     vec![
         summarize_availability(records, "current_binary_topology", |record| {
@@ -541,6 +676,7 @@ fn availability_summary(records: &[PerCommitMetricRecord]) -> Vec<MetricFamilyAv
         summarize_availability(records, "hybrid_delivery", |record| &record.hybrid_delivery),
         summarize_availability(records, "policy_window", |record| &record.policy_window),
         summarize_availability(records, "transition", |record| &record.transition),
+        summarize_availability(records, "adaptive", |record| &record.adaptive),
         summarize_availability(records, "retirement", |record| &record.retirement),
     ]
 }
@@ -607,6 +743,105 @@ fn markdown_report(
         )?;
     }
     Ok(markdown.into_bytes())
+}
+
+fn adaptive_markdown_report(
+    workload: &BaselineWorkloadConfig,
+    execution: &ExperimentalAdaptiveWorkloadExecution,
+    records: &[PerCommitMetricRecord],
+) -> Result<Vec<u8>, ReportArtifactError> {
+    let aggregate = aggregate_summary(records);
+    let availability = availability_summary(records);
+    let mut markdown = String::new();
+    writeln!(markdown, "# Adaptive Hybrid MLS Task 61 Report").expect("string write");
+    writeln!(markdown).expect("string write");
+    writeln!(
+        markdown,
+        "Schema: `adaptive-hybrid-mls/report-v{REPORT_ARTIFACT_SCHEMA_VERSION}`  "
+    )
+    .expect("string write");
+    writeln!(markdown, "Mode: `{ADAPTIVE_MODE}`  ").expect("string write");
+    writeln!(
+        markdown,
+        "Group identifier (public hex): `{}`",
+        hex::encode(&workload.group_id)
+    )
+    .expect("string write");
+    writeln!(markdown).expect("string write");
+    writeln!(markdown, "> {ADAPTIVE_LIMITATION}").expect("string write");
+    for (index, subject) in REQUIRED_REPORT_SUBJECTS.iter().enumerate() {
+        writeln!(markdown, "\n## {}. {subject}\n", index + 1).expect("string write");
+        write_adaptive_subject(
+            &mut markdown,
+            index,
+            workload,
+            execution,
+            &aggregate,
+            &availability,
+            records,
+        )?;
+    }
+    Ok(markdown.into_bytes())
+}
+
+fn write_adaptive_subject(
+    markdown: &mut String,
+    index: usize,
+    workload: &BaselineWorkloadConfig,
+    execution: &ExperimentalAdaptiveWorkloadExecution,
+    aggregate: &AggregateSummary,
+    availability: &[MetricFamilyAvailability],
+    records: &[PerCommitMetricRecord],
+) -> Result<(), ReportArtifactError> {
+    match index {
+        0 => writeln!(markdown, "Artifact schema version `{REPORT_ARTIFACT_SCHEMA_VERSION}`; `commits.csv`, `epochs.csv`, `transition_events.csv`, and `summary.json` contain public provenance.").expect("string write"),
+        1 => writeln!(markdown, "The run uses the isolated experimental OpenMLS fork. Its non-standard mKyber and adaptive behavior is research-only.").expect("string write"),
+        2 => writeln!(markdown, "Initial members: {}; maximum members: {}; requested operations: {}; regions: {}; workload: `{}`; committer strategy: `{}`.", workload.initial_member_count, workload.maximum_member_count, workload.operation_count, workload.region_count, workload_profile_name(workload.workload_profile), committer_strategy_name(&workload.committer_strategy)).expect("string write"),
+        3 => writeln!(markdown, "Accepted commits: {}; final epoch: {}; final active members: {}.", aggregate.accepted_commit_count, execution.final_epoch, execution.final_member_count).expect("string write"),
+        4 => writeln!(markdown, "Sequences are one-based and contiguous; each accepted record advances the public MLS epoch by exactly one. The sequence includes the dedicated transition Commit. See `commits.csv`.").expect("string write"),
+        5 => writeln!(markdown, "`commits.csv` records public committer member, leaf, and region labels for every accepted Commit.").expect("string write"),
+        6 => writeln!(markdown, "`epochs.csv` records the post-Commit active-member count for each accepted epoch.").expect("string write"),
+        7 => writeln!(markdown, "Measured emitted fork Commit bytes total {} across {} accepted Commits.", aggregate.total_baseline_commit_bytes, aggregate.accepted_commit_count).expect("string write"),
+        8 => writeln!(markdown, "No accepted adaptive workload operation emits a Welcome; measured Welcome bytes total 0.").expect("string write"),
+        9 => writeln!(markdown, "Observed direct Commit deliveries total {}; Welcome joins total 0.", aggregate.total_direct_commit_deliveries).expect("string write"),
+        10 => writeln!(markdown, "Observed accepted lifecycle time totals {} ns. Timing is environment-dependent and is not a reproducible performance claim.", aggregate.total_accepted_lifecycle_elapsed_nanoseconds).expect("string write"),
+        11..=16 | 18..=23 => write_adaptive_availability_subject(markdown, index, availability, records)?,
+        17 => writeln!(markdown, "Normal binary updates retain observed Task 35 policy records. The transition record contains the complete five-condition evaluation and both authorization byte-gate calculations.").expect("string write"),
+        24 => writeln!(markdown, "Normal and actual transition/update sizes are measured emitted outer-message bytes. Compact candidates and transition preflight are separately executed real-probe estimates. Both forms remain explicitly labeled in `summary.json` and `commits.csv`.").expect("string write"),
+        25 => writeln!(markdown, "Retirement is `UnsupportedNoAuthenticatedRetirementCommit`; it is not represented as zero, success, failure, or a hidden estimate.").expect("string write"),
+        26 => writeln!(markdown, "SEC-01 through SEC-10 remain unresolved for experimental claims. The artifacts contain no private MLS keys, mKyber keys, shared/path secrets, AEAD material, raw entropy, or reconstructible secret seed.").expect("string write"),
+        _ => return Err(ReportArtifactError::Json(serde_json::Error::io(std::io::Error::other("unknown report subject")))),
+    }
+    Ok(())
+}
+
+fn write_adaptive_availability_subject(
+    markdown: &mut String,
+    subject_index: usize,
+    availability: &[MetricFamilyAvailability],
+    records: &[PerCommitMetricRecord],
+) -> Result<(), ReportArtifactError> {
+    if matches!(subject_index, 18 | 20 | 21) {
+        let transition = records.iter().find_map(|record| match &record.adaptive {
+            MetricAvailability::Observed(AdaptiveCommitObservation {
+                transition_measurement: Some(measurement),
+                policy_byte_gates: Some(gates),
+                selected_policy,
+                ..
+            }) => Some((measurement, gates, selected_policy)),
+            _ => None,
+        });
+        if let Some((measurement, gates, selected_policy)) = transition {
+            match subject_index {
+                18 => writeln!(markdown, "Selected policy: `{:?}`. The stored five-condition evaluation is in `commits.csv`.", selected_policy).expect("string write"),
+                20 => writeln!(markdown, "Transition preflight: {} bytes (separate real probe); actual transition Commit: {} bytes; frozen TreeCover members: {}.", measurement.preflight_bytes, measurement.actual_transition_bytes, measurement.treecover_member_count).expect("string write"),
+                21 => writeln!(markdown, "Matched normal total: {} bytes; matched compact-candidate total: {} bytes; matched-window saving: {} bytes; amortized-preflight saving: {} bytes. Byte gates: `{:#?}`.", measurement.matched_normal_bytes, measurement.matched_compact_candidate_bytes, measurement.matched_window_saving_bytes, measurement.amortized_preflight_saving_bytes, gates).expect("string write"),
+                _ => unreachable!(),
+            }
+            return Ok(());
+        }
+    }
+    write_availability_subject(markdown, subject_index, availability)
 }
 
 fn write_subject(
@@ -738,6 +973,9 @@ fn unavailable_reason_name(reason: MetricUnavailableReason) -> &'static str {
         MetricUnavailableReason::PolicyWindowNotAttached => "PolicyWindowNotAttached",
         MetricUnavailableReason::TransitionNotStarted => "TransitionNotStarted",
         MetricUnavailableReason::TreeCoverNotRetired => "TreeCoverNotRetired",
+        MetricUnavailableReason::UnsupportedNoAuthenticatedRetirementCommit => {
+            "UnsupportedNoAuthenticatedRetirementCommit"
+        }
     }
 }
 
@@ -846,5 +1084,51 @@ mod tests {
             write_baseline_report_artifacts(&config(), &execution, &output_path, &report_path),
             Err(ReportArtifactError::ArtifactAlreadyExists)
         ));
+    }
+
+    #[test]
+    #[ignore = "expensive real 128-member adaptive artifact generation"]
+    fn writes_real_128_member_matched_per_commit_adaptive_artifacts() {
+        let workload = BaselineWorkloadConfig {
+            group_id: b"task-61-adaptive-128-report".to_vec(),
+            initial_member_count: 128,
+            maximum_member_count: 128,
+            operation_count: 3,
+            region_count: 2,
+            committer_strategy: CommitterStrategy::RoundRobin,
+            workload_profile: WorkloadProfile::UpdateOnly,
+        };
+        let execution = experimental_mls_adapter::execute_experimental_adaptive_workload_with_policy(
+            &workload,
+            experimental_mls_adapter::ExperimentalAdaptiveTransitionPolicy::MatchedPerCommitSaving,
+        )
+        .expect("real matched-per-Commit adaptive workload");
+        let paths = write_adaptive_report_artifacts(
+            &workload,
+            &execution,
+            Path::new("output/task61-adaptive-128-matched-per-commit"),
+            Path::new("report/task61-adaptive-128-matched-per-commit"),
+        )
+        .expect("real adaptive report artifacts");
+
+        let commits = fs::read_to_string(&paths.commits_csv).expect("adaptive commits CSV");
+        let summary = fs::read_to_string(&paths.summary_json).expect("adaptive summary JSON");
+        let transition_events =
+            fs::read_to_string(&paths.transition_events_csv).expect("adaptive transition CSV");
+        let markdown = fs::read_to_string(&paths.report_markdown).expect("adaptive Markdown");
+        assert!(commits.contains("MeasuredMatchedAdaptive"));
+        assert!(summary.contains("MatchedPerCommitSaving"));
+        assert!(summary.contains("AmortizeTransitionPreflight"));
+        assert!(summary.contains("UnsupportedNoAuthenticatedRetirementCommit"));
+        assert!(transition_events.contains("transition"));
+        assert!(markdown.contains("matched-window saving"));
+        eprintln!(
+            "generated real adaptive artifacts: {}, {}, {}, {}, {}",
+            paths.commits_csv.display(),
+            paths.epochs_csv.display(),
+            paths.transition_events_csv.display(),
+            paths.summary_json.display(),
+            paths.report_markdown.display(),
+        );
     }
 }

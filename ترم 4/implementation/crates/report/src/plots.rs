@@ -362,6 +362,9 @@ fn unavailable_reason_name(reason: MetricUnavailableReason) -> &'static str {
         MetricUnavailableReason::PolicyWindowNotAttached => "PolicyWindowNotAttached",
         MetricUnavailableReason::TransitionNotStarted => "TransitionNotStarted",
         MetricUnavailableReason::TreeCoverNotRetired => "TreeCoverNotRetired",
+        MetricUnavailableReason::UnsupportedNoAuthenticatedRetirementCommit => {
+            "UnsupportedNoAuthenticatedRetirementCommit"
+        }
     }
 }
 

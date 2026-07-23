@@ -9,7 +9,10 @@
 //! require the private-use ArityState capability so Task 60 transition Commits
 //! can be authenticated by every member.
 
-use std::{collections::BTreeMap, time::Instant};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Instant,
+};
 
 use adaptive_tree::{BinaryLeafMember, BinaryToQuaternaryLeafMapping, ShadowQuaternaryTree};
 use arity_state::{
@@ -121,6 +124,22 @@ pub enum ExperimentalAdaptiveCommitPhase {
     QuaternaryUpdate,
 }
 
+/// Selects which real byte comparison can authorize an adaptive transition.
+///
+/// Both modes compare only matched sender/path observations in the current
+/// impactful window, and require the compact candidate total to be strictly
+/// smaller than the observed normal-binary total. The amortized mode also
+/// requires that the observed savings repay the measured transition preflight.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExperimentalAdaptiveTransitionPolicy {
+    /// Use ADR 0006's exact amortized calculation, including the real measured
+    /// transition-preflight bytes.
+    AmortizeTransitionPreflight,
+    /// Authorize from the exact matched per-Commit saving alone. This does not
+    /// claim that the transition Commit itself has been amortized.
+    MatchedPerCommitSaving,
+}
+
 /// Public observed and estimated facts attached to the real transition Commit.
 ///
 /// The preflight is an estimate obtained from a separately executed real probe
@@ -189,6 +208,8 @@ pub enum ExperimentalAdaptiveRetirementStatus {
 /// Safe public result of a real adaptive transition and quaternary-update run.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExperimentalAdaptiveWorkloadExecution {
+    /// The authorization comparison selected for this execution.
+    pub transition_policy: ExperimentalAdaptiveTransitionPolicy,
     /// Every accepted normal, transition, and quaternary Commit in order.
     pub accepted_operations: Vec<AcceptedExperimentalAdaptiveOperation>,
     /// Final converged public MLS epoch.
@@ -358,6 +379,23 @@ pub fn execute_experimental_binary_workload(
 pub fn execute_experimental_adaptive_workload(
     config: &BaselineWorkloadConfig,
 ) -> Result<ExperimentalAdaptiveWorkloadExecution, ExperimentalBinaryWorkloadError> {
+    execute_experimental_adaptive_workload_with_policy(
+        config,
+        ExperimentalAdaptiveTransitionPolicy::AmortizeTransitionPreflight,
+    )
+}
+
+/// Executes a real adaptive workload using an explicit transition
+/// authorization comparison.
+///
+/// `MatchedPerCommitSaving` intentionally excludes transition-preflight bytes
+/// only from the authorization decision. The returned transition measurement
+/// always retains the full amortized preflight calculation for reporting and
+/// comparison with `AmortizeTransitionPreflight`.
+pub fn execute_experimental_adaptive_workload_with_policy(
+    config: &BaselineWorkloadConfig,
+    transition_policy: ExperimentalAdaptiveTransitionPolicy,
+) -> Result<ExperimentalAdaptiveWorkloadExecution, ExperimentalBinaryWorkloadError> {
     validate_controls(config)?;
     if config.operation_count < 2 {
         return Err(ExperimentalBinaryWorkloadError::InvalidControls);
@@ -500,13 +538,20 @@ pub fn execute_experimental_adaptive_workload(
             normal.policy().transition_preflight_bytes(),
         )
         .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        let authorization_savings = match transition_policy {
+            ExperimentalAdaptiveTransitionPolicy::AmortizeTransitionPreflight => savings,
+            ExperimentalAdaptiveTransitionPolicy::MatchedPerCommitSaving => {
+                PreflightSavings::from_impactful_costs(&costs, 0)
+                    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+            }
+        };
         let evaluation = TransitionStartEvaluator::new(adaptive_start_config(&normal)?)
             .evaluate_post_warmup(
                 &record,
                 PolicyTransitionState::Normal,
                 member_count,
                 &policy_window,
-                Some(savings),
+                Some(authorization_savings),
             )
             .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
         if evaluation.is_triggered() {
@@ -652,6 +697,7 @@ pub fn execute_experimental_adaptive_workload(
     }
 
     Ok(ExperimentalAdaptiveWorkloadExecution {
+        transition_policy,
         final_epoch: converged_epoch(&members)?,
         final_member_count: member_count,
         accepted_operations,
@@ -674,7 +720,7 @@ fn measure_adaptive_probe(
     // a round-robin policy comparison invalid.
     let mut transition_wire = None;
     let mut quaternary_update_bytes_by_member = BTreeMap::new();
-    for candidate_member_index in 0..config.initial_member_count {
+    for candidate_member_index in adaptive_probe_member_indexes(config)? {
         let (candidate_transition_wire, candidate_update_wire) =
             measure_adaptive_probe_candidate(config, candidate_member_index)?;
         if transition_wire.is_none() {
@@ -695,6 +741,30 @@ fn measure_adaptive_probe(
         transition_wire: transition_wire.ok_or(ExperimentalBinaryWorkloadError::Fork)?,
         quaternary_update_bytes_by_member,
     })
+}
+
+fn adaptive_probe_member_indexes(
+    config: &BaselineWorkloadConfig,
+) -> Result<BTreeSet<u32>, ExperimentalBinaryWorkloadError> {
+    let eligible = (0..config.initial_member_count)
+        .map(|member_index| EligibleCommitter {
+            member_index,
+            leaf_index: member_index,
+            leaf_region: member_index % config.region_count,
+        })
+        .collect::<Vec<_>>();
+    let mut member_indexes = BTreeSet::new();
+    for sequence in 1..=config.operation_count {
+        let schedule =
+            build_committer_schedule(&eligible, config.committer_strategy.clone(), sequence)
+                .map_err(|_| ExperimentalBinaryWorkloadError::InvalidControls)?;
+        let selection = schedule
+            .selections
+            .last()
+            .ok_or(ExperimentalBinaryWorkloadError::InvalidControls)?;
+        member_indexes.insert(selection.member_index);
+    }
+    Ok(member_indexes)
 }
 
 fn measure_adaptive_probe_candidate(
@@ -779,6 +849,7 @@ fn create_initial_group_with_extensions(
         group,
     });
 
+    let mut pending_joiners = Vec::new();
     for member_index in 1..config.initial_member_count {
         let provider = OpenMlsRustCrypto::default();
         let signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
@@ -793,34 +864,39 @@ fn create_initial_group_with_extensions(
                 domain,
             )
             .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
-        let (commit, welcome, _) = {
-            let ExperimentalWorkloadMember {
-                provider,
-                signer,
-                group,
-                ..
-            } = &mut members[0];
-            group
-                .add_members(
-                    provider,
-                    signer,
-                    core::slice::from_ref(bundle.key_package()),
-                )
-                .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
-        };
-        let wire = commit
-            .tls_serialize_detached()
+        pending_joiners.push((member_index, provider, signer, bundle));
+    }
+    let key_packages = pending_joiners
+        .iter()
+        .map(|(_, _, _, bundle)| bundle.key_package().clone())
+        .collect::<Vec<_>>();
+    let (commit, welcome, _) = {
+        let ExperimentalWorkloadMember {
+            provider,
+            signer,
+            group,
+            ..
+        } = &mut members[0];
+        group
+            .add_members(provider, signer, &key_packages)
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+    };
+    let _commit_wire = commit
+        .tls_serialize_detached()
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    {
+        let ExperimentalWorkloadMember {
+            provider, group, ..
+        } = &mut members[0];
+        group
+            .merge_pending_commit_experimental_atomic(provider)
             .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
-        let _ = deliver_to_receivers(&mut members, 0, &wire)?;
-        {
-            let ExperimentalWorkloadMember {
-                provider, group, ..
-            } = &mut members[0];
-            group
-                .merge_pending_commit_experimental_atomic(provider)
-                .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
-        }
-        let welcome = parse_welcome(&welcome)?;
+    }
+    let welcome_wire = welcome
+        .tls_serialize_detached()
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    for (member_index, provider, signer, _) in pending_joiners {
+        let welcome = parse_welcome_wire(&welcome_wire)?;
         let group = StagedWelcome::new_from_welcome(
             &provider,
             &MlsGroupJoinConfig::builder()
@@ -839,8 +915,8 @@ fn create_initial_group_with_extensions(
             signer,
             group,
         });
-        let _ = converged_epoch(&members)?;
     }
+    let _ = converged_epoch(&members)?;
     Ok(members)
 }
 
@@ -1018,16 +1094,12 @@ fn staged_commit_from_wire(
     Ok(*staged)
 }
 
-fn parse_welcome(
-    welcome: &openmls_hybrid::prelude::MlsMessageOut,
+fn parse_welcome_wire(
+    wire: &[u8],
 ) -> Result<openmls_hybrid::prelude::Welcome, ExperimentalBinaryWorkloadError> {
-    match MlsMessageIn::tls_deserialize_exact(
-        welcome
-            .tls_serialize_detached()
-            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?,
-    )
-    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
-    .extract()
+    match MlsMessageIn::tls_deserialize_exact(wire)
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+        .extract()
     {
         MlsMessageBodyIn::Welcome(welcome) => Ok(welcome),
         _ => Err(ExperimentalBinaryWorkloadError::Fork),
@@ -1440,6 +1512,117 @@ mod tests {
                 current_binary_update_bytes: 2_946,
                 quaternary_candidate_bytes: 4_188,
                 transition_preflight_bytes: 6_060,
+            }
+        ));
+    }
+
+    #[test]
+    #[ignore = "expensive real 128-member rejection-only measurement"]
+    fn one_hundred_twenty_eight_member_carrier_measurement_rejects_before_transition() {
+        let config = simulation::BaselineWorkloadConfig {
+            group_id: b"task-61-adaptive-128-measurement".to_vec(),
+            initial_member_count: 128,
+            maximum_member_count: 128,
+            operation_count: 2,
+            region_count: 2,
+            committer_strategy: simulation::CommitterStrategy::RoundRobin,
+            workload_profile: simulation::WorkloadProfile::UpdateOnly,
+        };
+        let error = super::execute_experimental_adaptive_workload(&config)
+            .expect_err("two 128-member observations must not authorize transition");
+        assert!(matches!(
+            error,
+            super::ExperimentalBinaryWorkloadError::TransitionNotAuthorized {
+                current_binary_update_bytes: 29_062,
+                quaternary_candidate_bytes: 25_434,
+                transition_preflight_bytes: 25_634,
+            }
+        ));
+    }
+
+    #[test]
+    #[ignore = "expensive real 128-member per-Commit transition and post-transition measurement"]
+    fn one_hundred_twenty_eight_member_matched_per_commit_policy_transitions_and_converges() {
+        let config = simulation::BaselineWorkloadConfig {
+            group_id: b"task-61-adaptive-128-measurement".to_vec(),
+            initial_member_count: 128,
+            maximum_member_count: 128,
+            operation_count: 3,
+            region_count: 2,
+            committer_strategy: simulation::CommitterStrategy::RoundRobin,
+            workload_profile: simulation::WorkloadProfile::UpdateOnly,
+        };
+        let execution = super::execute_experimental_adaptive_workload_with_policy(
+            &config,
+            super::ExperimentalAdaptiveTransitionPolicy::MatchedPerCommitSaving,
+        )
+        .expect("matched per-Commit saving must authorize a real transition");
+
+        assert_eq!(
+            execution.transition_policy,
+            super::ExperimentalAdaptiveTransitionPolicy::MatchedPerCommitSaving
+        );
+        assert_eq!(execution.final_member_count, 128);
+        assert_eq!(execution.accepted_operations.len(), 4);
+        assert_eq!(
+            execution
+                .accepted_operations
+                .iter()
+                .map(|operation| operation.phase)
+                .collect::<Vec<_>>(),
+            vec![
+                super::ExperimentalAdaptiveCommitPhase::NormalBinaryUpdate,
+                super::ExperimentalAdaptiveCommitPhase::NormalBinaryUpdate,
+                super::ExperimentalAdaptiveCommitPhase::Transition,
+                super::ExperimentalAdaptiveCommitPhase::QuaternaryUpdate,
+            ]
+        );
+        assert!(execution
+            .accepted_operations
+            .windows(2)
+            .all(|operations| operations[0].epoch_after == operations[1].epoch_before));
+
+        let transition = execution
+            .accepted_operations
+            .iter()
+            .find_map(|operation| operation.transition.as_ref())
+            .expect("accepted transition measurement");
+        let post_transition = execution
+            .accepted_operations
+            .last()
+            .expect("post-transition quaternary update");
+        eprintln!(
+            "128-member matched-per-Commit result: normal_sum={} candidate_sum={} matched_window_saving={} preflight_bytes={} amortized_saving={} transition_bytes={} post_quaternary_update_bytes={}",
+            transition.preflight_savings.sum_current_bytes(),
+            transition.preflight_savings.sum_candidate_estimated_bytes(),
+            transition.preflight_savings.average_difference().numerator(),
+            transition.preflight_savings.transition_preflight_bytes(),
+            transition.preflight_savings.direct_saving_bytes(),
+            transition.byte_comparison.actual_bytes(),
+            post_transition.emitted_commit_bytes,
+        );
+    }
+
+    #[test]
+    #[ignore = "real 32-member rejection-only measurement"]
+    fn thirty_two_member_carrier_measurement_rejects_before_transition() {
+        let config = simulation::BaselineWorkloadConfig {
+            group_id: b"task-61-adaptive-32-measurement".to_vec(),
+            initial_member_count: 32,
+            maximum_member_count: 32,
+            operation_count: 2,
+            region_count: 2,
+            committer_strategy: simulation::CommitterStrategy::RoundRobin,
+            workload_profile: simulation::WorkloadProfile::UpdateOnly,
+        };
+        let error = super::execute_experimental_adaptive_workload(&config)
+            .expect_err("two 32-member observations must not authorize transition");
+        assert!(matches!(
+            error,
+            super::ExperimentalBinaryWorkloadError::TransitionNotAuthorized {
+                current_binary_update_bytes: 13_221,
+                quaternary_candidate_bytes: 11_083,
+                transition_preflight_bytes: 11_283,
             }
         ));
     }

@@ -70,7 +70,17 @@ Task 61 now has a compact signed-quaternary-root carrier. Transitioning UpdatePa
 
 In simple terms: the compact Commit helps on some paths but currently costs more on a shallow five-member path. A direct fallback to ordinary binary parent delivery is not safe after compact epochs because not every recipient retains those parent private keys. The policy therefore correctly refuses to switch until a smaller carrier can use the private material that compact epochs actually retain.
 
-`PROJECT.md` now uses only standalone tasks, with no Task 57 gates or subtasks. Task 60 is complete; Task 61 is current and exclusively owns adaptive workload facts, Task 62 performs the real three-mode comparison, and Tasks 63–65 finish acceptance, documentation, and clean-checkout reproducibility.
+The workload exposes two explicit authorization modes. `AmortizeTransitionPreflight` is the default and applies the complete ADR 0006 calculation. `MatchedPerCommitSaving` requires only that the current impactful window's real matched compact total be smaller than its normal-binary total; it deliberately does not call that difference amortization. Both modes retain and report the complete preflight-inclusive calculation.
+
+Task 61 is complete. Its report mapper writes the accepted adaptive sequence into Task 54/55 public artifacts and preserves both byte-gate modes, measured fork Commit bytes, separately measured compact-candidate/preflight provenance, authenticated arity state, the full start evaluation, and `UnsupportedNoAuthenticatedRetirementCommit`. A locked real 128-member artifact run completed in 548.56 seconds: two normal updates totalled 58,114 bytes, matched compact candidates totalled 50,858 bytes (+7,256), transition preflight/actual transition were both 25,629 bytes, and the converged post-transition update was 25,429 bytes. The retained amortized result is -18,373 bytes, so this proves selectable per-Commit authorization and convergence, not an amortized break-even. Public evidence is under `output/task61-adaptive-128-matched-per-commit/` and `report/task61-adaptive-128-matched-per-commit/`. Task 62 is now current for an equivalent-control three-mode comparison.
+
+An attempted real 128-member rejection-only carrier measurement was stopped by the operator during expensive group construction. It produced no completed result and no adaptive 128-member claim.
+
+Experimental setup now uses one authenticated batched Add Commit and individual Welcome joins instead of one Add Commit per initial member. A real 32-member rejection-only run completed in 28.32 seconds: 13,221-byte binary normal Commit, 11,083-byte matched compact candidate, and 11,283-byte preflight. The candidate is smaller, but two observations still do not pay the one-time transition cost, so no transition occurs.
+
+The optimized real 128-member rejection-only run completed in 387.18 seconds: 29,062-byte binary normal Commit, 25,434-byte matched compact candidate, and 25,634-byte preflight. Its compact candidate saves bytes, but two observations still do not repay the preflight, so the policy correctly rejects transition.
+
+`PROJECT.md` now uses only standalone tasks, with no Task 57 gates or subtasks. Tasks 60 and 61 are complete; Task 62 performs the real three-mode comparison, and Tasks 63–65 finish acceptance, documentation, and clean-checkout reproducibility.
 
 Ubuntu 26.04 development setup is verified with the repository-pinned Rust 1.93.1 toolchain, including `rustfmt` and Clippy. The exact locked dependency graph is cached locally, and the workspace passes a locked offline all-target check.
 
