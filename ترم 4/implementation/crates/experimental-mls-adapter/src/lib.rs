@@ -24,6 +24,7 @@ use openmls_hybrid::{
     experimental_hybrid::{
         mkyber_recipient_capabilities, ExperimentalHybridCommitMetrics,
         ExperimentalHybridCommitTopology, ExperimentalHybridDeliveryTree,
+        ExperimentalTreeCoverRetirementEvidence,
     },
     prelude::{
         BasicCredential, Ciphersuite, CredentialWithKey, Extension, ExtensionType, Extensions,
@@ -34,6 +35,8 @@ use openmls_hybrid::{
 };
 use openmls_hybrid_basic_credential::SignatureKeyPair;
 use openmls_hybrid_rust_crypto::OpenMlsRustCrypto;
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha20Rng;
 use simulation::{
     build_committer_schedule, BaselineWorkloadConfig, CommitterSelection, EligibleCommitter,
     WorkloadOperation, WorkloadProfile,
@@ -46,7 +49,10 @@ use transition_policy::{
     TransitionByteComponent, TransitionByteRange, TransitionPreflightMeasurement,
     TransitionStartConfig, TransitionStartEvaluation, TransitionStartEvaluator,
 };
-use transition_tree::{DeliveryOnlyTreeCover, ExactRecipientCovers, TransitionTrees};
+use transition_tree::{
+    DeliveryEndpointHealth, DeliveryNodeAvailability, DeliveryOnlyTreeCover, ExactRecipientCovers,
+    QuaternaryNode, TransitionTrees,
+};
 
 /// Exact upstream OpenMLS revision used by the local fork.
 pub const OPENMLS_HYBRID_UPSTREAM_REVISION: &str = "47dbedecad0c1fd8eb5368d582250ebfcc1e1ce6";
@@ -271,6 +277,110 @@ pub struct ExperimentalAdaptiveWorkloadExecution {
     pub retirement_status: ExperimentalAdaptiveRetirementStatus,
 }
 
+/// Supported real post-transition operation in the delivery-health workload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExperimentalDeliveryHealthOperation {
+    /// A real accepted quaternary self-update.
+    Update,
+    /// A real accepted quaternary Remove Commit.
+    Remove,
+}
+
+/// One real normal-binary Commit and its matched real quaternary probe.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExperimentalPreTransitionHealthObservation {
+    /// One-based accepted Commit sequence.
+    pub sequence: u32,
+    /// Stable public workload member identifier.
+    pub committer_member_index: u32,
+    /// Observed normal-binary Commit bytes.
+    pub old_arity_commit_bytes: u64,
+    /// Separate real matched quaternary probe bytes.
+    pub new_arity_candidate_bytes: u64,
+    /// Signed `new - old` byte difference.
+    pub saving_new_minus_old_bytes: i64,
+}
+
+/// Real accepted transition Commit plus its initial retained availability.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExperimentalDeliveryHealthTransition {
+    /// One-based accepted Commit sequence.
+    pub sequence: u32,
+    /// Stable public workload member identifier.
+    pub committer_member_index: u32,
+    /// Committer ordinal in the authenticated frozen mapping.
+    pub committer_quaternary_leaf_ordinal: u32,
+    /// Observed full serialized MLS Commit bytes.
+    pub emitted_commit_bytes: u64,
+    /// Retained endpoint health immediately after transition acceptance.
+    pub health: DeliveryEndpointHealth,
+}
+
+/// One accepted real post-transition Commit and its converged availability.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExperimentalDeliveryHealthObservation {
+    /// One-based accepted Commit sequence.
+    pub sequence: u32,
+    /// Number of impactful Commits since transition.
+    pub impactful_commit_count: u32,
+    /// Accepted Update or Remove operation.
+    pub operation: ExperimentalDeliveryHealthOperation,
+    /// Stable public workload member identifier.
+    pub committer_member_index: u32,
+    /// Committer ordinal in the authenticated frozen mapping.
+    pub committer_quaternary_leaf_ordinal: u32,
+    /// Removed stable member identifier, only for Remove.
+    pub removed_member_index: Option<u32>,
+    /// Active members after acceptance.
+    pub active_member_count: u32,
+    /// Usable old public parent values after acceptance.
+    pub usable_old_node_count: u32,
+    /// Accumulated usable new public parent values after acceptance.
+    pub usable_new_node_count: u32,
+    /// Observed full serialized MLS Commit bytes.
+    pub emitted_commit_bytes: u64,
+    /// Exact endpoint counts and strict health decision.
+    pub health: DeliveryEndpointHealth,
+}
+
+/// Accepted authenticated retirement and redacted erasure evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExperimentalAuthenticatedRetirement {
+    /// One-based accepted retirement Commit sequence.
+    pub sequence: u32,
+    /// Stable public workload member identifier.
+    pub committer_member_index: u32,
+    /// Epoch after every survivor accepted the retirement Commit.
+    pub epoch: u64,
+    /// Observed full serialized retirement Commit bytes.
+    pub emitted_commit_bytes: u64,
+    /// Signed strict-threshold observation.
+    pub evidence: ExperimentalTreeCoverRetirementEvidence,
+    /// Old public-value records deleted with the persisted envelope.
+    pub erased_old_node_count: u32,
+    /// Locally retained old private pairs dropped and zeroized per survivor.
+    pub erased_local_old_private_node_count: u32,
+}
+
+/// Complete safe public result for interactive real delivery-health reporting.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExperimentalDeliveryHealthExecution {
+    /// Fixed public random seed used only for operation selection.
+    pub random_seed: u64,
+    /// Initial active group size.
+    pub initial_member_count: u32,
+    /// Final active group size.
+    pub final_member_count: u32,
+    /// Real normal-versus-probe observations that authorized transition.
+    pub pre_transition_observations: Vec<ExperimentalPreTransitionHealthObservation>,
+    /// Real authenticated transition observation.
+    pub transition: ExperimentalDeliveryHealthTransition,
+    /// Real accepted Update/Remove observations through the strict trigger.
+    pub post_transition_observations: Vec<ExperimentalDeliveryHealthObservation>,
+    /// Real authenticated atomic retirement and erasure status.
+    pub retirement: ExperimentalAuthenticatedRetirement,
+}
+
 /// Errors from the Task 59 binary-with-mKyber workload boundary.
 #[derive(Debug, Error)]
 pub enum ExperimentalBinaryWorkloadError {
@@ -329,6 +439,9 @@ pub enum ExperimentalBinaryWorkloadError {
         /// Public, value-free lifecycle stage.
         stage: &'static str,
     },
+    /// The bounded real delivery-health schedule did not reach strict retirement.
+    #[error("the real delivery-health schedule reached its limit without retirement")]
+    RetirementNotAuthorized,
 }
 
 struct ExperimentalWorkloadMember {
@@ -433,6 +546,372 @@ pub fn execute_experimental_binary_workload(
         final_member_count: u32::try_from(members.len())
             .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
         accepted_operations,
+    })
+}
+
+/// Executes the bounded real `2 -> 4` delivery-health workload.
+///
+/// Two accepted normal-binary Commits are compared with matched real
+/// quaternary probes. After the authenticated transition, random seeded
+/// Update/Remove Commits consume the fork's ciphertext-free availability
+/// snapshot. The first strict health trigger is then carried inside and
+/// authenticated by a retirement Commit that atomically drops the retained
+/// TreeCover key envelope.
+pub fn execute_experimental_delivery_health_workload(
+    config: &BaselineWorkloadConfig,
+    random_seed: u64,
+    maximum_post_transition_commits: u32,
+) -> Result<ExperimentalDeliveryHealthExecution, ExperimentalBinaryWorkloadError> {
+    validate_controls(config)?;
+    if config.initial_member_count < 3
+        || config.maximum_member_count != config.initial_member_count
+        || maximum_post_transition_commits == 0
+    {
+        return Err(ExperimentalBinaryWorkloadError::InvalidControls);
+    }
+    let mut probe = measure_adaptive_probe(config)?;
+    let preflight = TransitionPreflightMeasurement::from_serialized_outer_message(
+        &probe.transition_wire,
+        &[TransitionByteRange::new(
+            TransitionByteComponent::BaseCommit,
+            0,
+            probe.transition_wire.len(),
+        )],
+    )
+    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let extensions = adaptive_normal_arity_extensions(config, preflight)?;
+    let mut members = create_initial_group_with_extensions(config, extensions)?;
+    let initial_member_count =
+        u32::try_from(members.len()).map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
+    let mut rng = ChaCha20Rng::seed_from_u64(random_seed);
+    let mut policy_window = PolicyWindow::new(adaptive_policy_window_config()?);
+    let mut costs = VecDeque::new();
+    let mut pre_transition_observations = Vec::new();
+    let mut sequence = 1_u32;
+    let mut second_selection = None;
+    let mut second_position = None;
+    let mut last_record = None;
+
+    for _ in 0..2_u8 {
+        let position = rng.gen_range(0..members.len());
+        let selection = CommitterSelection {
+            sequence,
+            member_index: members[position].member_index,
+            leaf_index: members[position].group.own_leaf_index().u32(),
+            leaf_region: members[position].leaf_region,
+        };
+        let candidate_bytes = probe.quaternary_update_bytes(config, selection.member_index)?;
+        let epoch_before = members[position].group.epoch().as_u64();
+        let started = Instant::now();
+        let (wire, _, _) = stage_self_update(&mut members[position])?;
+        deliver_to_receivers(&mut members, position, &wire)?;
+        merge_sender_binary(&mut members[position])?;
+        let epoch_after = converged_epoch(&members)?;
+        ensure_epoch_advance(epoch_before, epoch_after)?;
+        let current_bytes = u64::try_from(wire.len())
+            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
+        let saving = i64::try_from(candidate_bytes)
+            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?
+            .checked_sub(
+                i64::try_from(current_bytes)
+                    .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+            )
+            .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+        if saving >= 0 {
+            return Err(ExperimentalBinaryWorkloadError::TransitionNotAuthorized {
+                current_binary_update_bytes: current_bytes,
+                quaternary_candidate_bytes: candidate_bytes,
+                transition_preflight_bytes: u64::try_from(preflight.estimated_bytes())
+                    .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+            });
+        }
+        let append = policy_window
+            .append_accepted(
+                epoch_after,
+                CommitImpactFacts {
+                    path_delivery_changed: true,
+                    recipient_resolution_changed: true,
+                    ..CommitImpactFacts::default()
+                },
+            )
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        costs.push_back(ImpactfulCommitByteCosts::new(
+            current_bytes,
+            candidate_bytes,
+        ));
+        if append.evicted_epoch_after.is_some() {
+            costs.pop_front();
+        }
+        last_record = Some(append.record);
+        pre_transition_observations.push(ExperimentalPreTransitionHealthObservation {
+            sequence,
+            committer_member_index: selection.member_index,
+            old_arity_commit_bytes: current_bytes,
+            new_arity_candidate_bytes: candidate_bytes,
+            saving_new_minus_old_bytes: saving,
+        });
+        if sequence == 2 {
+            second_selection = Some(selection);
+            second_position = Some(position);
+        }
+        sequence = sequence
+            .checked_add(1)
+            .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+        let _ = started;
+    }
+    let normal = arity_state_from_group(&members[0].group)?;
+    let savings = PreflightSavings::from_impactful_costs(
+        costs.make_contiguous(),
+        normal.policy().transition_preflight_bytes(),
+    )
+    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let authorization_savings = PreflightSavings::from_impactful_costs(costs.make_contiguous(), 0)
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let record = last_record.ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+    let evaluation = TransitionStartEvaluator::new(adaptive_start_config(&normal)?)
+        .evaluate_post_warmup(
+            &record,
+            PolicyTransitionState::Normal,
+            initial_member_count,
+            &policy_window,
+            Some(authorization_savings),
+        )
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    if !evaluation.is_triggered() {
+        return Err(ExperimentalBinaryWorkloadError::TransitionNotAuthorized {
+            current_binary_update_bytes: pre_transition_observations
+                .last()
+                .map(|observation| observation.old_arity_commit_bytes)
+                .ok_or(ExperimentalBinaryWorkloadError::Fork)?,
+            quaternary_candidate_bytes: pre_transition_observations
+                .last()
+                .map(|observation| observation.new_arity_candidate_bytes)
+                .ok_or(ExperimentalBinaryWorkloadError::Fork)?,
+            transition_preflight_bytes: u64::try_from(preflight.estimated_bytes())
+                .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+        });
+    }
+    let mapping = transition_mapping_from_group(&members[0].group)?;
+    let treecover = DeliveryOnlyTreeCover::from_mapping(1, &mapping)
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let next_state = normal
+        .begin_transition(
+            &evaluation,
+            policy_window.q_e(),
+            MappingHash::new(hash_canonical_public_bytes(
+                &mapping
+                    .canonical_bytes()
+                    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?,
+            )),
+            TreeCoverBinding::new(
+                treecover.version(),
+                treecover
+                    .hash()
+                    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?,
+            )
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?,
+        )
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let transition_position = second_position.ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+    let transition_selection = second_selection.ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+    let transition_epoch_before = members[transition_position].group.epoch().as_u64();
+    let (transition_commit, _, _) = {
+        let member = &mut members[transition_position];
+        member
+            .group
+            .begin_experimental_transition(&member.provider, &member.signer, next_state)
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+    };
+    let transition_wire = transition_commit
+        .tls_serialize_detached()
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    deliver_transition_to_receivers(&mut members, transition_position, &transition_wire)?;
+    merge_sender_transition(&mut members[transition_position])?;
+    let transition_epoch_after = converged_epoch(&members)?;
+    ensure_epoch_advance(transition_epoch_before, transition_epoch_after)?;
+    let transition_state = arity_state_from_group(&members[0].group)?;
+    let transition_health = health_for_member(&members[0].group, transition_selection.leaf_index)?;
+    let transition_ordinal = transition_health.0;
+    let transition_health = transition_health.1;
+    let transition = ExperimentalDeliveryHealthTransition {
+        sequence,
+        committer_member_index: transition_selection.member_index,
+        committer_quaternary_leaf_ordinal: transition_ordinal,
+        emitted_commit_bytes: u64::try_from(transition_wire.len())
+            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+        health: transition_health,
+    };
+    let _ = savings;
+    sequence = sequence
+        .checked_add(1)
+        .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+
+    let mut post_transition_observations = Vec::new();
+    let mut retirement = None;
+    for impactful_commit_count in 1..=maximum_post_transition_commits {
+        if members.len() < 2 {
+            return Err(ExperimentalBinaryWorkloadError::InvalidControls);
+        }
+        let committer_position = rng.gen_range(0..members.len());
+        let committer_member_index = members[committer_position].member_index;
+        let committer_leaf_index = members[committer_position].group.own_leaf_index().u32();
+        let remove = members.len() > 2 && rng.gen_bool(0.5);
+        let mut removed_member_index = None;
+        let wire = if remove {
+            let mut target_position = rng.gen_range(0..members.len() - 1);
+            if target_position >= committer_position {
+                target_position += 1;
+            }
+            let target_leaf = members[target_position]
+                .group
+                .members()
+                .find(|member| {
+                    member.credential.serialized_content()
+                        == workload_identity(members[target_position].member_index).as_slice()
+                })
+                .map(|member| member.index)
+                .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+            removed_member_index = Some(members[target_position].member_index);
+            let (commit, _, _) = {
+                let member = &mut members[committer_position];
+                member
+                    .group
+                    .remove_members(&member.provider, &member.signer, &[target_leaf])
+                    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+            };
+            commit
+                .tls_serialize_detached()
+                .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+        } else {
+            stage_self_update(&mut members[committer_position])?.0
+        };
+        deliver_quaternary_to_receivers(&mut members, committer_position, &wire)?;
+        merge_sender_quaternary(&mut members[committer_position])?;
+        if let Some(removed_member_index) = removed_member_index {
+            members.retain(|member| member.member_index != removed_member_index);
+        }
+        let epoch = converged_epoch(&members)?;
+        let health = health_for_member(&members[0].group, committer_leaf_index)?;
+        let snapshot = members[0]
+            .group
+            .experimental_transition_node_availability_snapshot()
+            .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+        let operation = if removed_member_index.is_some() {
+            ExperimentalDeliveryHealthOperation::Remove
+        } else {
+            ExperimentalDeliveryHealthOperation::Update
+        };
+        let emitted_commit_bytes = u64::try_from(wire.len())
+            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
+        let observation = ExperimentalDeliveryHealthObservation {
+            sequence,
+            impactful_commit_count,
+            operation,
+            committer_member_index,
+            committer_quaternary_leaf_ordinal: health.0,
+            removed_member_index,
+            active_member_count: u32::try_from(members.len())
+                .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+            usable_old_node_count: u32::try_from(snapshot.usable_old_parent_indices().len())
+                .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+            usable_new_node_count: u32::try_from(snapshot.usable_new_parent_nodes().len())
+                .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+            emitted_commit_bytes,
+            health: health.1,
+        };
+        post_transition_observations.push(observation);
+        sequence = sequence
+            .checked_add(1)
+            .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+        if health.1.retire_new || health.1.retire_old {
+            let prior_state = arity_state_from_group(&members[0].group)?;
+            let next_tree_version = prior_state
+                .tree_version()
+                .checked_add(1)
+                .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+            let next_state = ArityState::normal(
+                4,
+                4,
+                next_tree_version,
+                prior_state.policy(),
+                prior_state.evaluation(),
+            )
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+            let evidence = ExperimentalTreeCoverRetirementEvidence::new(
+                prior_state.tree_version(),
+                1,
+                epoch,
+                impactful_commit_count,
+                health.1.c_leaf,
+                health.1.c_new,
+                health.1.c_old,
+                health.1.c_real,
+                health.1.c_ideal,
+                health.1.h_new.numerator(),
+                health.1.h_new.denominator(),
+                health.1.h_old.numerator(),
+                health.1.h_old.denominator(),
+            )
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+            let retire_position = members
+                .iter()
+                .position(|member| member.member_index == committer_member_index)
+                .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+            let (retirement_commit, _, _) = {
+                let member = &mut members[retire_position];
+                member
+                    .group
+                    .retire_experimental_treecover(
+                        &member.provider,
+                        &member.signer,
+                        next_state,
+                        evidence,
+                    )
+                    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+            };
+            let retirement_wire = retirement_commit
+                .tls_serialize_detached()
+                .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+            deliver_retirement_to_receivers(&mut members, retire_position, &retirement_wire)?;
+            merge_sender_retirement(&mut members[retire_position])?;
+            let retirement_epoch = converged_epoch(&members)?;
+            let status = members[0]
+                .group
+                .experimental_treecover_retirement_status()
+                .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+            if members.iter().any(|member| {
+                member
+                    .group
+                    .experimental_transition_node_availability_snapshot()
+                    .is_some()
+                    || member.group.experimental_treecover_retirement_status() != Some(status)
+            }) {
+                return Err(ExperimentalBinaryWorkloadError::DivergentPublicState);
+            }
+            retirement = Some(ExperimentalAuthenticatedRetirement {
+                sequence,
+                committer_member_index,
+                epoch: retirement_epoch,
+                emitted_commit_bytes: u64::try_from(retirement_wire.len())
+                    .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+                evidence: status.evidence(),
+                erased_old_node_count: status.erased_old_node_count(),
+                erased_local_old_private_node_count: status.erased_local_old_private_node_count(),
+            });
+            break;
+        }
+    }
+    let retirement = retirement.ok_or(ExperimentalBinaryWorkloadError::RetirementNotAuthorized)?;
+    let _ = transition_state;
+    Ok(ExperimentalDeliveryHealthExecution {
+        random_seed,
+        initial_member_count,
+        final_member_count: u32::try_from(members.len())
+            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+        pre_transition_observations,
+        transition,
+        post_transition_observations,
+        retirement,
     })
 }
 
@@ -1189,6 +1668,15 @@ fn merge_sender_quaternary(
         .map_err(|_| ExperimentalBinaryWorkloadError::Fork)
 }
 
+fn merge_sender_retirement(
+    member: &mut ExperimentalWorkloadMember,
+) -> Result<(), ExperimentalBinaryWorkloadError> {
+    member
+        .group
+        .merge_pending_commit_experimental_retirement_atomic(&member.provider)
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)
+}
+
 fn stage_self_update(
     member: &mut ExperimentalWorkloadMember,
 ) -> Result<
@@ -1287,6 +1775,28 @@ fn deliver_quaternary_to_receivers(
     Ok(count)
 }
 
+fn deliver_retirement_to_receivers(
+    members: &mut [ExperimentalWorkloadMember],
+    committer_position: usize,
+    wire: &[u8],
+) -> Result<u32, ExperimentalBinaryWorkloadError> {
+    let mut count = 0_u32;
+    for (position, member) in members.iter_mut().enumerate() {
+        if position == committer_position {
+            continue;
+        }
+        let staged = staged_commit_from_wire(&mut member.group, &member.provider, wire)?;
+        member
+            .group
+            .merge_staged_commit_experimental_retirement_atomic(&member.provider, staged)
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        count = count
+            .checked_add(1)
+            .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+    }
+    Ok(count)
+}
+
 fn staged_commit_from_wire(
     group: &mut MlsGroup,
     provider: &OpenMlsRustCrypto,
@@ -1303,6 +1813,43 @@ fn staged_commit_from_wire(
         return Err(ExperimentalBinaryWorkloadError::Fork);
     };
     Ok(*staged)
+}
+
+fn health_for_member(
+    group: &MlsGroup,
+    committer_leaf_index: u32,
+) -> Result<(u32, DeliveryEndpointHealth), ExperimentalBinaryWorkloadError> {
+    let state = arity_state_from_group(group)?;
+    let snapshot = group
+        .experimental_transition_node_availability_snapshot()
+        .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+    let mapping = snapshot.frozen_mapping().clone();
+    let committer_ordinal = mapping
+        .assignments
+        .iter()
+        .find(|assignment| assignment.binary_leaf_index == committer_leaf_index)
+        .map(|assignment| assignment.quaternary_leaf_ordinal)
+        .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+    let treecover = DeliveryOnlyTreeCover::from_mapping(snapshot.treecover_version(), &mapping)
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let trees = TransitionTrees::from_transitioning_state(&state, mapping, treecover)
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let availability = DeliveryNodeAvailability {
+        active_quaternary_leaf_ordinals: snapshot.active_quaternary_leaf_ordinals().to_vec(),
+        usable_old_parent_indices: snapshot.usable_old_parent_indices().to_vec(),
+        usable_new_parent_nodes: snapshot
+            .usable_new_parent_nodes()
+            .iter()
+            .map(|node| QuaternaryNode {
+                depth: node.depth(),
+                ordinal: node.ordinal(),
+            })
+            .collect(),
+    };
+    let health = trees
+        .delivery_endpoint_health(committer_ordinal, &availability)
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    Ok((committer_ordinal, health))
 }
 
 fn parse_welcome_wire(

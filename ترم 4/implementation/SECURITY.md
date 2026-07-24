@@ -211,7 +211,7 @@ byte columns are explicitly modeled canonical field counts
 (`744 * C_real + 132 * active clients`), not emitted MLS
 messages or network observations. The full transition Commit remains
 unavailable rather than being inferred from that model.
-Task 85 now transactionally retains the frozen authenticated mapping, initial
+Task 85 transactionally retains the frozen authenticated mapping, initial
 non-blank old parents and locally possessed pairs, cumulative new-tree parent
 pairs, and active-member holes. Its public snapshot contains only the frozen
 mapping, active leaf ordinals, usable node coordinates, hashes, versions, and
@@ -219,10 +219,20 @@ counts—never keys or ciphertexts. A real post-transition Remove invalidates th
 removed member's retained old and stale-new direct paths before the fresh
 committer path is installed; post-transition Add/remapping fails closed.
 Private values remain redacted, and injected sender/receiver storage failures
-preserve the prior retained state. The clear report still fails closed because
-Task 86 has not connected these live observations to endpoint counting.
-Authenticated full TreeCover retirement and complete old-tree secret erasure
-remain unsupported.
+preserve the prior retained state.
+
+Task 86 connects that snapshot to the endpoint-health counter in schema 5.
+Each row carries real accepted Commit bytes and the `C_leaf`, `C_new`, `C_old`,
+`C_real`, `C_ideal`, `h_new`, and `h_old` observations derived from the
+authenticated frozen mapping and retained-node availability. Retirement is
+authorized only by a signed fixed-width `0xF003` evidence extension whose
+counts/fractions match the accepted observation and whose epoch/tree-version
+bindings match the preceding transition. The normal 4/4 retirement Commit is
+applied atomically; the transition node envelope and local old keypairs are
+cleared before the new epoch is exposed, while only redacted retirement status
+and erasure counts enter reports. This is in-process fork behavior, not a
+production erasure proof, distributed atomicity guarantee, or interoperability
+claim.
 
 ## Minimum Security Gates Before Experiments
 

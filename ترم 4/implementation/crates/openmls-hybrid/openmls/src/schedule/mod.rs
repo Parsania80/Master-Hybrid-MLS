@@ -135,6 +135,7 @@ use crate::{
 #[cfg(feature = "experimental-hybrid")]
 use crate::{
     binary_tree::array_representation::direct_path,
+    experimental_hybrid::ExperimentalTreeCoverRetirementEvidence,
     treesync::node::encryption_keys::{EncryptionKey, EncryptionKeyPair},
 };
 #[cfg(feature = "experimental-hybrid")]
@@ -1254,6 +1255,8 @@ impl EpochSecrets {
                 experimental_quaternary_epoch_secret: None,
                 #[cfg(feature = "experimental-hybrid")]
                 experimental_transition_node_state: None,
+                #[cfg(feature = "experimental-hybrid")]
+                experimental_treecover_retirement_status: None,
             },
             MessageSecrets::new(
                 self.sender_data_secret,
@@ -1280,6 +1283,9 @@ pub(crate) struct GroupEpochSecrets {
     #[cfg(feature = "experimental-hybrid")]
     #[serde(default)]
     experimental_transition_node_state: Option<ExperimentalTransitionNodeState>,
+    #[cfg(feature = "experimental-hybrid")]
+    #[serde(default)]
+    experimental_treecover_retirement_status: Option<ExperimentalTreeCoverRetirementStatus>,
 }
 
 impl std::fmt::Debug for GroupEpochSecrets {
@@ -1410,6 +1416,81 @@ impl GroupEpochSecrets {
         Ok(())
     }
 
+    /// Activates the quaternary authority for the authenticated retirement
+    /// epoch after the old TreeCover envelope has been discarded.
+    #[cfg(feature = "experimental-hybrid")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn activate_experimental_retired_quaternary_epoch_secret(
+        &mut self,
+        crypto: &impl OpenMlsCrypto,
+        ciphersuite: Ciphersuite,
+        serialized_group_context: &[u8],
+        epoch: u64,
+        state: &arity_state::ArityState,
+        mapping_hash: [u8; 32],
+        root_keypair: EncryptionKeyPair,
+    ) -> Result<(), LibraryError> {
+        state
+            .validate()
+            .map_err(|_| LibraryError::custom("invalid retired quaternary ArityState"))?;
+        if state.active_arity() != 4
+            || state.candidate_arity() != 4
+            || state.tree_version() < 2
+            || !matches!(state.lifecycle(), arity_state::ArityLifecycle::Normal)
+        {
+            return Err(LibraryError::custom(
+                "retired quaternary authority requires normal quaternary ArityState",
+            ));
+        }
+        let public_mkyber_key = root_keypair
+            .public_key()
+            .experimental_mkyber_key()
+            .ok_or_else(|| {
+                LibraryError::custom("retired quaternary root lacks mKyber public key")
+            })?;
+        let private_mkyber_key = root_keypair
+            .experimental_mkyber_private_key()
+            .map_err(|_| LibraryError::custom("retired quaternary root has invalid private key"))?
+            .ok_or_else(|| {
+                LibraryError::custom("retired quaternary root lacks mKyber private key")
+            })?;
+        if private_mkyber_key.domain() != public_mkyber_key.domain() {
+            return Err(LibraryError::custom(
+                "retired quaternary root mKyber domains do not match",
+            ));
+        }
+        let serialized_root_public_key = root_keypair
+            .public_key()
+            .tls_serialize_detached()
+            .map_err(LibraryError::missing_bound_check)?;
+        let root_public_key_hash = crypto
+            .hash(ciphersuite.hash_algorithm(), &serialized_root_public_key)
+            .map_err(LibraryError::unexpected_crypto_error)?;
+        let root_public_key_hash = root_public_key_hash.as_slice().try_into().map_err(|_| {
+            LibraryError::custom("invalid retired quaternary root public-key hash length")
+        })?;
+        let secret = self
+            .exporter_secret
+            .derive_exported_secret(
+                ciphersuite,
+                crypto,
+                "experimental quaternary epoch authority",
+                serialized_group_context,
+                ciphersuite.hash_length(),
+            )
+            .map_err(LibraryError::unexpected_crypto_error)?;
+        self.experimental_quaternary_epoch_secret = Some(ExperimentalQuaternaryEpochSecret {
+            epoch,
+            tree_version: state.tree_version(),
+            mapping_hash,
+            secret: Secret::from_slice(&secret),
+            root_keypair: Some(root_keypair),
+            root_public_key_hash,
+            additional_parent_keypairs: Vec::new(),
+        });
+        Ok(())
+    }
+
     /// Returns public metadata for the persisted experimental quaternary
     /// authority without exposing secret bytes.
     #[cfg(feature = "experimental-hybrid")]
@@ -1477,6 +1558,22 @@ impl GroupEpochSecrets {
         self.experimental_transition_node_state
             .as_ref()
             .map(ExperimentalTransitionNodeState::snapshot)
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn install_experimental_treecover_retirement_status(
+        &mut self,
+        status: ExperimentalTreeCoverRetirementStatus,
+    ) {
+        self.experimental_treecover_retirement_status = Some(status);
+        self.experimental_transition_node_state = None;
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_treecover_retirement_status(
+        &self,
+    ) -> Option<ExperimentalTreeCoverRetirementStatus> {
+        self.experimental_treecover_retirement_status
     }
 
     /// Checks that the persisted quaternary root record still has matched
@@ -1673,6 +1770,33 @@ pub struct ExperimentalTransitionNodeAvailabilitySnapshot {
     usable_new_parent_nodes: Vec<ExperimentalTransitionNodeCoordinate>,
 }
 
+/// Redacted proof that the persisted TreeCover key envelope was deleted.
+#[cfg(feature = "experimental-hybrid")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExperimentalTreeCoverRetirementStatus {
+    evidence: ExperimentalTreeCoverRetirementEvidence,
+    erased_old_node_count: u32,
+    erased_local_old_private_node_count: u32,
+}
+
+#[cfg(feature = "experimental-hybrid")]
+impl ExperimentalTreeCoverRetirementStatus {
+    /// Returns the exact signed public retirement evidence.
+    pub const fn evidence(self) -> ExperimentalTreeCoverRetirementEvidence {
+        self.evidence
+    }
+
+    /// Returns the number of old public node records deleted with the envelope.
+    pub const fn erased_old_node_count(self) -> u32 {
+        self.erased_old_node_count
+    }
+
+    /// Returns the number of locally retained old private pairs dropped and zeroized.
+    pub const fn erased_local_old_private_node_count(self) -> u32 {
+        self.erased_local_old_private_node_count
+    }
+}
+
 #[cfg(feature = "experimental-hybrid")]
 impl ExperimentalTransitionNodeAvailabilitySnapshot {
     /// Returns the authenticated active quaternary tree version.
@@ -1804,6 +1928,29 @@ struct RetainedNewNodeValue {
 impl ExperimentalTransitionNodeState {
     pub(crate) const fn mapping(&self) -> &BinaryToQuaternaryLeafMapping {
         &self.mapping
+    }
+
+    pub(crate) fn local_old_keypairs(&self) -> Vec<EncryptionKeyPair> {
+        self.old_nodes
+            .iter()
+            .filter(|node| node.usable)
+            .filter_map(|node| node.local_keypair.clone())
+            .collect()
+    }
+
+    pub(crate) fn retirement_status(
+        &self,
+        evidence: ExperimentalTreeCoverRetirementEvidence,
+    ) -> ExperimentalTreeCoverRetirementStatus {
+        ExperimentalTreeCoverRetirementStatus {
+            evidence,
+            erased_old_node_count: self.old_nodes.len() as u32,
+            erased_local_old_private_node_count: self
+                .old_nodes
+                .iter()
+                .filter(|node| node.local_keypair.is_some())
+                .count() as u32,
+        }
     }
 
     pub(crate) fn new(

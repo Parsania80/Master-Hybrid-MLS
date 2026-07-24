@@ -419,6 +419,7 @@ dependencies = [
  "openmls-hybrid",
  "openmls_basic_credential 0.5.0",
  "openmls_rust_crypto 0.5.1",
+ "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "simulation",

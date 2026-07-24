@@ -37,6 +37,68 @@ pub struct BinaryCoverNode {
     pub ordinal: u32,
 }
 
+/// One public node coordinate in the active quaternary tree.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct QuaternaryNode {
+    /// Root-relative depth, with the root at zero.
+    pub depth: u8,
+    /// Left-to-right node ordinal at `depth`.
+    pub ordinal: u32,
+}
+
+/// Ciphertext-free retained node availability after one accepted Commit.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DeliveryNodeAvailability {
+    /// Quaternary leaf ordinals that remain active.
+    pub active_quaternary_leaf_ordinals: Vec<u32>,
+    /// OpenMLS parent-array indices whose old TreeCover values remain usable.
+    pub usable_old_parent_indices: Vec<u32>,
+    /// Active-quaternary parent values accumulated by accepted Commits.
+    pub usable_new_parent_nodes: Vec<QuaternaryNode>,
+}
+
+/// One exact reduced non-negative health fraction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct DeliveryHealthFraction {
+    numerator: u32,
+    denominator: u32,
+}
+
+impl DeliveryHealthFraction {
+    /// Returns the reduced numerator.
+    pub const fn numerator(self) -> u32 {
+        self.numerator
+    }
+
+    /// Returns the reduced positive denominator.
+    pub const fn denominator(self) -> u32 {
+        self.denominator
+    }
+}
+
+/// Exact endpoint counts and policy-health values from retained real topology.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct DeliveryEndpointHealth {
+    /// Worst-case direct-client count defined by the thesis policy.
+    pub c_leaf: u32,
+    /// Independent new-tree endpoint count.
+    pub c_new: u32,
+    /// Independent old-TreeCover endpoint count.
+    pub c_old: u32,
+    /// Actual delivery-priority endpoint count: new, then old, then leaves.
+    pub c_real: u32,
+    /// Fully mature active-tree endpoint count.
+    pub c_ideal: u32,
+    /// Exact `(C_leaf - C_new) / (C_leaf - C_ideal)`.
+    pub h_new: DeliveryHealthFraction,
+    /// Exact `(C_leaf - C_old) / (C_leaf - C_ideal)`.
+    pub h_old: DeliveryHealthFraction,
+    /// Strict `h_new > 0.70` result.
+    pub retire_new: bool,
+    /// Strict `h_old < 0.50` result.
+    pub retire_old: bool,
+}
+
 /// A member frozen into the pre-transition binary delivery cover.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TreeCoverMember {
@@ -490,6 +552,148 @@ impl TransitionTrees {
         })
     }
 
+    /// Calculates exact delivery-health endpoint counts from retained,
+    /// authenticated node availability.
+    ///
+    /// The committer is excluded from delivery targets but `C_leaf` follows
+    /// the thesis convention and equals the complete active-client count.
+    /// `C_new` and `C_old` are independent policy counters. `C_real` alone
+    /// applies new-value, old-value, then direct-leaf priority.
+    pub fn delivery_endpoint_health(
+        &self,
+        committer_quaternary_leaf_ordinal: u32,
+        availability: &DeliveryNodeAvailability,
+    ) -> Result<DeliveryEndpointHealth, TransitionTreeError> {
+        availability.validate(self, committer_quaternary_leaf_ordinal)?;
+        let topology = self.active.topology();
+        let mapping = topology.mapping();
+        let active = availability
+            .active_quaternary_leaf_ordinals
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let usable_new = availability
+            .usable_new_parent_nodes
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let usable_old = availability
+            .usable_old_parent_indices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let required_new = required_sibling_nodes(
+            4,
+            topology.height(),
+            committer_quaternary_leaf_ordinal,
+            &active,
+        )?;
+        let c_leaf =
+            u32::try_from(active.len()).map_err(|_| TransitionTreeError::ExactCoverOverflow)?;
+        let c_ideal = u32::try_from(required_new.len())
+            .map_err(|_| TransitionTreeError::ExactCoverOverflow)?;
+        let mut c_new = 0_u32;
+        let mut c_real = 0_u32;
+        let active_binary_to_quaternary = mapping
+            .assignments
+            .iter()
+            .filter(|assignment| active.contains(&assignment.quaternary_leaf_ordinal))
+            .map(|assignment| {
+                (
+                    assignment.binary_leaf_index,
+                    assignment.quaternary_leaf_ordinal,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let old_height = binary_height(
+            *mapping
+                .assignments
+                .iter()
+                .map(|assignment| &assignment.binary_leaf_index)
+                .max()
+                .ok_or(TransitionTreeError::EmptyTreeCover)?,
+        )?;
+        for required in &required_new {
+            let targets = descendants_at_node(
+                4,
+                topology.height(),
+                *required,
+                &active.iter().copied().map(|leaf| (leaf, leaf)).collect(),
+            )?;
+            let target_count = u32::try_from(targets.len())
+                .map_err(|_| TransitionTreeError::ExactCoverOverflow)?;
+            c_new = c_new
+                .checked_add(if usable_new.contains(required) {
+                    1
+                } else {
+                    target_count
+                })
+                .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+            c_real = c_real
+                .checked_add(if usable_new.contains(required) {
+                    1
+                } else {
+                    old_priority_cover_count(
+                        old_height,
+                        &active_binary_to_quaternary,
+                        &targets.iter().copied().collect(),
+                        &usable_old,
+                    )?
+                })
+                .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+        }
+
+        let committer_binary_leaf = mapping
+            .assignments
+            .iter()
+            .find(|assignment| {
+                assignment.quaternary_leaf_ordinal == committer_quaternary_leaf_ordinal
+            })
+            .map(|assignment| assignment.binary_leaf_index)
+            .ok_or(TransitionTreeError::RecipientOutsideActiveTree)?;
+        let active_binary = active_binary_to_quaternary
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let required_old =
+            required_sibling_nodes(2, old_height, committer_binary_leaf, &active_binary)?;
+        let mut c_old = 0_u32;
+        for required in required_old {
+            let targets =
+                descendants_at_node(2, old_height, required, &active_binary_to_quaternary)?;
+            let target_count = u32::try_from(targets.len())
+                .map_err(|_| TransitionTreeError::ExactCoverOverflow)?;
+            let usable = binary_parent_index(old_height, required)?
+                .is_some_and(|parent_index| usable_old.contains(&parent_index));
+            c_old = c_old
+                .checked_add(if usable { 1 } else { target_count })
+                .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+        }
+        let denominator = c_leaf
+            .checked_sub(c_ideal)
+            .filter(|value| *value > 0)
+            .ok_or(TransitionTreeError::NonPositiveHealthDenominator)?;
+        let new_numerator = c_leaf
+            .checked_sub(c_new)
+            .ok_or(TransitionTreeError::InvalidDeliveryEndpointCount)?;
+        let old_numerator = c_leaf
+            .checked_sub(c_old)
+            .ok_or(TransitionTreeError::InvalidDeliveryEndpointCount)?;
+        let h_new = reduced_fraction(new_numerator, denominator);
+        let h_old = reduced_fraction(old_numerator, denominator);
+        Ok(DeliveryEndpointHealth {
+            c_leaf,
+            c_new,
+            c_old,
+            c_real,
+            c_ideal,
+            h_new,
+            h_old,
+            retire_new: u64::from(h_new.numerator) * 10 > u64::from(h_new.denominator) * 7,
+            retire_old: u64::from(h_old.numerator) * 2 < u64::from(h_old.denominator),
+        })
+    }
+
     /// Replays a public operation without converting TreeCover into an active tree.
     pub fn replay(
         &self,
@@ -599,6 +803,255 @@ pub enum TransitionTreeError {
     /// An internally derived cover did not cover every target exactly once.
     #[error("an exact cover failed its disjoint recipient invariant")]
     InvalidExactCover,
+    /// Retained availability contains a duplicate, unknown, or non-canonical node.
+    #[error("retained delivery-node availability is invalid")]
+    InvalidDeliveryNodeAvailability,
+    /// The health formula requires a strictly positive denominator.
+    #[error("delivery health has a non-positive denominator")]
+    NonPositiveHealthDenominator,
+    /// One route counter exceeded the policy's direct-client upper bound.
+    #[error("a delivery endpoint count is invalid")]
+    InvalidDeliveryEndpointCount,
+}
+
+impl DeliveryNodeAvailability {
+    fn validate(&self, trees: &TransitionTrees, committer: u32) -> Result<(), TransitionTreeError> {
+        let topology = trees.active.topology();
+        let mapped = topology
+            .mapping()
+            .assignments
+            .iter()
+            .map(|assignment| assignment.quaternary_leaf_ordinal)
+            .collect::<BTreeSet<_>>();
+        let active = self
+            .active_quaternary_leaf_ordinals
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let new_nodes = self
+            .usable_new_parent_nodes
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let old_nodes = self
+            .usable_old_parent_indices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let old_parent_count = topology
+            .mapping()
+            .assignments
+            .iter()
+            .map(|assignment| assignment.binary_leaf_index)
+            .max()
+            .and_then(|last| {
+                1_u32
+                    .checked_shl(u32::from(binary_height(last).ok()?))
+                    .and_then(|leaves| leaves.checked_sub(1))
+            })
+            .ok_or(TransitionTreeError::InvalidDeliveryNodeAvailability)?;
+        if active.is_empty()
+            || active.len() != self.active_quaternary_leaf_ordinals.len()
+            || !active.is_subset(&mapped)
+            || !active.contains(&committer)
+            || new_nodes.len() != self.usable_new_parent_nodes.len()
+            || old_nodes.len() != self.usable_old_parent_indices.len()
+            || self
+                .usable_new_parent_nodes
+                .iter()
+                .any(|node| node.depth >= topology.height())
+            || self
+                .usable_old_parent_indices
+                .iter()
+                .any(|index| *index >= old_parent_count)
+        {
+            return Err(TransitionTreeError::InvalidDeliveryNodeAvailability);
+        }
+        Ok(())
+    }
+}
+
+fn required_sibling_nodes(
+    arity: u8,
+    height: u8,
+    committer_leaf: u32,
+    active_leaves: &BTreeSet<u32>,
+) -> Result<Vec<QuaternaryNode>, TransitionTreeError> {
+    let mut required = Vec::new();
+    for depth in 1..=height {
+        let remaining = height
+            .checked_sub(depth)
+            .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+        let width = u32::from(arity)
+            .checked_pow(u32::from(remaining))
+            .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+        let own_ordinal = committer_leaf / width;
+        let parent_ordinal = own_ordinal / u32::from(arity);
+        for branch in 0..u32::from(arity) {
+            let ordinal = parent_ordinal
+                .checked_mul(u32::from(arity))
+                .and_then(|value| value.checked_add(branch))
+                .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+            if ordinal == own_ordinal {
+                continue;
+            }
+            let node = QuaternaryNode { depth, ordinal };
+            if !descendants_at_node(
+                arity,
+                height,
+                node,
+                &active_leaves
+                    .iter()
+                    .copied()
+                    .map(|leaf| (leaf, leaf))
+                    .collect(),
+            )?
+            .is_empty()
+            {
+                required.push(node);
+            }
+        }
+    }
+    Ok(required)
+}
+
+fn descendants_at_node(
+    arity: u8,
+    height: u8,
+    node: QuaternaryNode,
+    occupied_leaf_to_recipient: &BTreeMap<u32, u32>,
+) -> Result<Vec<u32>, TransitionTreeError> {
+    let remaining = height
+        .checked_sub(node.depth)
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    let width = u32::from(arity)
+        .checked_pow(u32::from(remaining))
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    let start = node
+        .ordinal
+        .checked_mul(width)
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    let end = start
+        .checked_add(width)
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    Ok(occupied_leaf_to_recipient
+        .range(start..end)
+        .map(|(_, recipient)| *recipient)
+        .collect())
+}
+
+fn binary_parent_index(
+    height: u8,
+    node: QuaternaryNode,
+) -> Result<Option<u32>, TransitionTreeError> {
+    if node.depth >= height {
+        return Ok(None);
+    }
+    let level = height
+        .checked_sub(node.depth)
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    let stride = 1_u32
+        .checked_shl(u32::from(level) + 1)
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    let offset = 1_u32
+        .checked_shl(u32::from(level))
+        .and_then(|value| value.checked_sub(1))
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    let tree_index = node
+        .ordinal
+        .checked_mul(stride)
+        .and_then(|value| value.checked_add(offset))
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    Ok(Some(
+        tree_index
+            .checked_sub(1)
+            .ok_or(TransitionTreeError::ExactCoverOverflow)?
+            / 2,
+    ))
+}
+
+fn old_priority_cover_count(
+    height: u8,
+    active_binary_to_recipient: &BTreeMap<u32, u32>,
+    targets: &BTreeSet<u32>,
+    usable_old: &BTreeSet<u32>,
+) -> Result<u32, TransitionTreeError> {
+    old_priority_cover_node(
+        height,
+        QuaternaryNode {
+            depth: 0,
+            ordinal: 0,
+        },
+        active_binary_to_recipient,
+        targets,
+        usable_old,
+    )
+}
+
+fn old_priority_cover_node(
+    height: u8,
+    node: QuaternaryNode,
+    active_binary_to_recipient: &BTreeMap<u32, u32>,
+    targets: &BTreeSet<u32>,
+    usable_old: &BTreeSet<u32>,
+) -> Result<u32, TransitionTreeError> {
+    let descendants = descendants_at_node(2, height, node, active_binary_to_recipient)?;
+    let targeted = descendants
+        .iter()
+        .filter(|recipient| targets.contains(recipient))
+        .count();
+    if targeted == 0 {
+        return Ok(0);
+    }
+    if targeted == descendants.len()
+        && binary_parent_index(height, node)?.is_some_and(|index| usable_old.contains(&index))
+    {
+        return Ok(1);
+    }
+    if node.depth == height {
+        return Ok(1);
+    }
+    let child_depth = node
+        .depth
+        .checked_add(1)
+        .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    let mut count = 0_u32;
+    for branch in 0..2_u32 {
+        count = count
+            .checked_add(old_priority_cover_node(
+                height,
+                QuaternaryNode {
+                    depth: child_depth,
+                    ordinal: node
+                        .ordinal
+                        .checked_mul(2)
+                        .and_then(|value| value.checked_add(branch))
+                        .ok_or(TransitionTreeError::ExactCoverOverflow)?,
+                },
+                active_binary_to_recipient,
+                targets,
+                usable_old,
+            )?)
+            .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+    }
+    Ok(count)
+}
+
+fn reduced_fraction(numerator: u32, denominator: u32) -> DeliveryHealthFraction {
+    let divisor = gcd(numerator, denominator);
+    DeliveryHealthFraction {
+        numerator: numerator / divisor,
+        denominator: denominator / divisor,
+    }
+}
+
+fn gcd(mut left: u32, mut right: u32) -> u32 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left.max(1)
 }
 
 fn minimal_exact_cover(
@@ -831,6 +1284,22 @@ mod tests {
             .expect("full transition trees")
     }
 
+    fn full_128_trees() -> TransitionTrees {
+        let mapping = BinaryToQuaternaryLeafMapping::from_binary_members(
+            (0..128)
+                .map(|index| BinaryLeafMember {
+                    member_id: format!("member-{index:03}").into_bytes(),
+                    binary_leaf_index: index,
+                })
+                .collect(),
+        )
+        .expect("full canonical mapping");
+        let treecover = DeliveryOnlyTreeCover::from_mapping(1, &mapping).expect("full TreeCover");
+        let state = triggered_state(&mapping, &treecover);
+        TransitionTrees::from_transitioning_state(&state, mapping, treecover)
+            .expect("full transition trees")
+    }
+
     #[test]
     fn transition_trees_bind_separate_public_states_and_one_secret_authority() {
         let trees = trees();
@@ -873,6 +1342,67 @@ mod tests {
                 .iter()
                 .all(|node| { !node.recipient_quaternary_leaf_ordinals.contains(&2) }));
         }
+    }
+
+    #[test]
+    fn retained_real_availability_reproduces_one_remove_health_boundary() {
+        let trees = full_128_trees();
+        let removed_leaf = 120_u32;
+        let committer_leaf = 92_u32;
+        let mut usable_old = (0..127).collect::<BTreeSet<_>>();
+        for depth in 0..7_u8 {
+            let width = 2_u32.pow(u32::from(7 - depth));
+            let node = QuaternaryNode {
+                depth,
+                ordinal: removed_leaf / width,
+            };
+            usable_old.remove(
+                &binary_parent_index(7, node)
+                    .expect("valid old parent")
+                    .expect("internal node"),
+            );
+        }
+        let active = (0..128)
+            .filter(|leaf| *leaf != removed_leaf)
+            .collect::<Vec<_>>();
+        let usable_new = (0..4_u8)
+            .map(|depth| QuaternaryNode {
+                depth,
+                ordinal: committer_leaf / 4_u32.pow(u32::from(4 - depth)),
+            })
+            .collect::<Vec<_>>();
+        let health = trees
+            .delivery_endpoint_health(
+                committer_leaf,
+                &DeliveryNodeAvailability {
+                    active_quaternary_leaf_ordinals: active,
+                    usable_old_parent_indices: usable_old.into_iter().collect(),
+                    usable_new_parent_nodes: usable_new,
+                },
+            )
+            .expect("real retained availability");
+
+        assert_eq!(health.c_leaf, 127);
+        assert_eq!(health.c_new, 126);
+        assert_eq!(health.c_old, 37);
+        assert_eq!(health.c_real, 37);
+        assert_eq!(health.c_ideal, 10);
+        assert_eq!(
+            health.h_new,
+            DeliveryHealthFraction {
+                numerator: 1,
+                denominator: 117
+            }
+        );
+        assert_eq!(
+            health.h_old,
+            DeliveryHealthFraction {
+                numerator: 10,
+                denominator: 13
+            }
+        );
+        assert!(!health.retire_new);
+        assert!(!health.retire_old);
     }
 
     #[test]
