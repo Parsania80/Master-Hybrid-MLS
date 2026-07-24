@@ -604,6 +604,12 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
 
         let proposal_reference_list = proposal_queue.commit_list();
 
+        #[cfg(feature = "experimental-hybrid")]
+        let frozen_transition_mapping = group
+            .group_epoch_secrets()
+            .experimental_transition_mapping()
+            .cloned();
+
         // Make a copy of the public group to apply proposals safely
         let mut diff = group.public_group.empty_diff();
 
@@ -656,7 +662,9 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
                         &commit_type,
                         &cur_stage.leaf_node_parameters,
                         new_signer.signer,
-                        apply_proposals_values.extensions.clone()
+                        apply_proposals_values.extensions.clone(),
+                        #[cfg(feature = "experimental-hybrid")]
+                        frozen_transition_mapping.as_ref(),
                     )?
                 } else {
                     diff.compute_path(
@@ -667,7 +675,9 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
                         &commit_type,
                         &cur_stage.leaf_node_parameters,
                         old_signer,
-                        apply_proposals_values.extensions.clone()
+                        apply_proposals_values.extensions.clone(),
+                        #[cfg(feature = "experimental-hybrid")]
+                        frozen_transition_mapping.as_ref(),
                     )?
                 }
             } else {
@@ -1055,6 +1065,11 @@ impl CommitBuilder<'_, Complete, &mut MlsGroup> {
             .commit
             .experimental_hybrid_commit_metrics()
             .map_err(CommitBuilderStageError::LibraryError)?;
+        #[cfg(feature = "experimental-hybrid")]
+        let experimental_hybrid_topology = create_commit_result
+            .commit
+            .experimental_hybrid_commit_topology()
+            .map_err(CommitBuilderStageError::LibraryError)?;
 
         // Set the current group state to [`MlsGroupState::PendingCommit`],
         // storing the current [`StagedCommit`] from the commit results
@@ -1083,6 +1098,8 @@ impl CommitBuilder<'_, Complete, &mut MlsGroup> {
             group_info: create_commit_result.group_info,
             #[cfg(feature = "experimental-hybrid")]
             experimental_hybrid_metrics: Some(experimental_hybrid_metrics),
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_hybrid_topology: Some(experimental_hybrid_topology),
         })
     }
 }
@@ -1098,6 +1115,9 @@ pub struct CommitMessageBundle {
     #[cfg(feature = "experimental-hybrid")]
     experimental_hybrid_metrics:
         Option<crate::experimental_hybrid::ExperimentalHybridCommitMetrics>,
+    #[cfg(feature = "experimental-hybrid")]
+    experimental_hybrid_topology:
+        Option<crate::experimental_hybrid::ExperimentalHybridCommitTopology>,
 }
 
 /// The result of a commit with an add proposal. This includes
@@ -1145,6 +1165,8 @@ impl CommitMessageBundle {
             group_info,
             #[cfg(feature = "experimental-hybrid")]
             experimental_hybrid_metrics: None,
+            #[cfg(feature = "experimental-hybrid")]
+            experimental_hybrid_topology: None,
         }
     }
 }
@@ -1164,6 +1186,15 @@ impl CommitMessageBundle {
         &self,
     ) -> Option<crate::experimental_hybrid::ExperimentalHybridCommitMetrics> {
         self.experimental_hybrid_metrics
+    }
+
+    /// Returns ciphertext-free public path and recipient node indexes captured
+    /// from the signed experimental Commit.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn experimental_hybrid_topology(
+        &self,
+    ) -> Option<&crate::experimental_hybrid::ExperimentalHybridCommitTopology> {
+        self.experimental_hybrid_topology.as_ref()
     }
 
     /// Gets the Welcome messsage. Only [`Some`] if new clients have been added in the commit.

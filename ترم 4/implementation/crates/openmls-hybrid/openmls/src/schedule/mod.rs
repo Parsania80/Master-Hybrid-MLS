@@ -117,7 +117,9 @@
 
 use openmls_traits::{crypto::OpenMlsCrypto, types::*};
 use serde::{Deserialize, Serialize};
-use tls_codec::{Serialize as _, TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize};
+#[cfg(feature = "experimental-hybrid")]
+use tls_codec::Serialize as _;
+use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize};
 
 use crate::{
     binary_tree::array_representation::{LeafNodeIndex, TreeSize},
@@ -127,9 +129,20 @@ use crate::{
     group::GroupContext,
     messages::{ConfirmationTag, PathSecret},
     tree::secret_tree::SecretTree,
-    treesync::node::encryption_keys::EncryptionKeyPair,
     versions::ProtocolVersion,
 };
+
+#[cfg(feature = "experimental-hybrid")]
+use crate::{
+    binary_tree::array_representation::direct_path,
+    treesync::node::encryption_keys::{EncryptionKey, EncryptionKeyPair},
+};
+#[cfg(feature = "experimental-hybrid")]
+use adaptive_tree::BinaryToQuaternaryLeafMapping;
+#[cfg(feature = "experimental-hybrid")]
+use arity_state::{hash_canonical_public_bytes, ArityLifecycle, ArityState};
+#[cfg(feature = "experimental-hybrid")]
+use transition_tree::{ActiveQuaternaryTree, DeliveryOnlyTreeCover};
 
 // Public
 pub mod errors;
@@ -1239,6 +1252,8 @@ impl EpochSecrets {
                 resumption_psk: self.resumption_psk,
                 #[cfg(feature = "experimental-hybrid")]
                 experimental_quaternary_epoch_secret: None,
+                #[cfg(feature = "experimental-hybrid")]
+                experimental_transition_node_state: None,
             },
             MessageSecrets::new(
                 self.sender_data_secret,
@@ -1262,6 +1277,9 @@ pub(crate) struct GroupEpochSecrets {
     #[cfg(feature = "experimental-hybrid")]
     #[serde(default)]
     experimental_quaternary_epoch_secret: Option<ExperimentalQuaternaryEpochSecret>,
+    #[cfg(feature = "experimental-hybrid")]
+    #[serde(default)]
+    experimental_transition_node_state: Option<ExperimentalTransitionNodeState>,
 }
 
 impl std::fmt::Debug for GroupEpochSecrets {
@@ -1401,6 +1419,64 @@ impl GroupEpochSecrets {
         self.experimental_quaternary_epoch_secret
             .as_ref()
             .map(ExperimentalQuaternaryEpochSecret::status)
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_quaternary_parent_keypairs(
+        &self,
+    ) -> Result<Vec<EncryptionKeyPair>, LibraryError> {
+        let authority = self
+            .experimental_quaternary_epoch_secret
+            .as_ref()
+            .ok_or_else(|| {
+                LibraryError::custom("experimental group has no quaternary epoch authority")
+            })?;
+        let root = authority.root_keypair.as_ref().ok_or_else(|| {
+            LibraryError::custom("experimental quaternary authority has no root key pair")
+        })?;
+        Ok(std::iter::once(root.clone())
+            .chain(authority.additional_parent_keypairs.iter().cloned())
+            .collect())
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn install_experimental_transition_node_state(
+        &mut self,
+        state: ExperimentalTransitionNodeState,
+    ) {
+        self.experimental_transition_node_state = Some(state);
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_transition_node_state(
+        &self,
+    ) -> Option<&ExperimentalTransitionNodeState> {
+        self.experimental_transition_node_state.as_ref()
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_transition_mapping(&self) -> Option<&BinaryToQuaternaryLeafMapping> {
+        self.experimental_transition_node_state
+            .as_ref()
+            .map(|state| &state.mapping)
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_transition_node_availability_status(
+        &self,
+    ) -> Option<ExperimentalTransitionNodeAvailabilityStatus> {
+        self.experimental_transition_node_state
+            .as_ref()
+            .map(ExperimentalTransitionNodeState::status)
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_transition_node_availability_snapshot(
+        &self,
+    ) -> Option<ExperimentalTransitionNodeAvailabilitySnapshot> {
+        self.experimental_transition_node_state
+            .as_ref()
+            .map(ExperimentalTransitionNodeState::snapshot)
     }
 
     /// Checks that the persisted quaternary root record still has matched
@@ -1544,6 +1620,541 @@ impl ExperimentalQuaternaryEpochSecret {
             mapping_hash: self.mapping_hash,
             root_public_key_hash: self.root_public_key_hash,
             parent_key_count: 1 + self.additional_parent_keypairs.len() as u32,
+        }
+    }
+}
+
+/// Redacted public metadata for retained old/new transition-node availability.
+#[cfg(feature = "experimental-hybrid")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExperimentalTransitionNodeAvailabilityStatus {
+    tree_version: u32,
+    mapping_hash: [u8; 32],
+    treecover_hash: [u8; 32],
+    active_member_count: u32,
+    usable_old_node_count: u32,
+    usable_new_node_count: u32,
+    local_old_private_node_count: u32,
+    retained_new_private_node_count: u32,
+}
+
+/// One ciphertext-free retained new-tree parent coordinate.
+#[cfg(feature = "experimental-hybrid")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExperimentalTransitionNodeCoordinate {
+    depth: u8,
+    ordinal: u32,
+}
+
+#[cfg(feature = "experimental-hybrid")]
+impl ExperimentalTransitionNodeCoordinate {
+    /// Returns the root-relative depth, where the root is zero.
+    pub const fn depth(&self) -> u8 {
+        self.depth
+    }
+
+    /// Returns the left-to-right ordinal at this depth.
+    pub const fn ordinal(&self) -> u32 {
+        self.ordinal
+    }
+}
+
+/// Ciphertext-free topology and availability retained by a transitioning group.
+#[cfg(feature = "experimental-hybrid")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExperimentalTransitionNodeAvailabilitySnapshot {
+    tree_version: u32,
+    mapping_hash: [u8; 32],
+    treecover_version: u32,
+    treecover_hash: [u8; 32],
+    frozen_mapping: BinaryToQuaternaryLeafMapping,
+    active_quaternary_leaf_ordinals: Vec<u32>,
+    usable_old_parent_indices: Vec<u32>,
+    usable_new_parent_nodes: Vec<ExperimentalTransitionNodeCoordinate>,
+}
+
+#[cfg(feature = "experimental-hybrid")]
+impl ExperimentalTransitionNodeAvailabilitySnapshot {
+    /// Returns the authenticated active quaternary tree version.
+    pub const fn tree_version(&self) -> u32 {
+        self.tree_version
+    }
+
+    /// Returns the digest of the frozen mapping.
+    pub const fn mapping_hash(&self) -> &[u8; 32] {
+        &self.mapping_hash
+    }
+
+    /// Returns the initial frozen TreeCover version.
+    pub const fn treecover_version(&self) -> u32 {
+        self.treecover_version
+    }
+
+    /// Returns the digest of the initial frozen TreeCover.
+    pub const fn treecover_hash(&self) -> &[u8; 32] {
+        &self.treecover_hash
+    }
+
+    /// Returns the complete authenticated transition mapping, including holes.
+    pub const fn frozen_mapping(&self) -> &BinaryToQuaternaryLeafMapping {
+        &self.frozen_mapping
+    }
+
+    /// Returns the sorted quaternary leaf ordinals that remain active.
+    pub fn active_quaternary_leaf_ordinals(&self) -> &[u32] {
+        &self.active_quaternary_leaf_ordinals
+    }
+
+    /// Returns sorted usable parent indices in the frozen binary TreeCover.
+    pub fn usable_old_parent_indices(&self) -> &[u32] {
+        &self.usable_old_parent_indices
+    }
+
+    /// Returns sorted usable parent coordinates in the active quaternary tree.
+    pub fn usable_new_parent_nodes(&self) -> &[ExperimentalTransitionNodeCoordinate] {
+        &self.usable_new_parent_nodes
+    }
+}
+
+#[cfg(feature = "experimental-hybrid")]
+impl ExperimentalTransitionNodeAvailabilityStatus {
+    /// Returns the authenticated active quaternary tree version.
+    pub const fn tree_version(&self) -> u32 {
+        self.tree_version
+    }
+
+    /// Returns the digest of the frozen binary-to-quaternary mapping.
+    pub const fn mapping_hash(&self) -> &[u8; 32] {
+        &self.mapping_hash
+    }
+
+    /// Returns the digest of the initial frozen binary TreeCover.
+    pub const fn treecover_hash(&self) -> &[u8; 32] {
+        &self.treecover_hash
+    }
+
+    /// Returns the number of members that remain active.
+    pub const fn active_member_count(&self) -> u32 {
+        self.active_member_count
+    }
+
+    /// Returns the number of old public parent values not invalidated by Remove.
+    pub const fn usable_old_node_count(&self) -> u32 {
+        self.usable_old_node_count
+    }
+
+    /// Returns the number of accumulated new quaternary parent values.
+    pub const fn usable_new_node_count(&self) -> u32 {
+        self.usable_new_node_count
+    }
+
+    /// Returns the number of usable old parents with locally retained private material.
+    pub const fn local_old_private_node_count(&self) -> u32 {
+        self.local_old_private_node_count
+    }
+
+    /// Returns the number of new parents with locally retained private material.
+    pub const fn retained_new_private_node_count(&self) -> u32 {
+        self.retained_new_private_node_count
+    }
+}
+
+#[cfg(feature = "experimental-hybrid")]
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "test-utils"), derive(PartialEq))]
+pub(crate) struct ExperimentalTransitionNodeState {
+    tree_version: u32,
+    mapping_hash: [u8; 32],
+    treecover_version: u32,
+    treecover_hash: [u8; 32],
+    mapping: BinaryToQuaternaryLeafMapping,
+    old_tree_size: u32,
+    active_member_ids: Vec<Vec<u8>>,
+    old_nodes: Vec<RetainedOldNodeValue>,
+    new_nodes: Vec<RetainedNewNodeValue>,
+}
+
+#[cfg(feature = "experimental-hybrid")]
+impl std::fmt::Debug for ExperimentalTransitionNodeState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ExperimentalTransitionNodeState { *** }")
+    }
+}
+
+#[cfg(feature = "experimental-hybrid")]
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "test-utils"), derive(PartialEq))]
+struct RetainedOldNodeValue {
+    node_index: u32,
+    public_key: EncryptionKey,
+    local_keypair: Option<EncryptionKeyPair>,
+    usable: bool,
+}
+
+#[cfg(feature = "experimental-hybrid")]
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "test-utils"), derive(PartialEq))]
+struct RetainedNewNodeValue {
+    depth: u8,
+    ordinal: u32,
+    keypair: EncryptionKeyPair,
+}
+
+#[cfg(feature = "experimental-hybrid")]
+impl ExperimentalTransitionNodeState {
+    pub(crate) const fn mapping(&self) -> &BinaryToQuaternaryLeafMapping {
+        &self.mapping
+    }
+
+    pub(crate) fn new(
+        state: &ArityState,
+        mapping: BinaryToQuaternaryLeafMapping,
+        old_tree_size: u32,
+        mut old_public_nodes: Vec<(u32, EncryptionKey)>,
+        old_keypairs: Vec<EncryptionKeyPair>,
+    ) -> Result<Self, LibraryError> {
+        let ArityLifecycle::Transitioning(transitioning) = state.lifecycle() else {
+            return Err(LibraryError::custom(
+                "retained transition nodes require transitioning ArityState",
+            ));
+        };
+        let mapping_bytes = mapping
+            .canonical_bytes()
+            .map_err(|_| LibraryError::custom("retained transition mapping is invalid"))?;
+        let mapping_hash = hash_canonical_public_bytes(&mapping_bytes);
+        if mapping_hash != *transitioning.mapping_hash().as_bytes() {
+            return Err(LibraryError::custom(
+                "retained transition mapping hash mismatch",
+            ));
+        }
+        let treecover =
+            DeliveryOnlyTreeCover::from_mapping(transitioning.treecover().version(), &mapping)
+                .map_err(|_| LibraryError::custom("retained TreeCover derivation failed"))?;
+        let treecover_hash = treecover
+            .hash()
+            .map_err(|_| LibraryError::custom("retained TreeCover hash failed"))?;
+        if treecover_hash != transitioning.treecover().hash() {
+            return Err(LibraryError::custom(
+                "retained transition TreeCover hash mismatch",
+            ));
+        }
+        old_public_nodes.sort_by_key(|(node_index, _)| *node_index);
+        if old_public_nodes
+            .windows(2)
+            .any(|nodes| nodes[0].0 == nodes[1].0)
+        {
+            return Err(LibraryError::custom(
+                "retained old transition nodes contain duplicate indices",
+            ));
+        }
+        let old_nodes = old_public_nodes
+            .into_iter()
+            .map(|(node_index, public_key)| {
+                let local_keypair = old_keypairs
+                    .iter()
+                    .find(|keypair| keypair.public_key() == &public_key)
+                    .cloned();
+                RetainedOldNodeValue {
+                    node_index,
+                    public_key,
+                    local_keypair,
+                    usable: true,
+                }
+            })
+            .collect();
+        let active_member_ids = mapping
+            .assignments
+            .iter()
+            .map(|assignment| assignment.member_id.clone())
+            .collect();
+        let retained = Self {
+            tree_version: state.tree_version(),
+            mapping_hash,
+            treecover_version: transitioning.treecover().version(),
+            treecover_hash: *treecover_hash.as_bytes(),
+            mapping,
+            old_tree_size,
+            active_member_ids,
+            old_nodes,
+            new_nodes: Vec::new(),
+        };
+        retained.validate(state)?;
+        Ok(retained)
+    }
+
+    pub(crate) fn validate(&self, state: &ArityState) -> Result<(), LibraryError> {
+        let ArityLifecycle::Transitioning(transitioning) = state.lifecycle() else {
+            return Err(LibraryError::custom(
+                "retained transition nodes require transitioning ArityState",
+            ));
+        };
+        let mapping_bytes = self
+            .mapping
+            .canonical_bytes()
+            .map_err(|_| LibraryError::custom("retained transition mapping is invalid"))?;
+        if self.tree_version != state.tree_version()
+            || self.mapping_hash != hash_canonical_public_bytes(&mapping_bytes)
+            || self.mapping_hash != *transitioning.mapping_hash().as_bytes()
+            || self.treecover_version != transitioning.treecover().version()
+            || self.treecover_hash != *transitioning.treecover().hash().as_bytes()
+        {
+            return Err(LibraryError::custom(
+                "retained transition nodes are not bound to ArityState",
+            ));
+        }
+        let treecover = DeliveryOnlyTreeCover::from_mapping(self.treecover_version, &self.mapping)
+            .map_err(|_| LibraryError::custom("retained TreeCover derivation failed"))?;
+        if treecover
+            .hash()
+            .map_err(|_| LibraryError::custom("retained TreeCover hash failed"))?
+            .as_bytes()
+            != &self.treecover_hash
+        {
+            return Err(LibraryError::custom(
+                "retained transition TreeCover does not match its mapping",
+            ));
+        }
+        let old_tree_size = TreeSize::new(self.old_tree_size);
+        if self.old_tree_size == 0
+            || old_tree_size.u32() != self.old_tree_size
+            || self
+                .mapping
+                .assignments
+                .iter()
+                .any(|assignment| assignment.binary_leaf_index >= old_tree_size.leaf_count())
+            || self
+                .old_nodes
+                .iter()
+                .any(|node| node.node_index >= old_tree_size.parent_count())
+        {
+            return Err(LibraryError::custom(
+                "retained old transition topology is invalid",
+            ));
+        }
+        let active_tree =
+            ActiveQuaternaryTree::from_mapping(self.tree_version, self.mapping.clone())
+                .map_err(|_| LibraryError::custom("retained active topology derivation failed"))?;
+        let active_height = active_tree.topology().height();
+        if self
+            .active_member_ids
+            .windows(2)
+            .any(|ids| ids[0] >= ids[1])
+            || self.active_member_ids.iter().any(|member_id| {
+                !self
+                    .mapping
+                    .assignments
+                    .iter()
+                    .any(|assignment| &assignment.member_id == member_id)
+            })
+            || self
+                .old_nodes
+                .windows(2)
+                .any(|nodes| nodes[0].node_index >= nodes[1].node_index)
+            || self.new_nodes.windows(2).any(|nodes| {
+                (nodes[0].depth, nodes[0].ordinal) >= (nodes[1].depth, nodes[1].ordinal)
+            })
+            || self.new_nodes.iter().any(|node| {
+                node.depth >= active_height
+                    || 4_u32
+                        .checked_pow(u32::from(node.depth))
+                        .is_none_or(|width| node.ordinal >= width)
+            })
+        {
+            return Err(LibraryError::custom(
+                "retained transition node state is not canonical",
+            ));
+        }
+        if self.old_nodes.iter().any(|node| {
+            node.local_keypair
+                .as_ref()
+                .is_some_and(|keypair| keypair.public_key() != &node.public_key)
+        }) {
+            return Err(LibraryError::custom(
+                "retained old transition key pair does not match its public value",
+            ));
+        }
+        for keypair in self
+            .old_nodes
+            .iter()
+            .filter_map(|node| node.local_keypair.as_ref())
+            .chain(self.new_nodes.iter().map(|node| &node.keypair))
+        {
+            let public = keypair
+                .public_key()
+                .experimental_mkyber_key()
+                .ok_or_else(|| {
+                    LibraryError::custom("retained transition key lacks mKyber public material")
+                })?;
+            let private = keypair
+                .experimental_mkyber_private_key()
+                .map_err(|_| {
+                    LibraryError::custom("retained transition mKyber private key is invalid")
+                })?
+                .ok_or_else(|| {
+                    LibraryError::custom("retained transition key lacks mKyber private material")
+                })?;
+            if public.domain() != private.domain() {
+                return Err(LibraryError::custom(
+                    "retained transition mKyber key domains do not match",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reconcile_after_commit(
+        &mut self,
+        state: &ArityState,
+        mut current_member_ids: Vec<Vec<u8>>,
+        committer_member_id: &[u8],
+        parent_keypairs: Vec<EncryptionKeyPair>,
+    ) -> Result<(), LibraryError> {
+        current_member_ids.sort();
+        if current_member_ids.windows(2).any(|ids| ids[0] == ids[1]) {
+            return Err(LibraryError::custom(
+                "post-transition membership contains duplicate identifiers",
+            ));
+        }
+        if current_member_ids
+            .iter()
+            .any(|id| self.active_member_ids.binary_search(id).is_err())
+        {
+            return Err(LibraryError::custom(
+                "post-transition Add or member remapping is not supported",
+            ));
+        }
+        let removed_member_ids = self
+            .active_member_ids
+            .iter()
+            .filter(|id| current_member_ids.binary_search(id).is_err())
+            .cloned()
+            .collect::<Vec<_>>();
+        let old_tree_size = TreeSize::new(self.old_tree_size);
+        let tree = ActiveQuaternaryTree::from_mapping(self.tree_version, self.mapping.clone())
+            .map_err(|_| LibraryError::custom("retained active topology derivation failed"))?;
+        for removed_member_id in removed_member_ids {
+            let binary_leaf_index = self
+                .mapping
+                .assignments
+                .iter()
+                .find(|assignment| assignment.member_id == removed_member_id)
+                .map(|assignment| assignment.binary_leaf_index)
+                .ok_or_else(|| {
+                    LibraryError::custom("removed member is absent from frozen mapping")
+                })?;
+            for parent in direct_path(LeafNodeIndex::new(binary_leaf_index), old_tree_size) {
+                if let Some(node) = self
+                    .old_nodes
+                    .iter_mut()
+                    .find(|node| node.node_index == parent.u32())
+                {
+                    node.usable = false;
+                    node.local_keypair = None;
+                }
+            }
+            let removed_new_path = tree
+                .topology()
+                .nodes_for_member(&removed_member_id)
+                .map_err(|_| LibraryError::custom("removed member is absent from active topology"))?
+                .into_iter()
+                .take(usize::from(tree.topology().height()))
+                .map(|node| (node.depth, node.ordinal))
+                .collect::<Vec<_>>();
+            self.new_nodes
+                .retain(|node| !removed_new_path.contains(&(node.depth, node.ordinal)));
+        }
+        if current_member_ids
+            .binary_search_by(|id| id.as_slice().cmp(committer_member_id))
+            .is_err()
+        {
+            return Err(LibraryError::custom(
+                "post-transition committer is not an active member",
+            ));
+        }
+        let positions = tree
+            .topology()
+            .nodes_for_member(committer_member_id)
+            .map_err(|_| LibraryError::custom("committer is absent from frozen mapping"))?
+            .into_iter()
+            .take(usize::from(tree.topology().height()))
+            .collect::<Vec<_>>();
+        if positions.len() != parent_keypairs.len() {
+            return Err(LibraryError::custom(
+                "quaternary parent key count does not match committer path",
+            ));
+        }
+        for (position, keypair) in positions.into_iter().zip(parent_keypairs) {
+            if let Some(node) = self
+                .new_nodes
+                .iter_mut()
+                .find(|node| node.depth == position.depth && node.ordinal == position.ordinal)
+            {
+                node.keypair = keypair;
+            } else {
+                self.new_nodes.push(RetainedNewNodeValue {
+                    depth: position.depth,
+                    ordinal: position.ordinal,
+                    keypair,
+                });
+            }
+        }
+        self.new_nodes
+            .sort_by_key(|node| (node.depth, node.ordinal));
+        self.active_member_ids = current_member_ids;
+        self.validate(state)
+    }
+
+    fn status(&self) -> ExperimentalTransitionNodeAvailabilityStatus {
+        ExperimentalTransitionNodeAvailabilityStatus {
+            tree_version: self.tree_version,
+            mapping_hash: self.mapping_hash,
+            treecover_hash: self.treecover_hash,
+            active_member_count: self.active_member_ids.len() as u32,
+            usable_old_node_count: self.old_nodes.iter().filter(|node| node.usable).count() as u32,
+            usable_new_node_count: self.new_nodes.len() as u32,
+            local_old_private_node_count: self
+                .old_nodes
+                .iter()
+                .filter(|node| node.usable && node.local_keypair.is_some())
+                .count() as u32,
+            retained_new_private_node_count: self.new_nodes.len() as u32,
+        }
+    }
+
+    fn snapshot(&self) -> ExperimentalTransitionNodeAvailabilitySnapshot {
+        let mut active_quaternary_leaf_ordinals = self
+            .mapping
+            .assignments
+            .iter()
+            .filter(|assignment| {
+                self.active_member_ids
+                    .binary_search(&assignment.member_id)
+                    .is_ok()
+            })
+            .map(|assignment| assignment.quaternary_leaf_ordinal)
+            .collect::<Vec<_>>();
+        active_quaternary_leaf_ordinals.sort_unstable();
+        ExperimentalTransitionNodeAvailabilitySnapshot {
+            tree_version: self.tree_version,
+            mapping_hash: self.mapping_hash,
+            treecover_version: self.treecover_version,
+            treecover_hash: self.treecover_hash,
+            frozen_mapping: self.mapping.clone(),
+            active_quaternary_leaf_ordinals,
+            usable_old_parent_indices: self
+                .old_nodes
+                .iter()
+                .filter(|node| node.usable)
+                .map(|node| node.node_index)
+                .collect(),
+            usable_new_parent_nodes: self
+                .new_nodes
+                .iter()
+                .map(|node| ExperimentalTransitionNodeCoordinate {
+                    depth: node.depth,
+                    ordinal: node.ordinal,
+                })
+                .collect(),
         }
     }
 }

@@ -17,12 +17,14 @@ printf '\n=== Adaptive Hybrid MLS Interactive Demo ===\n'
 printf 'Choose a mode:\n'
 printf '  1) Short protocol demo (real comparison plus charts; about 20 seconds)\n'
 printf '  2) Complete thesis tables (comparison, RSS, operation, maturity, model, and final tables)\n'
-printf '  3) Clear 32-member report (costs, transition phases, Add/Remove/Update, and retirement estimate)\n'
-printf 'Selection [1/2/3]: '
+printf '  3) Clear 64-member real-protocol report (topology delivery costs unavailable)\n'
+printf '  4) Adaptive delivery-health simulation (byte gate, random Update/Remove, endpoint health)\n'
+printf 'Selection [1/2/3/4]: '
 IFS= read -r mode_choice || fail 'could not read mode selection'
 
 generate_thesis_tables=false
-generate_clear_32=false
+generate_clear_64=false
+generate_delivery_health=false
 case "$mode_choice" in
     1)
         mode_label='short protocol demonstration'
@@ -32,13 +34,39 @@ case "$mode_choice" in
         mode_label='complete thesis-table pipeline'
         ;;
     3)
-        generate_clear_32=true
-        mode_label='clear 32-member cost and transition report'
+        generate_clear_64=true
+        mode_label='clear 64-member real-protocol report'
+        ;;
+    4)
+        generate_delivery_health=true
+        mode_label='adaptive delivery-health simulation'
         ;;
     *)
-        fail 'select 1, 2, or 3 from the displayed mode menu'
+        fail 'select 1, 2, 3, or 4 from the displayed mode menu'
         ;;
 esac
+
+if [[ "$generate_delivery_health" == true ]]; then
+    printf 'Initial arity [2 or 4]: '
+    IFS= read -r initial_arity || fail 'could not read initial arity'
+    [[ "$initial_arity" == '2' || "$initial_arity" == '4' ]] \
+        || fail 'initial arity must be 2 or 4'
+
+    printf 'Target arity [4 or 8]: '
+    IFS= read -r target_arity || fail 'could not read target arity'
+    [[ "$target_arity" == '4' || "$target_arity" == '8' ]] \
+        || fail 'target arity must be 4 or 8'
+    (( target_arity == initial_arity * 2 )) \
+        || fail 'supported transitions are exactly 2 -> 4 and 4 -> 8'
+
+    minimum_initial_members=$((initial_arity + 1))
+    printf 'Initial MLS client number [%s..4096]: ' "$minimum_initial_members"
+    IFS= read -r initial_members || fail 'could not read initial MLS client number'
+    [[ "$initial_members" =~ ^[0-9]+$ ]] \
+        || fail 'initial MLS client number must be an integer'
+    (( 10#$initial_members >= minimum_initial_members && 10#$initial_members <= 4096 )) \
+        || fail "initial MLS client number must be between $minimum_initial_members and 4096"
+fi
 
 default_run_name="professor-demo-$(date -u +%Y%m%dT%H%M%SZ)"
 printf 'Public run label [%s]: ' "$default_run_name"
@@ -62,7 +90,7 @@ task61_summary="output/task61-adaptive-128-matched-per-commit/summary.json"
 [[ ! -e "$output_dir" ]] || fail "output directory already exists: $output_dir"
 [[ ! -e "$report_dir" ]] || fail "report directory already exists: $report_dir"
 [[ -f Cargo.lock && -f rust-toolchain.toml ]] || fail 'run this script from the repository root'
-if [[ "$generate_clear_32" == false ]]; then
+if [[ "$generate_clear_64" == false && "$generate_delivery_health" == false ]]; then
     [[ -f configs/task62-baseline.toml ]] || fail 'missing Task 62 baseline configuration'
     [[ -f configs/task62-mkyber.toml ]] || fail 'missing Task 62 mKyber configuration'
     [[ -f configs/task62-adaptive.toml ]] || fail 'missing Task 62 adaptive configuration'
@@ -110,14 +138,45 @@ metric_value() {
     printf '%s\n' "$value"
 }
 
-if [[ "$generate_clear_32" == true ]]; then
+if [[ "$generate_delivery_health" == true ]]; then
+    health_summary_csv="$output_dir/summary.csv"
+    health_events_csv="$output_dir/events.csv"
+    health_markdown="$report_dir/report.md"
+    printf '\n=== Adaptive Delivery-Health Simulation ===\n'
+    printf 'Arity: %s -> %s; initial clients: %s\n' \
+        "$initial_arity" "$target_arity" "$initial_members"
+    printf 'Public random seed: 42; post-transition Commit limit: 128\n'
+    printf 'Operations: random Update/Remove with a random valid committer\n\n'
+    run_step 'Run endpoint-count simulation' env CARGO_BUILD_JOBS=1 CARGO_TERM_COLOR=never \
+        nice -n 10 ionice -c 3 cargo run --quiet -p report --bin simulate_delivery_health \
+        --release --locked --offline -- \
+        --initial-arity "$initial_arity" \
+        --target-arity "$target_arity" \
+        --initial-members "$initial_members" \
+        --seed 42 \
+        --maximum-commits 128 \
+        --output "$output_dir" \
+        --report "$report_dir"
+    [[ -s "$health_summary_csv" ]] || fail "summary CSV was not created: $health_summary_csv"
+    [[ -s "$health_events_csv" ]] || fail "event CSV was not created: $health_events_csv"
+    [[ -s "$health_markdown" ]] || fail "Markdown report was not created: $health_markdown"
+    printf '\nGenerated:\n'
+    printf '  Summary: %s\n' "$health_summary_csv"
+    printf '  Events:  %s\n' "$health_events_csv"
+    printf '  Report:  %s\n' "$health_markdown"
+    printf '\nScope: endpoint-count and node-value availability simulation only.\n'
+    printf 'The live fork still lacks authenticated post-transition Remove and TreeCover key erasure.\n'
+    exit 0
+fi
+
+if [[ "$generate_clear_64" == true ]]; then
     clear_summary_csv="$output_dir/clear_report.csv"
     clear_events_csv="$output_dir/clear_events.csv"
     clear_markdown="$report_dir/clear_report.md"
-    printf '\n=== Clear 32-Member MLS Report ===\n'
-    printf 'Members: 32; real baseline operations: Update, Add, Remove\n'
+    printf '\n=== Clear 64-Member MLS Report ===\n'
+    printf 'Members: 64; real baseline operations: Update, Add, Remove\n'
     printf 'Adaptive operations: seeded-random Updates through transition and one maturity evaluation\n\n'
-    run_step 'Run clear 32-member experiment' env CARGO_TERM_COLOR=never cargo run --quiet -p report --bin run_clear_32 \
+    run_step 'Run clear 64-member experiment' env CARGO_BUILD_JOBS=1 CARGO_TERM_COLOR=never cargo run --quiet -p report --bin run_clear_64 \
         --release --locked --offline -- \
         --seed 42 \
         --output "$output_dir" \
@@ -129,7 +188,7 @@ if [[ "$generate_clear_32" == true ]]; then
     printf '  Summary: %s\n' "$clear_summary_csv"
     printf '  Events:  %s\n' "$clear_events_csv"
     printf '  Report:  %s\n' "$clear_markdown"
-    printf '\nScope: TreeCover retirement is formula-authorized/modelled; the live fork retirement Commit remains unsupported.\n'
+    printf '\nScope: real operation bytes remain valid; topology C_*, h_*, and retirement are unavailable.\n'
     exit 0
 fi
 

@@ -307,6 +307,8 @@ impl MlsGroup {
                     sender_index,
                     &path,
                     &apply_proposals_values.exclusion_list(),
+                    #[cfg(feature = "experimental-hybrid")]
+                    self.group_epoch_secrets().experimental_transition_mapping(),
                 )?;
                 #[cfg(feature = "experimental-hybrid")]
                 {

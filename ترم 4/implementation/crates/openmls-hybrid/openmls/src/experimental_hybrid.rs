@@ -398,6 +398,91 @@ pub struct ExperimentalHybridCommitMetrics {
     classical_hpke_encapsulation_count: u32,
 }
 
+/// Public tree namespace used by one authenticated hybrid delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExperimentalHybridDeliveryTree {
+    /// RFC MLS binary TreeKEM node indexes.
+    BinaryTree,
+    /// Experimental active-quaternary leaf ordinals.
+    ActiveQuaternaryTree,
+}
+
+impl ExperimentalHybridDeliveryTree {
+    /// Returns a stable public report label.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BinaryTree => "binary_tree",
+            Self::ActiveQuaternaryTree => "active_quaternary_tree",
+        }
+    }
+}
+
+/// Ciphertext-free public recipient set from one signed UpdatePath delivery.
+///
+/// The surrounding Commit authenticates the source delivery. This record
+/// retains only public node indexes and never retains ciphertext or key bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExperimentalHybridRecipientSet {
+    delivery_tree: ExperimentalHybridDeliveryTree,
+    path_node_index: u32,
+    recipient_node_indices: Vec<u32>,
+    canonical_delivery_bytes: u32,
+}
+
+impl ExperimentalHybridRecipientSet {
+    pub(crate) fn new(
+        delivery_tree: ExperimentalHybridDeliveryTree,
+        path_node_index: u32,
+        recipient_node_indices: Vec<u32>,
+        canonical_delivery_bytes: u32,
+    ) -> Self {
+        Self {
+            delivery_tree,
+            path_node_index,
+            recipient_node_indices,
+            canonical_delivery_bytes,
+        }
+    }
+
+    /// Returns the tree namespace in which the indexes are interpreted.
+    pub const fn delivery_tree(&self) -> ExperimentalHybridDeliveryTree {
+        self.delivery_tree
+    }
+
+    /// Returns the authenticated sender-path node index.
+    pub const fn path_node_index(&self) -> u32 {
+        self.path_node_index
+    }
+
+    /// Returns the authenticated public recipient node indexes.
+    pub fn recipient_node_indices(&self) -> &[u32] {
+        &self.recipient_node_indices
+    }
+
+    /// Returns the exact canonical hybrid-delivery length authenticated by the
+    /// surrounding signed Commit.
+    pub const fn canonical_delivery_bytes(&self) -> u32 {
+        self.canonical_delivery_bytes
+    }
+}
+
+/// Ciphertext-free public recipient sets extracted from one signed Commit.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ExperimentalHybridCommitTopology {
+    recipient_sets: Vec<ExperimentalHybridRecipientSet>,
+}
+
+impl ExperimentalHybridCommitTopology {
+    pub(crate) fn new(recipient_sets: Vec<ExperimentalHybridRecipientSet>) -> Self {
+        Self { recipient_sets }
+    }
+
+    /// Returns each path-level recipient set in authenticated wire order.
+    pub fn recipient_sets(&self) -> &[ExperimentalHybridRecipientSet] {
+        &self.recipient_sets
+    }
+}
+
 impl ExperimentalHybridCommitMetrics {
     pub(crate) fn record_delivery(&mut self, recipient_count: usize) -> Result<(), LibraryError> {
         let recipient_count = u32::try_from(recipient_count)

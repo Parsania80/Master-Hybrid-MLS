@@ -33,10 +33,10 @@ if errorlevel 1 (
 
 for /f %%I in ('powershell.exe -NoProfile -Command "Get-Date -AsUTC -Format yyyyMMddTHHmmssZ"') do set "UTC_STAMP=%%I"
 if not defined UTC_STAMP set "UTC_STAMP=%RANDOM%-%RANDOM%"
-set "DEFAULT_RUN=clear-32-windows-%UTC_STAMP%"
+set "DEFAULT_RUN=clear-64-windows-%UTC_STAMP%"
 
 echo.
-echo === Clear 32-Member MLS Report for Windows ===
+echo === Clear 64-Member MLS Report for Windows ===
 set /p "RUN_NAME=Public run label [%DEFAULT_RUN%]: "
 if not defined RUN_NAME set "RUN_NAME=%DEFAULT_RUN%"
 set "CLEAR_RUN_NAME=%RUN_NAME%"
@@ -57,7 +57,7 @@ if exist "%REPORT_DIR%" (
     exit /b 1
 )
 
-echo Members: 32
+echo Members: 64
 echo Real baseline operations: Update, Add, Remove
 echo Adaptive run: seeded-random Updates through transition and one maturity evaluation
 set /p "CONFIRM=Proceed? [y/N]: "
@@ -67,8 +67,9 @@ if /I not "%CONFIRM%"=="y" if /I not "%CONFIRM%"=="yes" (
 )
 
 echo.
-echo Running clear 32-member experiment...
-cargo run --quiet -p report --bin run_clear_32 --release --locked --offline -- --seed 42 --output "output/%RUN_NAME%" --report "report/%RUN_NAME%"
+echo Running clear 64-member experiment...
+set "CARGO_BUILD_JOBS=1"
+cargo run --quiet -p report --bin run_clear_64 --release --locked --offline -- --seed 42 --output "output/%RUN_NAME%" --report "report/%RUN_NAME%"
 if errorlevel 1 (
     echo test.bat: the experiment failed. 1>&2
     exit /b 1

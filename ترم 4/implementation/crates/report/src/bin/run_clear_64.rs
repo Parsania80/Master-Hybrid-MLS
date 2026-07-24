@@ -2,7 +2,7 @@
 
 use std::{env, path::PathBuf, process::ExitCode};
 
-use report::clear_32::generate_clear_32_report;
+use report::clear_64::generate_clear_64_report;
 
 struct Cli {
     seed: u64,
@@ -14,21 +14,21 @@ fn main() -> ExitCode {
     let cli = match parse_cli(env::args().skip(1)) {
         Ok(cli) => cli,
         Err(error) => {
-            eprintln!("run_clear_32: {error}\n");
+            eprintln!("run_clear_64: {error}\n");
             print_usage();
             return ExitCode::from(2);
         }
     };
-    match generate_clear_32_report(cli.seed, &cli.output, &cli.report) {
+    match generate_clear_64_report(cli.seed, &cli.output, &cli.report) {
         Ok(paths) => {
-            println!("Clear 32-member report complete.");
+            println!("Clear 64-member report complete.");
             println!("Summary CSV: {}", paths.summary_csv.display());
             println!("Event CSV: {}", paths.events_csv.display());
             println!("Markdown: {}", paths.report_markdown.display());
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("run_clear_32: {error}");
+            eprintln!("run_clear_64: {error}");
             ExitCode::FAILURE
         }
     }
@@ -70,7 +70,7 @@ fn next_value(
 
 fn print_usage() {
     eprintln!(
-        "Usage: run_clear_32 [--seed <PUBLIC_SEED>] --output output/<run> --report report/<run>"
+        "Usage: run_clear_64 [--seed <PUBLIC_SEED>] --output output/<run> --report report/<run>"
     );
 }
 

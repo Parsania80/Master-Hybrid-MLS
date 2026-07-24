@@ -14,6 +14,8 @@ use crate::{
 };
 
 #[cfg(feature = "experimental-hybrid")]
+use crate::schedule::ExperimentalTransitionNodeState;
+#[cfg(feature = "experimental-hybrid")]
 use crate::storage::TransactionalStorageProvider;
 #[cfg(feature = "experimental-hybrid")]
 use adaptive_tree::{BinaryLeafMember, BinaryToQuaternaryLeafMapping};
@@ -472,6 +474,11 @@ impl MlsGroup {
         let transaction = storage
             .begin_transaction()
             .map_err(MergeCommitError::StorageError)?;
+        let old_keypairs = self
+            .read_epoch_keypairs(&transaction)
+            .map_err(MergeCommitError::StorageError)?;
+        let old_tree_size = self.public_group.tree_size().u32();
+        let old_public_nodes = self.public_group.experimental_parent_node_values();
         let mut candidate = Self::load(&transaction, self.group_id())
             .map_err(MergeCommitError::StorageError)?
             .ok_or_else(|| LibraryError::custom("experimental group is missing from storage"))?;
@@ -484,6 +491,19 @@ impl MlsGroup {
             &prior_mapping,
             &next_state,
         )?;
+        let retained_state = ExperimentalTransitionNodeState::new(
+            &next_state,
+            prior_mapping,
+            old_tree_size,
+            old_public_nodes,
+            old_keypairs,
+        )?;
+        candidate
+            .group_epoch_secrets
+            .install_experimental_transition_node_state(retained_state);
+        transaction
+            .write_group_epoch_secrets(candidate.group_id(), &candidate.group_epoch_secrets)
+            .map_err(MergeCommitError::StorageError)?;
         candidate.validate_experimental_quaternary_epoch_authority()?;
         storage
             .commit_transaction(transaction)
@@ -515,6 +535,11 @@ impl MlsGroup {
         let transaction = storage.begin_transaction().map_err(|error| {
             MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
         })?;
+        let old_keypairs = self.read_epoch_keypairs(&transaction).map_err(|error| {
+            MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+        })?;
+        let old_tree_size = self.public_group.tree_size().u32();
+        let old_public_nodes = self.public_group.experimental_parent_node_values();
         let mut candidate = Self::load(&transaction, self.group_id())
             .map_err(|error| {
                 MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
@@ -537,6 +562,22 @@ impl MlsGroup {
                 &next_state,
             )
             .map_err(MlsGroupStateError::from)?;
+        let retained_state = ExperimentalTransitionNodeState::new(
+            &next_state,
+            prior_mapping,
+            old_tree_size,
+            old_public_nodes,
+            old_keypairs,
+        )
+        .map_err(MlsGroupStateError::from)?;
+        candidate
+            .group_epoch_secrets
+            .install_experimental_transition_node_state(retained_state);
+        transaction
+            .write_group_epoch_secrets(candidate.group_id(), &candidate.group_epoch_secrets)
+            .map_err(|error| {
+                MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+            })?;
         candidate
             .validate_experimental_quaternary_epoch_authority()
             .map_err(MlsGroupStateError::from)?;
@@ -557,6 +598,24 @@ impl MlsGroup {
             .experimental_quaternary_epoch_secret_status()
     }
 
+    /// Returns redacted availability counters for retained transition nodes.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn experimental_transition_node_availability_status(
+        &self,
+    ) -> Option<crate::schedule::ExperimentalTransitionNodeAvailabilityStatus> {
+        self.group_epoch_secrets()
+            .experimental_transition_node_availability_status()
+    }
+
+    /// Returns ciphertext-free retained topology and usable-node coordinates.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn experimental_transition_node_availability_snapshot(
+        &self,
+    ) -> Option<crate::schedule::ExperimentalTransitionNodeAvailabilitySnapshot> {
+        self.group_epoch_secrets()
+            .experimental_transition_node_availability_snapshot()
+    }
+
     /// Atomically applies a staged UpdatePath while the fork-local
     /// quaternary authority is active.
     ///
@@ -575,6 +634,22 @@ impl MlsGroup {
         Provider::Storage: TransactionalStorageProvider<CURRENT_VERSION>,
     {
         self.validate_experimental_quaternary_epoch_authority()?;
+        let self_removed = staged_commit.self_removed();
+        let committer_member_id = staged_commit
+            .update_path_leaf_node()
+            .map(|leaf| leaf.credential().serialized_content().to_vec())
+            .ok_or_else(|| {
+                LibraryError::custom(
+                    "experimental quaternary commit requires an authenticated UpdatePath",
+                )
+            })?;
+        let mut retained_state = self
+            .group_epoch_secrets()
+            .experimental_transition_node_state()
+            .cloned()
+            .ok_or_else(|| {
+                LibraryError::custom("experimental group has no retained transition node state")
+            })?;
         let storage = provider.storage();
         let transaction = storage
             .begin_transaction()
@@ -584,6 +659,33 @@ impl MlsGroup {
             .ok_or_else(|| LibraryError::custom("experimental group is missing from storage"))?;
         candidate.aad.clone_from(&self.aad);
         candidate.merge_staged_commit_with_storage(&transaction, staged_commit)?;
+        if self_removed {
+            storage
+                .commit_transaction(transaction)
+                .map_err(MergeCommitError::StorageError)?;
+            *self = candidate;
+            return Ok(());
+        }
+        let next_state = candidate.experimental_arity_state()?;
+        let current_member_ids = candidate
+            .members()
+            .map(|member| member.credential.serialized_content().to_vec())
+            .collect();
+        let parent_keypairs = candidate
+            .group_epoch_secrets()
+            .experimental_quaternary_parent_keypairs()?;
+        retained_state.reconcile_after_commit(
+            &next_state,
+            current_member_ids,
+            &committer_member_id,
+            parent_keypairs,
+        )?;
+        candidate
+            .group_epoch_secrets
+            .install_experimental_transition_node_state(retained_state);
+        transaction
+            .write_group_epoch_secrets(candidate.group_id(), &candidate.group_epoch_secrets)
+            .map_err(MergeCommitError::StorageError)?;
         candidate.validate_experimental_quaternary_epoch_authority()?;
         storage
             .commit_transaction(transaction)
@@ -605,6 +707,24 @@ impl MlsGroup {
     {
         self.validate_experimental_quaternary_epoch_authority()
             .map_err(MlsGroupStateError::from)?;
+        let committer_member_id = self
+            .pending_commit()
+            .and_then(StagedCommit::update_path_leaf_node)
+            .map(|leaf| leaf.credential().serialized_content().to_vec())
+            .ok_or_else(|| {
+                MlsGroupStateError::LibraryError(LibraryError::custom(
+                    "experimental quaternary pending commit requires an authenticated UpdatePath",
+                ))
+            })?;
+        let mut retained_state = self
+            .group_epoch_secrets()
+            .experimental_transition_node_state()
+            .cloned()
+            .ok_or_else(|| {
+                MlsGroupStateError::LibraryError(LibraryError::custom(
+                    "experimental group has no retained transition node state",
+                ))
+            })?;
         let storage = provider.storage();
         let transaction = storage.begin_transaction().map_err(|error| {
             MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
@@ -620,6 +740,33 @@ impl MlsGroup {
             })?;
         candidate.aad.clone_from(&self.aad);
         candidate.merge_pending_commit_with_storage(&transaction)?;
+        let next_state = candidate
+            .experimental_arity_state()
+            .map_err(MlsGroupStateError::from)?;
+        let current_member_ids = candidate
+            .members()
+            .map(|member| member.credential.serialized_content().to_vec())
+            .collect();
+        let parent_keypairs = candidate
+            .group_epoch_secrets()
+            .experimental_quaternary_parent_keypairs()
+            .map_err(MlsGroupStateError::from)?;
+        retained_state
+            .reconcile_after_commit(
+                &next_state,
+                current_member_ids,
+                &committer_member_id,
+                parent_keypairs,
+            )
+            .map_err(MlsGroupStateError::from)?;
+        candidate
+            .group_epoch_secrets
+            .install_experimental_transition_node_state(retained_state);
+        transaction
+            .write_group_epoch_secrets(candidate.group_id(), &candidate.group_epoch_secrets)
+            .map_err(|error| {
+                MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+            })?;
         candidate
             .validate_experimental_quaternary_epoch_authority()
             .map_err(MlsGroupStateError::from)?;
@@ -660,6 +807,13 @@ impl MlsGroup {
             })?;
         self.group_epoch_secrets()
             .validate_experimental_quaternary_root_keypair()?;
+        let retained_state = self
+            .group_epoch_secrets()
+            .experimental_transition_node_state()
+            .ok_or_else(|| {
+                LibraryError::custom("experimental group has no retained transition node state")
+            })?;
+        retained_state.validate(&state)?;
         if status.epoch() != self.epoch().as_u64()
             || status.tree_version() != state.tree_version()
             || status.mapping_hash() != transitioning.mapping_hash().as_bytes()
@@ -668,7 +822,7 @@ impl MlsGroup {
                 "experimental quaternary epoch authority is not bound to GroupContext",
             ));
         }
-        let mapping = self.experimental_transition_mapping()?;
+        let mapping = retained_state.mapping();
         let mapping_bytes = mapping
             .canonical_bytes()
             .map_err(|_| LibraryError::custom("experimental transition mapping encoding failed"))?;
@@ -678,7 +832,7 @@ impl MlsGroup {
             ));
         }
         let treecover =
-            DeliveryOnlyTreeCover::from_mapping(transitioning.treecover().version(), &mapping)
+            DeliveryOnlyTreeCover::from_mapping(transitioning.treecover().version(), mapping)
                 .map_err(|_| {
                     LibraryError::custom("experimental transition TreeCover derivation failed")
                 })?;

@@ -134,6 +134,30 @@ Task 49 adds a thesis-local in-process retirement harness. It requires a Task 48
 
 Task 50's tests are regression evidence for the educational boundary only. They prove that unavailable old-cover routes and non-positive maturity denominators remain `Keep` blockers, and that invalid retirement facts leave all in-process snapshots unchanged. They cannot prove real secret erasure, MLS authentication, distributed atomicity, resource bounds under attacker-controlled inputs, or security of a future fork.
 
+The clear 64-member report schema version 2 withdraws the earlier fixed-width
+1/2/4/8 partition values as transition-maturity evidence. Until authenticated
+current-tree and eligible old-TreeCover topology produce exact disjoint routes,
+`C_*`, `h_*`, estimated retirement, and formula retirement remain unavailable
+with `CorrectedTopologyRoutesNotImplemented`. Real Commit/Welcome byte
+observations from the run are unaffected. A synthetic partition replay must
+never be used to authorize retirement or claim old-key deletion.
+
+Task 80 exposes only signed public path-node and recipient-node indexes. The
+adapter publishes them after every member accepts the Commit and converges,
+then reconstructs active `T_new` and eligible `T_old` from public membership
+and requires both bindings to match the authenticated GroupContext
+`ArityState`. The snapshot excludes ciphertexts, public-key encodings, private
+keys, path secrets, and entropy. Extraction is observational and does not
+replace receiver validation of malformed signed Commits.
+
+Task 81 operates only on those authenticated public indexes and topology
+bindings. It selects maximal target-only subtrees and verifies exact,
+duplicate-free recipient coverage. It does not read or infer path secrets,
+private keys, ciphertexts, or entropy. A topology cover is not proof that a
+same-payload cryptographic route was materialized; therefore schema version 4
+keeps every `C_*` byte field unavailable until Task 82 performs canonical
+serialization.
+
 Task 51 accepts only a fixed public bootstrap snapshot schema and performs a fresh baseline recreation from its public schedule seed. It validates public encodings, group shape, membership indexes, and public KeyPackage ordering, then creates new operating-system-generated MLS key material and verifies the fresh group before writing a public manifest. It does not restore the source group's private state, preserve its tree hash, process experimental commits, or supply workload/transition measurements. The manifest explicitly records those limits; no restored secret, private key, raw entropy, or path secret is exposed.
 
 Task 52's scheduler consumes only caller-supplied public member indexes, leaf indexes, regions, seeds, fixed lists, and weights. Its seeds are reproducibility inputs, not cryptographic entropy, and its reported distributions are planned selections rather than accepted MLS operations. It does not authorize a member, authenticate a commit, validate a topology beyond unique public leaves, mutate MLS state, or establish fairness/security properties for a future workload. Task 53 must revalidate current membership before any scheduled operation is applied.
@@ -170,6 +194,35 @@ The educational reference backend exposes dedicated operating-system RNG entry p
 | SEC-10 | Measurements accurately distinguish real serialized costs from estimates | Invalid thesis conclusions | Codec-bound instrumentation, provenance fields, and reproducibility review |
 
 Task 54 records only public baseline Commit/Welcome sizes, delivery/join counts, and elapsed lifecycle time. Its elapsed timings are environment-dependent observations, not reproducible performance claims. Candidate topology, mKyber crypto counts/timings, policy, transition, and retirement facts remain typed unavailable values unless a real corresponding hook supplies them. Report output must not reinterpret unavailable as zero, success, an estimate, or evidence of protocol security.
+
+The first Task 82 attempt added only canonical signed-delivery lengths and did
+not retain ciphertext, but it incorrectly treated serialized byte totals as
+the thesis `C_*` values. Those claims are withdrawn. The corrected metric must
+count usable delivery endpoints, where one available internal node is one
+send. Tasks 82–84 implement that definition only in a deterministic public
+node-value simulation. Its seed controls operation/committer selection, not
+cryptographic entropy; it retains no MLS secrets. The new- and old-tree health
+routes are independent: each required node uses its own tree value or falls
+directly to the active leaves beneath it. Simulated Remove invalidates the
+removed member's old/new direct-path ancestors, but this is not proof of key
+erasure or forward secrecy. A separate `C_real` counter models new-tree →
+old-TreeCover → leaf delivery priority and alone drives the byte model. Its new
+byte columns are explicitly modeled canonical field counts
+(`744 * C_real + 132 * active clients`), not emitted MLS
+messages or network observations. The full transition Commit remains
+unavailable rather than being inferred from that model.
+Task 85 now transactionally retains the frozen authenticated mapping, initial
+non-blank old parents and locally possessed pairs, cumulative new-tree parent
+pairs, and active-member holes. Its public snapshot contains only the frozen
+mapping, active leaf ordinals, usable node coordinates, hashes, versions, and
+counts—never keys or ciphertexts. A real post-transition Remove invalidates the
+removed member's retained old and stale-new direct paths before the fresh
+committer path is installed; post-transition Add/remapping fails closed.
+Private values remain redacted, and injected sender/receiver storage failures
+preserve the prior retained state. The clear report still fails closed because
+Task 86 has not connected these live observations to endpoint counting.
+Authenticated full TreeCover retirement and complete old-tree secret erasure
+remain unsupported.
 
 ## Minimum Security Gates Before Experiments
 

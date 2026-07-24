@@ -15,15 +15,14 @@ use crate::experimental_hybrid::{
     binary_hybrid_context, quaternary_hybrid_context, quaternary_parent_node_index,
     ExperimentalHybridPathDelivery, ForkClassicalHpkeProvider,
 };
+#[cfg(feature = "experimental-hybrid")]
+use crate::treesync::treekem::ExperimentalQuaternaryParentPath;
 use crate::{
     binary_tree::array_representation::{LeafNodeIndex, ParentNodeIndex},
     error::LibraryError,
     messages::PathSecret,
     schedule::CommitSecret,
-    treesync::{
-        hashes::ParentHashInput,
-        treekem::{ExperimentalQuaternaryParentPath, UpdatePathNode},
-    },
+    treesync::{hashes::ParentHashInput, treekem::UpdatePathNode},
 };
 #[cfg(feature = "experimental-hybrid")]
 use hybrid_path_secret::{

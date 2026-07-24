@@ -4,6 +4,8 @@ use openmls_traits::{crypto::OpenMlsCrypto, random::OpenMlsRand, signatures::Sig
 use serde::{Deserialize, Serialize};
 use tls_codec::Serialize as _;
 
+#[cfg(feature = "experimental-hybrid")]
+use crate::treesync::node::parent_node::ExperimentalQuaternaryParentPosition;
 use crate::{
     binary_tree::LeafNodeIndex,
     credentials::CredentialWithKey,
@@ -15,11 +17,13 @@ use crate::{
         node::{
             encryption_keys::EncryptionKeyPair,
             leaf_node::{Capabilities, LeafNodeParameters, UpdateLeafNodeParams},
-            parent_node::{ExperimentalQuaternaryParentPosition, PlainUpdatePathNode},
+            parent_node::PlainUpdatePathNode,
         },
         treekem::UpdatePath,
     },
 };
+#[cfg(feature = "experimental-hybrid")]
+use adaptive_tree::BinaryToQuaternaryLeafMapping;
 #[cfg(feature = "experimental-hybrid")]
 use arity_state::{ArityLifecycle, ArityState};
 
@@ -58,6 +62,9 @@ impl PublicGroupDiff<'_> {
         leaf_node_params: &LeafNodeParameters,
         signer: &impl Signer,
         gc_extensions: Option<Extensions<GroupContext>>,
+        #[cfg(feature = "experimental-hybrid")] frozen_transition_mapping: Option<
+            &BinaryToQuaternaryLeafMapping,
+        >,
     ) -> Result<PathComputationResult, CreateCommitError> {
         let ciphersuite = self.group_context().ciphersuite();
 
@@ -171,6 +178,7 @@ impl PublicGroupDiff<'_> {
                     leaf_index,
                     leaf_index,
                     &arity_state,
+                    frozen_transition_mapping,
                 )?;
                 let root_path = plain_path.last().ok_or_else(|| {
                     LibraryError::custom(

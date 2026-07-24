@@ -1,11 +1,12 @@
 #![forbid(unsafe_code)]
 
-//! Minimal 32-member thesis report with one summary row and an event trace.
+//! Minimal 64-member thesis report with one summary row and an event trace.
 //!
 //! Real RFC MLS supplies Update/Add/Remove evidence. A separate real
 //! experimental fork run supplies normal-binary, transition, and quaternary
-//! Update evidence. Canonical cost and maturity values are modelled, and the
-//! fork's missing authenticated TreeCover-retirement Commit stays explicit.
+//! Update evidence. Canonical route bytes remain withdrawn diagnostics rather
+//! than thesis `C_*` values. The fork's missing authenticated node-value state,
+//! post-transition Remove, and TreeCover-retirement Commit stay explicit.
 
 use std::{
     fmt::Write as FmtWrite,
@@ -15,8 +16,9 @@ use std::{
 
 use csv::WriterBuilder;
 use experimental_mls_adapter::{
-    execute_experimental_adaptive_workload_with_policy, ExperimentalAdaptiveCommitPhase,
-    ExperimentalAdaptiveTransitionPolicy, ExperimentalBinaryWorkloadError,
+    execute_experimental_adaptive_workload_until_first_post_transition,
+    ExperimentalAdaptiveCommitPhase, ExperimentalAdaptiveTransitionPolicy,
+    ExperimentalBinaryWorkloadError,
 };
 use serde::Serialize;
 use simulation::{
@@ -25,13 +27,10 @@ use simulation::{
 };
 use thiserror::Error;
 
-use crate::{
-    generation::{validate_artifact_directory, write_new, ReportArtifactError},
-    transition_tables::{canonical_two_to_four_cost_replay, TransitionTableError},
-};
+use crate::generation::{validate_artifact_directory, write_new, ReportArtifactError};
 
 /// Fixed group size for the requested clear experiment.
-pub const CLEAR_REPORT_MEMBER_COUNT: u32 = 32;
+pub const CLEAR_REPORT_MEMBER_COUNT: u32 = 64;
 /// Primary one-row summary CSV.
 pub const CLEAR_REPORT_CSV_FILE_NAME: &str = "clear_report.csv";
 /// Per-event trace CSV.
@@ -39,12 +38,14 @@ pub const CLEAR_EVENTS_CSV_FILE_NAME: &str = "clear_events.csv";
 /// Human-readable interpretation.
 pub const CLEAR_REPORT_MARKDOWN_FILE_NAME: &str = "clear_report.md";
 
-const CLEAR_REPORT_SCHEMA_VERSION: u16 = 1;
+const CLEAR_REPORT_SCHEMA_VERSION: u16 = 6;
+const CLEAR_ADAPTIVE_OPERATION_LIMIT: u32 = 128;
 const LIVE_RETIREMENT_STATE: &str = "UnsupportedNoAuthenticatedRetirementCommit";
-const LOGICAL_RETIREMENT_PROVENANCE: &str =
-    "modelled_formula_event_no_live_treecover_secret_erasure";
+const WITHDRAWN_ROUTE_DIAGNOSTIC_PROVENANCE: &str =
+    "rejected_route_byte_cost_not_emitted_use_endpoint_simulation";
+const COST_UNAVAILABLE_REASON: &str = "LiveAuthenticatedNodeValueFallbackNotImplemented";
 
-/// Paths created by one clear 32-member run.
+/// Paths created by one clear 64-member run.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClearReportArtifactPaths {
     /// One-row CSV with every requested count.
@@ -55,23 +56,20 @@ pub struct ClearReportArtifactPaths {
     pub report_markdown: PathBuf,
 }
 
-/// Failures from the clear 32-member report.
+/// Failures from the clear 64-member report.
 #[derive(Debug, Error)]
 pub enum ClearReportError {
     /// Real baseline MLS Update/Add/Remove execution failed.
-    #[error("the real 32-member baseline MLS workload failed")]
+    #[error("the real 64-member baseline MLS workload failed: {0}")]
     Baseline(#[source] WorkloadExecutionError),
     /// Real adaptive fork execution failed.
-    #[error("the real 32-member adaptive workload failed")]
+    #[error("the real 64-member adaptive workload failed: {0}")]
     Adaptive(#[source] ExperimentalBinaryWorkloadError),
-    /// Canonical cost or maturity replay failed.
-    #[error("the 32-member canonical cost replay failed")]
-    Cost(#[source] TransitionTableError),
     /// A required operation or phase was missing.
-    #[error("the 32-member run did not produce every required operation or phase")]
+    #[error("the 64-member run did not produce every required operation or phase")]
     MissingRequiredEvent,
     /// A public byte/count sum overflowed.
-    #[error("a 32-member public byte or count calculation overflowed")]
+    #[error("a 64-member public byte or count calculation overflowed")]
     Overflow,
     /// Safe-path, create-new, or filesystem output failed.
     #[error("the clear report artifact output failed")]
@@ -86,15 +84,18 @@ struct ClearReportSummary {
     schema_version: u16,
     member_count: u32,
     random_committer_seed: u64,
-    c_ideal_bytes: u64,
-    c_leaf_bytes: u64,
-    c_new_bytes: u64,
-    c_old_bytes: u64,
-    h_new_cost: String,
-    h_old_cost: String,
-    retirement_formula_decision: String,
-    retirement_formula_trigger: String,
-    estimated_commits_to_retirement_condition: u32,
+    cost_measurement_state: &'static str,
+    cost_unavailable_reason: Option<&'static str>,
+    maturity_unavailable_reason: Option<&'static str>,
+    c_ideal_bytes: Option<u64>,
+    c_leaf_bytes: Option<u64>,
+    c_new_bytes: Option<u64>,
+    c_old_bytes: Option<u64>,
+    h_new_cost: Option<String>,
+    h_old_cost: Option<String>,
+    retirement_formula_decision: &'static str,
+    retirement_formula_trigger: &'static str,
+    estimated_commits_to_retirement_condition: Option<u32>,
     live_treecover_retirement_state: &'static str,
     baseline_update_commit_bytes: u64,
     baseline_add_commit_bytes: u64,
@@ -107,7 +108,7 @@ struct ClearReportSummary {
     quaternary_commit_count: u32,
     quaternary_commit_bytes: u64,
     total_adaptive_commit_bytes: u64,
-    logical_retirement_after_adaptive_commit_sequence: u32,
+    logical_retirement_after_adaptive_commit_sequence: Option<u32>,
     real_operation_provenance: &'static str,
     cost_provenance: &'static str,
 }
@@ -126,12 +127,30 @@ struct ClearEventRow {
     commit_bytes: u64,
     welcome_bytes: u64,
     cumulative_commit_bytes: u64,
+    authenticated_tree_version: Option<u32>,
+    active_tree_height: Option<u8>,
+    active_tree_leaf_capacity: Option<u32>,
+    active_tree_occupied_leaf_count: Option<u32>,
+    old_treecover_version: Option<u32>,
+    old_treecover_eligible_member_count: Option<u32>,
+    old_treecover_eligible_node_count: Option<u32>,
+    committer_quaternary_leaf_ordinal: Option<u32>,
+    recipient_set_index: Option<u32>,
+    recipient_tree: Option<&'static str>,
+    path_node_index: Option<u32>,
+    recipient_node_indices: Option<String>,
+    cover_variant: Option<&'static str>,
+    cover_node_count: Option<u32>,
+    cover_nodes: Option<String>,
+    route_payload_bytes: Option<u64>,
+    common_outer_commit_bytes: Option<u64>,
+    aggregate_cost_bytes: Option<u64>,
     state: &'static str,
     provenance: &'static str,
 }
 
-/// Runs and writes the requested minimal 32-member report.
-pub fn generate_clear_32_report(
+/// Runs and writes the requested minimal 64-member report.
+pub fn generate_clear_64_report(
     random_seed: u64,
     output_directory: &Path,
     report_directory: &Path,
@@ -156,7 +175,7 @@ pub fn generate_clear_32_report(
     }
 
     let baseline = execute_baseline_workload(&BaselineWorkloadConfig {
-        group_id: format!("clear-32-baseline-{random_seed}").into_bytes(),
+        group_id: format!("clear-64-baseline-{random_seed}").into_bytes(),
         initial_member_count: CLEAR_REPORT_MEMBER_COUNT,
         maximum_member_count: CLEAR_REPORT_MEMBER_COUNT + 1,
         operation_count: 3,
@@ -165,12 +184,12 @@ pub fn generate_clear_32_report(
         workload_profile: WorkloadProfile::Mixed,
     })
     .map_err(ClearReportError::Baseline)?;
-    let adaptive = execute_experimental_adaptive_workload_with_policy(
+    let adaptive = execute_experimental_adaptive_workload_until_first_post_transition(
         &BaselineWorkloadConfig {
-            group_id: format!("clear-32-adaptive-{random_seed}").into_bytes(),
+            group_id: format!("clear-64-adaptive-{random_seed}").into_bytes(),
             initial_member_count: CLEAR_REPORT_MEMBER_COUNT,
             maximum_member_count: CLEAR_REPORT_MEMBER_COUNT,
-            operation_count: 3,
+            operation_count: CLEAR_ADAPTIVE_OPERATION_LIMIT,
             region_count: 4,
             committer_strategy: CommitterStrategy::SeededRandom { seed: random_seed },
             workload_profile: WorkloadProfile::UpdateOnly,
@@ -178,9 +197,6 @@ pub fn generate_clear_32_report(
         ExperimentalAdaptiveTransitionPolicy::MatchedPerCommitSaving,
     )
     .map_err(ClearReportError::Adaptive)?;
-    let costs = canonical_two_to_four_cost_replay(CLEAR_REPORT_MEMBER_COUNT)
-        .map_err(ClearReportError::Cost)?;
-
     let baseline_update = baseline
         .accepted_operations
         .iter()
@@ -215,10 +231,6 @@ pub fn generate_clear_32_report(
     if normal_binary.is_empty() || transitions.len() != 1 || quaternary.is_empty() {
         return Err(ClearReportError::MissingRequiredEvent);
     }
-    if costs.threshold_decision != "RetireAuthorizedByFormula" {
-        return Err(ClearReportError::MissingRequiredEvent);
-    }
-
     let normal_binary_bytes = sum_adaptive_bytes(&normal_binary)?;
     let transition_bytes = sum_adaptive_bytes(&transitions)?;
     let quaternary_bytes = sum_adaptive_bytes(&quaternary)?;
@@ -226,23 +238,22 @@ pub fn generate_clear_32_report(
         .checked_add(transition_bytes)
         .and_then(|value| value.checked_add(quaternary_bytes))
         .ok_or(ClearReportError::Overflow)?;
-    let logical_retirement_sequence = quaternary
-        .first()
-        .ok_or(ClearReportError::MissingRequiredEvent)?
-        .sequence;
     let summary = ClearReportSummary {
         schema_version: CLEAR_REPORT_SCHEMA_VERSION,
         member_count: CLEAR_REPORT_MEMBER_COUNT,
         random_committer_seed: random_seed,
-        c_ideal_bytes: costs.c_ideal_bytes,
-        c_leaf_bytes: costs.c_leaf_bytes,
-        c_new_bytes: costs.c_new_bytes,
-        c_old_bytes: costs.c_old_bytes,
-        h_new_cost: costs.h_new_cost.clone(),
-        h_old_cost: costs.h_old_cost.clone(),
-        retirement_formula_decision: costs.threshold_decision.clone(),
-        retirement_formula_trigger: costs.threshold_trigger.clone(),
-        estimated_commits_to_retirement_condition: 1,
+        cost_measurement_state: "unavailable",
+        cost_unavailable_reason: Some(COST_UNAVAILABLE_REASON),
+        maturity_unavailable_reason: Some(COST_UNAVAILABLE_REASON),
+        c_ideal_bytes: None,
+        c_leaf_bytes: None,
+        c_new_bytes: None,
+        c_old_bytes: None,
+        h_new_cost: None,
+        h_old_cost: None,
+        retirement_formula_decision: "NotEvaluated",
+        retirement_formula_trigger: COST_UNAVAILABLE_REASON,
+        estimated_commits_to_retirement_condition: None,
         live_treecover_retirement_state: LIVE_RETIREMENT_STATE,
         baseline_update_commit_bytes: baseline_update.measurement.emitted_commit_bytes,
         baseline_add_commit_bytes: baseline_add.measurement.emitted_commit_bytes,
@@ -258,10 +269,10 @@ pub fn generate_clear_32_report(
         quaternary_commit_count: count_events(&quaternary)?,
         quaternary_commit_bytes: quaternary_bytes,
         total_adaptive_commit_bytes,
-        logical_retirement_after_adaptive_commit_sequence: logical_retirement_sequence,
+        logical_retirement_after_adaptive_commit_sequence: None,
         real_operation_provenance:
             "real_rfc_baseline_mixed_plus_separate_real_adaptive_fork_update_run",
-        cost_provenance: "canonical_hybrid_codec_and_checked_task46_to48_formula",
+        cost_provenance: WITHDRAWN_ROUTE_DIAGNOSTIC_PROVENANCE,
     };
     let events = event_rows(&baseline.accepted_operations, &adaptive.accepted_operations)?;
 
@@ -318,6 +329,24 @@ fn event_rows(
             commit_bytes: event.measurement.emitted_commit_bytes,
             welcome_bytes: event.measurement.emitted_welcome_bytes.unwrap_or(0),
             cumulative_commit_bytes: baseline_cumulative,
+            authenticated_tree_version: None,
+            active_tree_height: None,
+            active_tree_leaf_capacity: None,
+            active_tree_occupied_leaf_count: None,
+            old_treecover_version: None,
+            old_treecover_eligible_member_count: None,
+            old_treecover_eligible_node_count: None,
+            committer_quaternary_leaf_ordinal: None,
+            recipient_set_index: None,
+            recipient_tree: None,
+            path_node_index: None,
+            recipient_node_indices: None,
+            cover_variant: None,
+            cover_node_count: None,
+            cover_nodes: None,
+            route_payload_bytes: None,
+            common_outer_commit_bytes: None,
+            aggregate_cost_bytes: None,
             state: "observed",
             provenance: "real_rfc_baseline",
         });
@@ -346,10 +375,95 @@ fn event_rows(
             commit_bytes: event.emitted_commit_bytes,
             welcome_bytes: 0,
             cumulative_commit_bytes: adaptive_cumulative,
+            authenticated_tree_version: None,
+            active_tree_height: None,
+            active_tree_leaf_capacity: None,
+            active_tree_occupied_leaf_count: None,
+            old_treecover_version: None,
+            old_treecover_eligible_member_count: None,
+            old_treecover_eligible_node_count: None,
+            committer_quaternary_leaf_ordinal: None,
+            recipient_set_index: None,
+            recipient_tree: None,
+            path_node_index: None,
+            recipient_node_indices: None,
+            cover_variant: None,
+            cover_node_count: None,
+            cover_nodes: None,
+            route_payload_bytes: None,
+            common_outer_commit_bytes: None,
+            aggregate_cost_bytes: None,
             state: "observed",
             provenance: "real_experimental_fork",
         });
         event_index = next_index(event_index)?;
+        if let Some(snapshot) = &event.topology_snapshot {
+            let active = snapshot.transition_trees.active();
+            let active_topology = active.topology();
+            let treecover = snapshot.transition_trees.treecover();
+            let eligible_member_count = u32::try_from(
+                treecover
+                    .members()
+                    .iter()
+                    .filter(|member| member.eligible)
+                    .count(),
+            )
+            .map_err(|_| ClearReportError::Overflow)?;
+            let eligible_node_count = u32::try_from(
+                treecover
+                    .eligible_node_count()
+                    .map_err(|_| ClearReportError::MissingRequiredEvent)?,
+            )
+            .map_err(|_| ClearReportError::Overflow)?;
+            let occupied_leaf_count = u32::try_from(active_topology.occupied_leaf_count())
+                .map_err(|_| ClearReportError::Overflow)?;
+            for (set_index, recipient_set) in
+                snapshot.commit_topology.recipient_sets().iter().enumerate()
+            {
+                rows.push(ClearEventRow {
+                    event_index,
+                    scope: "authenticated_topology_recipient_set",
+                    commit_sequence: Some(event.sequence),
+                    phase: "quaternary-topology",
+                    operation: "authenticated-recipient-set".to_owned(),
+                    committer_member_index: Some(event.committer_member_index),
+                    epoch_before: Some(event.epoch_before),
+                    epoch_after: Some(snapshot.epoch),
+                    active_member_count: event.active_member_count,
+                    commit_bytes: 0,
+                    welcome_bytes: 0,
+                    cumulative_commit_bytes: adaptive_cumulative,
+                    authenticated_tree_version: Some(active.tree_version()),
+                    active_tree_height: Some(active_topology.height()),
+                    active_tree_leaf_capacity: Some(active_topology.leaf_capacity()),
+                    active_tree_occupied_leaf_count: Some(occupied_leaf_count),
+                    old_treecover_version: Some(treecover.version()),
+                    old_treecover_eligible_member_count: Some(eligible_member_count),
+                    old_treecover_eligible_node_count: Some(eligible_node_count),
+                    committer_quaternary_leaf_ordinal: Some(
+                        snapshot.committer_quaternary_leaf_ordinal,
+                    ),
+                    recipient_set_index: Some(
+                        u32::try_from(set_index).map_err(|_| ClearReportError::Overflow)?,
+                    ),
+                    recipient_tree: Some(recipient_set.delivery_tree().as_str()),
+                    path_node_index: Some(recipient_set.path_node_index()),
+                    recipient_node_indices: Some(join_node_indices(
+                        recipient_set.recipient_node_indices(),
+                    )),
+                    cover_variant: None,
+                    cover_node_count: None,
+                    cover_nodes: None,
+                    route_payload_bytes: Some(u64::from(recipient_set.canonical_delivery_bytes())),
+                    common_outer_commit_bytes: None,
+                    aggregate_cost_bytes: None,
+                    state: "authenticated-observed-public-indexes-and-byte-length",
+                    provenance:
+                        "accepted_signed_commit_plus_authenticated_group_context_and_codec_length",
+                });
+                event_index = next_index(event_index)?;
+            }
+        }
     }
 
     let last = adaptive
@@ -360,8 +474,8 @@ fn event_rows(
         event_index,
         scope: "treecover_retirement_evaluation",
         commit_sequence: None,
-        phase: "logical-retirement",
-        operation: "evaluate-retirement-formula".to_owned(),
+        phase: "retirement-unavailable",
+        operation: "await-direct-maturity-calculation".to_owned(),
         committer_member_index: None,
         epoch_before: Some(last.epoch_after),
         epoch_after: None,
@@ -369,14 +483,40 @@ fn event_rows(
         commit_bytes: 0,
         welcome_bytes: 0,
         cumulative_commit_bytes: adaptive_cumulative,
-        state: "modelled",
-        provenance: LOGICAL_RETIREMENT_PROVENANCE,
+        authenticated_tree_version: None,
+        active_tree_height: None,
+        active_tree_leaf_capacity: None,
+        active_tree_occupied_leaf_count: None,
+        old_treecover_version: None,
+        old_treecover_eligible_member_count: None,
+        old_treecover_eligible_node_count: None,
+        committer_quaternary_leaf_ordinal: None,
+        recipient_set_index: None,
+        recipient_tree: None,
+        path_node_index: None,
+        recipient_node_indices: None,
+        cover_variant: None,
+        cover_node_count: None,
+        cover_nodes: None,
+        route_payload_bytes: None,
+        common_outer_commit_bytes: None,
+        aggregate_cost_bytes: None,
+        state: "unavailable",
+        provenance: COST_UNAVAILABLE_REASON,
     });
     Ok(rows)
 }
 
 fn next_index(value: u32) -> Result<u32, ClearReportError> {
     value.checked_add(1).ok_or(ClearReportError::Overflow)
+}
+
+fn join_node_indices(indices: &[u32]) -> String {
+    indices
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 fn operation_text(operation: WorkloadOperation) -> String {
@@ -415,7 +555,7 @@ fn events_csv(events: &[ClearEventRow]) -> Result<Vec<u8>, ClearReportError> {
 
 fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> String {
     let mut document = String::new();
-    writeln!(document, "# Clear 32-member MLS transition report\n").expect("string write");
+    writeln!(document, "# Clear 64-member MLS transition report\n").expect("string write");
     writeln!(
         document,
         "Random committer seed: `{}`. Initial members: `{}`.\n",
@@ -426,13 +566,13 @@ fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> Str
     writeln!(
         document,
         "| C_ideal | C_leaf | C_new | C_old | h_new_cost | h_old_cost | Estimated commits to retirement condition |\n|---:|---:|---:|---:|---|---|---:|\n| {} | {} | {} | {} | {} | {} | {} |\n",
-        summary.c_ideal_bytes,
-        summary.c_leaf_bytes,
-        summary.c_new_bytes,
-        summary.c_old_bytes,
-        summary.h_new_cost,
-        summary.h_old_cost,
-        summary.estimated_commits_to_retirement_condition,
+        optional_u64(summary.c_ideal_bytes),
+        optional_u64(summary.c_leaf_bytes),
+        optional_u64(summary.c_new_bytes),
+        optional_u64(summary.c_old_bytes),
+        optional_text(summary.h_new_cost.as_deref()),
+        optional_text(summary.h_old_cost.as_deref()),
+        optional_u32(summary.estimated_commits_to_retirement_condition),
     )
     .expect("string write");
     writeln!(document, "## Bytes by real adaptive phase\n").expect("string write");
@@ -480,21 +620,79 @@ fn clear_markdown(summary: &ClearReportSummary, events: &[ClearEventRow]) -> Str
         )
         .expect("string write");
     }
+    writeln!(document, "\n## Authenticated topology and recipient sets\n").expect("string write");
+    writeln!(document, "| Epoch | Tree version | Active height/capacity/occupied | Old cover version/eligible members/eligible nodes | Committer quaternary leaf | Recipient tree | Path node | Signed route bytes | Recipient node indexes |\n|---:|---:|---|---|---:|---|---:|---:|---|").expect("string write");
+    for event in events
+        .iter()
+        .filter(|event| event.scope == "authenticated_topology_recipient_set")
+    {
+        writeln!(
+            document,
+            "| {} | {} | {}/{}/{} | {}/{}/{} | {} | {} | {} | {} | {} |",
+            optional_u64(event.epoch_after),
+            optional_u32(event.authenticated_tree_version),
+            optional_u8(event.active_tree_height),
+            optional_u32(event.active_tree_leaf_capacity),
+            optional_u32(event.active_tree_occupied_leaf_count),
+            optional_u32(event.old_treecover_version),
+            optional_u32(event.old_treecover_eligible_member_count),
+            optional_u32(event.old_treecover_eligible_node_count),
+            optional_u32(event.committer_quaternary_leaf_ordinal),
+            event.recipient_tree.unwrap_or("unavailable"),
+            optional_u32(event.path_node_index),
+            optional_u64(event.route_payload_bytes),
+            event
+                .recipient_node_indices
+                .as_deref()
+                .unwrap_or("unavailable"),
+        )
+        .expect("string write");
+    }
+    writeln!(document, "\n## Withdrawn cost diagnostics\n").expect("string write");
+    writeln!(document, "The rejected serialized-route and aggregate byte values are not emitted by schema 6. See rejected ADR 0044 only for the historical audit trail.\n").expect("string write");
     writeln!(document, "\n## Interpretation\n").expect("string write");
     writeln!(
         document,
-        "- Update/Add/Remove rows are real RFC MLS operations on a 32-member starting group."
+        "- Update/Add/Remove rows are real RFC MLS operations on a 64-member starting group."
     )
     .expect("string write");
-    writeln!(document, "- Normal-binary, transition, and quaternary rows are a separate real 32-member experimental-fork Update-only run with seeded-random committers.").expect("string write");
-    writeln!(document, "- `C_*` and `h_*` are deterministic canonical-codec/formula results, not emitted Commit sizes.").expect("string write");
+    writeln!(document, "- Normal-binary, transition, and quaternary rows are a separate real 64-member experimental-fork Update-only run with seeded-random committers.").expect("string write");
+    writeln!(document, "- Authenticated topology and signed recipient indexes remain public diagnostics. Schema 6 emits neither the former exact-cover alternatives nor their serialized byte totals as `C_*` evidence.").expect("string write");
     writeln!(
         document,
-        "- The formula authorizes logical retirement after one post-transition update, but live retirement is `{}`. No TreeCover secret deletion is claimed.",
+        "- The thesis `C_*` metric counts delivery endpoints: a usable internal node costs one send. This real fork run cannot calculate it because authenticated new-tree/old-TreeCover node-value availability is not implemented."
+    )
+    .expect("string write");
+    writeln!(document, "- The former fixed-width 1/2/4/8 partition replay remains educational-only and is not used by this report.").expect("string write");
+    writeln!(
+        document,
+        "- `h_new_cost`, `h_old_cost`, `t`, and formula retirement remain unavailable: `{}`.",
+        optional_text(summary.maturity_unavailable_reason)
+    )
+    .expect("string write");
+    writeln!(
+        document,
+        "- No retirement formula was evaluated. Live retirement is `{}`. No TreeCover secret deletion is claimed.",
         summary.live_treecover_retirement_state
     )
     .expect("string write");
     document
+}
+
+fn optional_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "unavailable".to_owned(), |value| value.to_string())
+}
+
+fn optional_u32(value: Option<u32>) -> String {
+    value.map_or_else(|| "unavailable".to_owned(), |value| value.to_string())
+}
+
+fn optional_u8(value: Option<u8>) -> String {
+    value.map_or_else(|| "unavailable".to_owned(), |value| value.to_string())
+}
+
+fn optional_text(value: Option<&str>) -> &str {
+    value.unwrap_or("unavailable")
 }
 
 #[cfg(test)]
@@ -502,30 +700,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn summary_csv_has_the_requested_clear_columns() {
-        let costs = crate::transition_tables::CanonicalCostReplay {
-            c_leaf_bytes: 10,
-            c_new_bytes: 4,
-            c_old_bytes: 6,
-            c_ideal_bytes: 2,
-            h_new_cost: "3/4".to_owned(),
-            h_old_cost: "1/2".to_owned(),
-            threshold_decision: "RetireAuthorizedByFormula".to_owned(),
-            threshold_trigger: "NewTreeMaturity".to_owned(),
-        };
+    fn summary_csv_withdraws_byte_costs_and_keeps_live_maturity_unavailable() {
         let summary = ClearReportSummary {
-            schema_version: 1,
-            member_count: 32,
+            schema_version: CLEAR_REPORT_SCHEMA_VERSION,
+            member_count: CLEAR_REPORT_MEMBER_COUNT,
             random_committer_seed: 42,
-            c_ideal_bytes: costs.c_ideal_bytes,
-            c_leaf_bytes: costs.c_leaf_bytes,
-            c_new_bytes: costs.c_new_bytes,
-            c_old_bytes: costs.c_old_bytes,
-            h_new_cost: costs.h_new_cost,
-            h_old_cost: costs.h_old_cost,
-            retirement_formula_decision: costs.threshold_decision,
-            retirement_formula_trigger: costs.threshold_trigger,
-            estimated_commits_to_retirement_condition: 1,
+            cost_measurement_state: "unavailable",
+            cost_unavailable_reason: Some(COST_UNAVAILABLE_REASON),
+            maturity_unavailable_reason: Some(COST_UNAVAILABLE_REASON),
+            c_ideal_bytes: None,
+            c_leaf_bytes: None,
+            c_new_bytes: None,
+            c_old_bytes: None,
+            h_new_cost: None,
+            h_old_cost: None,
+            retirement_formula_decision: "NotEvaluated",
+            retirement_formula_trigger: COST_UNAVAILABLE_REASON,
+            estimated_commits_to_retirement_condition: None,
             live_treecover_retirement_state: LIVE_RETIREMENT_STATE,
             baseline_update_commit_bytes: 1,
             baseline_add_commit_bytes: 2,
@@ -538,17 +729,31 @@ mod tests {
             quaternary_commit_count: 1,
             quaternary_commit_bytes: 7,
             total_adaptive_commit_bytes: 18,
-            logical_retirement_after_adaptive_commit_sequence: 4,
+            logical_retirement_after_adaptive_commit_sequence: None,
             real_operation_provenance: "real",
-            cost_provenance: "modelled",
+            cost_provenance: WITHDRAWN_ROUTE_DIAGNOSTIC_PROVENANCE,
         };
         let csv =
             String::from_utf8(summary_csv(&summary).expect("summary CSV")).expect("UTF-8 summary");
+        assert!(csv.contains(
+            "cost_measurement_state,cost_unavailable_reason,maturity_unavailable_reason"
+        ));
         assert!(csv.contains("c_ideal_bytes,c_leaf_bytes,c_new_bytes,c_old_bytes"));
         assert!(csv.contains("h_new_cost,h_old_cost"));
         assert!(csv.contains("normal_binary_commit_bytes"));
         assert!(csv.contains("baseline_add_commit_bytes"));
+        assert!(!csv.contains("22085,62261,22085,19853"));
+        assert!(csv.contains(COST_UNAVAILABLE_REASON));
+        assert!(csv.contains("NotEvaluated"));
+        assert!(!csv.contains("RetireAuthorizedByFormula"));
         assert!(csv.contains(LIVE_RETIREMENT_STATE));
+
+        let markdown = clear_markdown(&summary, &[]);
+        assert!(markdown.contains("| unavailable | unavailable | unavailable | unavailable |"));
+        assert!(markdown.contains(COST_UNAVAILABLE_REASON));
+        assert!(markdown.contains("counts delivery endpoints"));
+        assert!(markdown.contains("No retirement formula was evaluated"));
+        assert!(!markdown.contains("authorizes logical retirement"));
     }
 
     #[test]
@@ -562,5 +767,6 @@ mod tests {
             adaptive_phase(ExperimentalAdaptiveCommitPhase::QuaternaryUpdate),
             "quaternary"
         );
+        assert_eq!(join_node_indices(&[0, 1, 3, 4]), "0;1;3;4");
     }
 }

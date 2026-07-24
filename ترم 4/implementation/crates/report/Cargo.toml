@@ -13,12 +13,15 @@ hex.workspace = true
 hybrid-path-secret = { path = "../hybrid-path-secret" }
 metrics = { path = "../metrics" }
 mkyber = { path = "../mkyber" }
+rand.workspace = true
+rand_chacha.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 simulation = { path = "../simulation" }
 thiserror.workspace = true
 transition-auth = { path = "../transition-auth" }
 transition-policy = { path = "../transition-policy" }
+transition-tree = { path = "../transition-tree" }
 
 [dev-dependencies]
 tempfile.workspace = true

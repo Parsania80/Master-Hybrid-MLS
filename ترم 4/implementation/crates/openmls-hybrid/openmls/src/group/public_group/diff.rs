@@ -15,6 +15,8 @@ use tls_codec::Serialize as TlsSerialize;
 use super::errors::ApplyAppDataUpdateError;
 
 use super::PublicGroup;
+#[cfg(feature = "experimental-hybrid")]
+use crate::treesync::node::encryption_keys::EncryptionKey;
 use crate::{
     binary_tree::{array_representation::TreeSize, LeafNodeIndex},
     error::LibraryError,
@@ -27,8 +29,7 @@ use crate::{
         diff::{StagedTreeSyncDiff, TreeSyncDiff},
         errors::{ApplyUpdatePathError, TreeSyncFromNodesError},
         node::{
-            encryption_keys::{EncryptionKey, EncryptionKeyPair},
-            leaf_node::LeafNode,
+            encryption_keys::EncryptionKeyPair, leaf_node::LeafNode,
             parent_node::PlainUpdatePathNode,
         },
         treekem::{DecryptPathParams, UpdatePath},
@@ -36,7 +37,7 @@ use crate::{
     },
 };
 #[cfg(feature = "experimental-hybrid")]
-use adaptive_tree::{BinaryLeafMember, QuaternaryNode};
+use adaptive_tree::{BinaryLeafMember, BinaryToQuaternaryLeafMapping, QuaternaryNode};
 #[cfg(feature = "experimental-hybrid")]
 use arity_state::{hash_canonical_public_bytes, ArityLifecycle, ArityState};
 #[cfg(feature = "experimental-hybrid")]
@@ -142,6 +143,7 @@ impl<'a> PublicGroupDiff<'a> {
     ///
     /// ValSem203: Path secrets must decrypt correctly
     /// ValSem204: Public keys from Path must be verified and match the private keys from the direct path
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn decrypt_path(
         &self,
         crypto: &impl OpenMlsCrypto,
@@ -150,6 +152,9 @@ impl<'a> PublicGroupDiff<'a> {
         sender_leaf_index: LeafNodeIndex,
         update_path: &UpdatePath,
         exclusion_list: &HashSet<&LeafNodeIndex>,
+        #[cfg(feature = "experimental-hybrid")] frozen_transition_mapping: Option<
+            &BinaryToQuaternaryLeafMapping,
+        >,
     ) -> Result<(Vec<EncryptionKeyPair>, CommitSecret, Vec<EncryptionKeyPair>), ApplyUpdatePathError>
     {
         #[cfg(feature = "experimental-hybrid")]
@@ -168,6 +173,7 @@ impl<'a> PublicGroupDiff<'a> {
                         sender_leaf_index,
                         own_leaf_index,
                         &state,
+                        frozen_transition_mapping,
                     )
                     .map(Some)
                     .map_err(ApplyUpdatePathError::LibraryError)
@@ -243,6 +249,7 @@ impl<'a> PublicGroupDiff<'a> {
         sender_leaf_index: LeafNodeIndex,
         recipient_leaf_index: LeafNodeIndex,
         state: &ArityState,
+        frozen_transition_mapping: Option<&BinaryToQuaternaryLeafMapping>,
     ) -> Result<ExperimentalQuaternaryDeliveryPlan, LibraryError> {
         let ArityLifecycle::Transitioning(transitioning) = state.lifecycle() else {
             return Err(LibraryError::custom(
@@ -255,16 +262,30 @@ impl<'a> PublicGroupDiff<'a> {
             member_ids.insert(leaf_index.u32(), member_id);
             leaf_keys.insert(leaf_index.u32(), encryption_key);
         }
-        let mapping = adaptive_tree::BinaryToQuaternaryLeafMapping::from_binary_members(
-            member_ids
-                .iter()
-                .map(|(binary_leaf_index, member_id)| BinaryLeafMember {
-                    member_id: member_id.clone(),
-                    binary_leaf_index: *binary_leaf_index,
-                })
-                .collect(),
-        )
-        .map_err(|_| LibraryError::custom("invalid experimental quaternary member mapping"))?;
+        let mapping = if let Some(mapping) = frozen_transition_mapping {
+            if member_ids.values().any(|member_id| {
+                !mapping
+                    .assignments
+                    .iter()
+                    .any(|assignment| &assignment.member_id == member_id)
+            }) {
+                return Err(LibraryError::custom(
+                    "current experimental member is absent from frozen mapping",
+                ));
+            }
+            mapping.clone()
+        } else {
+            BinaryToQuaternaryLeafMapping::from_binary_members(
+                member_ids
+                    .iter()
+                    .map(|(binary_leaf_index, member_id)| BinaryLeafMember {
+                        member_id: member_id.clone(),
+                        binary_leaf_index: *binary_leaf_index,
+                    })
+                    .collect(),
+            )
+            .map_err(|_| LibraryError::custom("invalid experimental quaternary member mapping"))?
+        };
         let mapping_bytes = mapping
             .canonical_bytes()
             .map_err(|_| LibraryError::custom("experimental quaternary mapping encoding failed"))?;
@@ -280,10 +301,13 @@ impl<'a> PublicGroupDiff<'a> {
         let sender_member_id = member_ids.get(&sender_leaf_index.u32()).ok_or_else(|| {
             LibraryError::custom("experimental quaternary sender is absent from mapping")
         })?;
+        let recipient_member_id = member_ids.get(&recipient_leaf_index.u32()).ok_or_else(|| {
+            LibraryError::custom("experimental quaternary recipient is absent from members")
+        })?;
         let recipient_assignment = mapping
             .assignments
             .iter()
-            .find(|assignment| assignment.binary_leaf_index == recipient_leaf_index.u32())
+            .find(|assignment| &assignment.member_id == recipient_member_id)
             .ok_or_else(|| {
                 LibraryError::custom("experimental quaternary recipient is absent from mapping")
             })?;
@@ -293,9 +317,6 @@ impl<'a> PublicGroupDiff<'a> {
             .map_err(|_| {
                 LibraryError::custom("experimental quaternary sender path derivation failed")
             })?;
-        let recipient_member_id = member_ids.get(&recipient_leaf_index.u32()).ok_or_else(|| {
-            LibraryError::custom("experimental quaternary recipient is absent from mapping")
-        })?;
         let recipient_path = tree
             .topology()
             .leaf_path_for_member(recipient_member_id)
@@ -316,16 +337,17 @@ impl<'a> PublicGroupDiff<'a> {
             .zip(&recipient_path)
             .position(|(sender_branch, recipient_branch)| sender_branch != recipient_branch)
             .and_then(|depth| parent_nodes.get(depth).copied());
-        let recipient_targets = mapping
-            .assignments
+        let recipient_targets = member_ids
             .iter()
-            .filter(|assignment| assignment.binary_leaf_index != sender_leaf_index.u32())
-            .map(|assignment| {
-                let member_id = member_ids
-                    .get(&assignment.binary_leaf_index)
+            .filter(|(binary_leaf_index, _)| **binary_leaf_index != sender_leaf_index.u32())
+            .map(|(binary_leaf_index, member_id)| {
+                let assignment = mapping
+                    .assignments
+                    .iter()
+                    .find(|assignment| &assignment.member_id == member_id)
                     .ok_or_else(|| {
                         LibraryError::custom(
-                            "experimental quaternary recipient is absent from members",
+                            "experimental quaternary recipient is absent from frozen mapping",
                         )
                     })?;
                 let path = tree
@@ -348,14 +370,9 @@ impl<'a> PublicGroupDiff<'a> {
                             "experimental quaternary recipient has no sibling-resolution parent",
                         )
                     })?;
-                let key = leaf_keys
-                    .get(&assignment.binary_leaf_index)
-                    .cloned()
-                    .ok_or_else(|| {
-                        LibraryError::custom(
-                            "experimental quaternary recipient has no MLS leaf key",
-                        )
-                    })?;
+                let key = leaf_keys.get(binary_leaf_index).cloned().ok_or_else(|| {
+                    LibraryError::custom("experimental quaternary recipient has no MLS leaf key")
+                })?;
                 Ok((assignment.quaternary_leaf_ordinal, parent, key))
             })
             .collect::<Result<Vec<_>, LibraryError>>()?;

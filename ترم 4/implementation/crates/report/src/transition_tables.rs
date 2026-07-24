@@ -169,19 +169,20 @@ struct DecisionText {
     trigger: String,
 }
 
-/// Public result of the canonical 2-to-4 delivery-cost replay for one target size.
+/// Public result of an educational fixed-partition 2-to-4 cost replay.
 ///
-/// These values are deterministic serializer/formula outputs. They are not
-/// emitted MLS Commit sizes and do not prove live TreeCover retirement.
+/// These values are deterministic serializer/formula outputs over synthetic
+/// fixed-width partitions. They are not topology-derived `T_new`/`T_old`
+/// costs, emitted MLS Commit sizes, or live TreeCover-retirement evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CanonicalCostReplay {
-    /// Independent leaf-delivery cost.
+    /// Synthetic singleton-partition delivery cost.
     pub c_leaf_bytes: u64,
-    /// Active quaternary-tree delivery cost.
+    /// Synthetic width-four partition delivery cost.
     pub c_new_bytes: u64,
-    /// Old binary TreeCover delivery cost.
+    /// Synthetic width-two partition delivery cost.
     pub c_old_bytes: u64,
-    /// Ideal mature-quaternary delivery cost.
+    /// Synthetic width-eight partition delivery cost.
     pub c_ideal_bytes: u64,
     /// Exact clamped `h_new_cost` rational.
     pub h_new_cost: String,
@@ -193,8 +194,8 @@ pub struct CanonicalCostReplay {
     pub threshold_trigger: String,
 }
 
-/// Replays the canonical thesis 2-to-4 costs for `member_count` recipients.
-pub fn canonical_two_to_four_cost_replay(
+/// Replays educational fixed-width 1/2/4/8 partitions for `member_count`.
+pub fn educational_fixed_partition_two_to_four_cost_replay(
     member_count: u32,
 ) -> Result<CanonicalCostReplay, TransitionTableError> {
     let replay = cost_replay(member_count, 2, 4, 8)?;
@@ -254,7 +255,7 @@ pub fn generate_transition_table_artifacts(
         TransitionMaturityRow {
             schema_version: TRANSITION_TABLE_SCHEMA_VERSION,
             transition: "2-to-4",
-            provenance: "real_fork_bytes_plus_canonical_codec_replay",
+            provenance: "real_fork_bytes_plus_educational_fixed_partition_replay",
             member_count: facts.member_count,
             transition_bytes: facts.transition_bytes,
             cumulative_bytes_to_maturity_evaluation: real_cumulative,
@@ -272,12 +273,12 @@ pub fn generate_transition_table_artifacts(
             break_even_reason: None,
             logical_treecover_retirement_epoch: None,
             treecover_retirement_state: "UnsupportedNoAuthenticatedRetirementCommit",
-            measurement_method: "transition/cumulative bytes are real Task 61 observations (two normal updates + transition + one converged quaternary update); C/h values are exact canonical-hybrid-codec counterfactual replay; Task 48 retirement authorization is not a live secret-erasure claim",
+            measurement_method: "transition/cumulative bytes are real Task 61 observations (two normal updates + transition + one converged quaternary update); C/h values are educational fixed-width 1/2/4/8 serializer/formula outputs, not topology-derived T_new/T_old maturity evidence; the formula output cannot authorize live retirement",
         },
         TransitionMaturityRow {
             schema_version: TRANSITION_TABLE_SCHEMA_VERSION,
             transition: "4-to-8",
-            provenance: "educational_canonical_codec_topology_replay",
+            provenance: "educational_fixed_partition_codec_replay",
             member_count: 64,
             transition_bytes: four_to_eight.c_new,
             cumulative_bytes_to_maturity_evaluation: educational_cumulative,
@@ -302,7 +303,7 @@ pub fn generate_transition_table_artifacts(
         schema_version: TRANSITION_TABLE_SCHEMA_VERSION,
         task61_summary_path: task61_summary.display().to_string(),
         rows,
-        scope_note: "Task 65 deliberately separates real Task 61 byte observations from canonical-codec counterfactual costs. The existing maturity rule is evaluated exactly, but Task 61 has no authenticated TreeCover-retirement Commit; therefore an authorized formula result never proves actual fork private-key deletion. The 4-to-8 row is educational topology arithmetic, not a live protocol measurement.",
+        scope_note: "Task 65 preserves real Task 61 byte observations but its C/h fields use synthetic fixed-width recipient partitions. Those fields are educational serializer/formula examples, not topology-derived T_new/T_old maturity evidence, and cannot authorize retirement. The 4-to-8 row is also educational arithmetic, not a live protocol measurement.",
     };
     fs::create_dir_all(output_directory)
         .map_err(|error| TransitionTableError::Artifact(ReportArtifactError::Write(error)))?;
@@ -616,9 +617,9 @@ fn transition_maturity_markdown(manifest: &TransitionTableManifest) -> String {
         .expect("string write");
     }
     writeln!(document, "\n## Interpretation\n").expect("string write");
-    writeln!(document, "- 2→4 transition and cumulative bytes are real recorded Task 61 facts. `C_*` values are exact canonical-hybrid-codec counterfactual delivery bytes, so they are not emitted MLS Commit sizes.").expect("string write");
-    writeln!(document, "- The Task 48 formula may authorize retirement, but Task 61 reports `UnsupportedNoAuthenticatedRetirementCommit`. No actual TreeCover secret erasure is claimed.").expect("string write");
-    writeln!(document, "- 4→8 is an educational 64-member topology replay only. Its logical epoch is an explanatory table value, not an implemented octal protocol state.").expect("string write");
+    writeln!(document, "- 2→4 transition and cumulative bytes are real recorded Task 61 facts. Its `C_*` and `h_*` values use synthetic fixed-width recipient partitions and are educational serializer/formula examples, not topology-derived `T_new`/`T_old` maturity evidence.").expect("string write");
+    writeln!(document, "- A formula result from the fixed-partition replay cannot authorize retirement. Task 61 reports `UnsupportedNoAuthenticatedRetirementCommit`; no actual TreeCover secret erasure is claimed.").expect("string write");
+    writeln!(document, "- 4→8 is an educational 64-member fixed-partition replay only. Its logical epoch is an explanatory table value, not an implemented octal protocol state.").expect("string write");
     document
 }
 
@@ -627,7 +628,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn replay_uses_existing_formula_and_authorizes_new_tree_maturity() {
+    fn fixed_partition_replay_preserves_the_historical_formula_output() {
         let replay = cost_replay(128, 2, 4, 8).expect("canonical replay");
         assert_eq!(replay.h_new.0, "6/7");
         assert_eq!(replay.h_old.0, "4/7");
@@ -636,8 +637,9 @@ mod tests {
     }
 
     #[test]
-    fn public_32_member_replay_exposes_requested_costs_and_maturity() {
-        let replay = canonical_two_to_four_cost_replay(32).expect("32-member replay");
+    fn public_32_member_replay_is_explicitly_educational() {
+        let replay =
+            educational_fixed_partition_two_to_four_cost_replay(32).expect("32-member replay");
         assert!(replay.c_leaf_bytes > replay.c_old_bytes);
         assert!(replay.c_old_bytes > replay.c_new_bytes);
         assert!(replay.c_new_bytes > replay.c_ideal_bytes);

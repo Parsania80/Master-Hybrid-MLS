@@ -17,7 +17,10 @@ use super::{
     Proposal, Sender, Signature, WireFormat,
 };
 #[cfg(feature = "experimental-hybrid")]
-use crate::experimental_hybrid::ExperimentalHybridCommitMetrics;
+use crate::experimental_hybrid::{
+    ExperimentalHybridCommitMetrics, ExperimentalHybridCommitTopology,
+    ExperimentalHybridDeliveryTree, ExperimentalHybridRecipientSet,
+};
 use crate::{
     binary_tree::LeafNodeIndex,
     ciphersuite::signable::{Signable, SignedStruct},
@@ -116,6 +119,66 @@ impl AuthenticatedContent {
             metrics.record_delivery(ciphertext.recipients().len())?;
         }
         Ok(metrics)
+    }
+
+    /// Extracts only public path and recipient indexes from signed hybrid
+    /// deliveries before optional PrivateMessage encryption.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_hybrid_commit_topology(
+        &self,
+    ) -> Result<ExperimentalHybridCommitTopology, LibraryError> {
+        let FramedContentBody::Commit(commit) = self.content() else {
+            return Err(LibraryError::custom(
+                "experimental topology requires a Commit",
+            ));
+        };
+        let Some(path) = &commit.path else {
+            return Ok(ExperimentalHybridCommitTopology::default());
+        };
+        let mut recipient_sets = Vec::new();
+        for node in path.nodes() {
+            let Some(bytes) = node.experimental_hybrid_delivery() else {
+                continue;
+            };
+            let ciphertext =
+                hybrid_path_secret::HybridPathCiphertext::from_commit_authenticated_bytes(bytes)
+                    .map_err(|_| {
+                        LibraryError::custom("invalid emitted experimental hybrid delivery")
+                    })?;
+            recipient_sets.push(ExperimentalHybridRecipientSet::new(
+                ExperimentalHybridDeliveryTree::BinaryTree,
+                ciphertext.path_node_index().as_u32(),
+                ciphertext
+                    .recipients()
+                    .iter()
+                    .map(|recipient| recipient.recipient_node_index().as_u32())
+                    .collect(),
+                u32::try_from(bytes.len()).map_err(|_| {
+                    LibraryError::custom("experimental hybrid delivery length overflowed")
+                })?,
+            ));
+        }
+        for parent_path in path.experimental_quaternary_parent_paths() {
+            parent_path.validate_version()?;
+            let ciphertext =
+                hybrid_path_secret::HybridPathCiphertext::from_commit_authenticated_bytes(
+                    parent_path.delivery(),
+                )
+                .map_err(|_| LibraryError::custom("invalid emitted quaternary hybrid delivery"))?;
+            recipient_sets.push(ExperimentalHybridRecipientSet::new(
+                ExperimentalHybridDeliveryTree::ActiveQuaternaryTree,
+                ciphertext.path_node_index().as_u32(),
+                ciphertext
+                    .recipients()
+                    .iter()
+                    .map(|recipient| recipient.recipient_node_index().as_u32())
+                    .collect(),
+                u32::try_from(parent_path.delivery().len()).map_err(|_| {
+                    LibraryError::custom("experimental hybrid delivery length overflowed")
+                })?,
+            ));
+        }
+        Ok(ExperimentalHybridCommitTopology::new(recipient_sets))
     }
 
     /// Convenience function for creating a [`VerifiableAuthenticatedContent`].

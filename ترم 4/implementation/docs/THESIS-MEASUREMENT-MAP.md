@@ -82,7 +82,7 @@ Commit or secret-erasure event.
 
 | Transition row | Artifact | Correct interpretation |
 |---|---|---|
-| Real 2-to-4 bytes | `output/task65-transition-maturity/transition_maturity.json` | Transition and cumulative bytes are observed from Task 61; canonical costs/maturity are counterfactual replay. |
+| Real 2-to-4 bytes | `output/task65-transition-maturity/transition_maturity.json` | Transition and cumulative bytes are observed from Task 61. Task 79 withdrew its fixed-partition costs/maturity as real evidence; those fields are educational serializer examples only. |
 | Real 2-to-4 retirement | Same artifact | `UnsupportedNoAuthenticatedRetirementCommit`; no retirement or erasure was measured. |
 | 4-to-8 row | Same artifact | Educational 64-member topology replay only; no octal MLS Commit, convergence, or private-key lifecycle exists. |
 
@@ -116,7 +116,7 @@ version is `report/task67-thesis-tables/thesis_tables.md`.
 
 For each thesis value, cite the final dataset row and its source artifact, then
 state its value state. For example: “the 2-to-4 transition byte value is an
-observed local fork fact; its maturity costs are counterfactual canonical-codec
+observed local fork fact; its historical maturity costs are educational fixed-partition
 replay.” This prevents real, educational, modelled, and unsupported results
 from being conflated.
 

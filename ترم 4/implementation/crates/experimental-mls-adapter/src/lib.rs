@@ -10,7 +10,7 @@
 //! can be authenticated by every member.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     time::Instant,
 };
 
@@ -21,7 +21,10 @@ use arity_state::{
 };
 use mkyber::{EducationalMkyber512Reference, MkyberDomain};
 use openmls_hybrid::{
-    experimental_hybrid::{mkyber_recipient_capabilities, ExperimentalHybridCommitMetrics},
+    experimental_hybrid::{
+        mkyber_recipient_capabilities, ExperimentalHybridCommitMetrics,
+        ExperimentalHybridCommitTopology, ExperimentalHybridDeliveryTree,
+    },
     prelude::{
         BasicCredential, Ciphersuite, CredentialWithKey, Extension, ExtensionType, Extensions,
         GroupContext, GroupId, KeyPackage, LeafNodeParameters, MlsGroup, MlsGroupCreateConfig,
@@ -43,7 +46,7 @@ use transition_policy::{
     TransitionByteComponent, TransitionByteRange, TransitionPreflightMeasurement,
     TransitionStartConfig, TransitionStartEvaluation, TransitionStartEvaluator,
 };
-use transition_tree::DeliveryOnlyTreeCover;
+use transition_tree::{DeliveryOnlyTreeCover, ExactRecipientCovers, TransitionTrees};
 
 /// Exact upstream OpenMLS revision used by the local fork.
 pub const OPENMLS_HYBRID_UPSTREAM_REVISION: &str = "47dbedecad0c1fd8eb5368d582250ebfcc1e1ce6";
@@ -168,6 +171,33 @@ pub struct ExperimentalAdaptiveTransitionMeasurement {
     pub start_evaluation: TransitionStartEvaluation,
 }
 
+/// Authenticated public topology and recipient sets for one accepted
+/// post-transition Update Commit.
+///
+/// The tree bindings come from the accepted GroupContext `ArityState`; the
+/// recipient sets come from the same signed Commit. This contains no
+/// ciphertext, public-key bytes, private keys, or path secrets.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticatedAdaptiveTopologySnapshot {
+    /// Public MLS group identifier.
+    pub group_id: Vec<u8>,
+    /// Converged epoch that accepted the signed recipient sets.
+    pub epoch: u64,
+    /// Stable public workload member identifier of the committer.
+    pub committer_member_index: u32,
+    /// Committer ordinal in the authenticated active-quaternary mapping.
+    pub committer_quaternary_leaf_ordinal: u32,
+    /// Active `T_new` and eligible delivery-only `T_old`, validated against
+    /// the authenticated mapping and TreeCover hashes.
+    pub transition_trees: TransitionTrees,
+    /// Ciphertext-free path-level recipient sets extracted from the signed
+    /// UpdatePath.
+    pub commit_topology: ExperimentalHybridCommitTopology,
+    /// Exact topology-derived alternatives for the same authenticated
+    /// recipient set. No byte cost is assigned at this stage.
+    pub exact_covers: ExactRecipientCovers,
+}
+
 /// One accepted and converged adaptive workload Commit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcceptedExperimentalAdaptiveOperation {
@@ -201,6 +231,8 @@ pub struct AcceptedExperimentalAdaptiveOperation {
     pub policy_record: Option<transition_policy::AcceptedCommitRecord>,
     /// Real transition-only measurements.
     pub transition: Option<ExperimentalAdaptiveTransitionMeasurement>,
+    /// Authenticated public topology for a post-transition Update Commit.
+    pub topology_snapshot: Option<AuthenticatedAdaptiveTopologySnapshot>,
 }
 
 impl AcceptedExperimentalAdaptiveOperation {
@@ -257,6 +289,9 @@ pub enum ExperimentalBinaryWorkloadError {
     /// A supposed hybrid Commit did not contain accepted hybrid delivery evidence.
     #[error("an accepted experimental Commit did not contain a hybrid UpdatePath delivery")]
     MissingHybridDelivery,
+    /// A post-transition Commit did not expose its signed public recipient sets.
+    #[error("an accepted post-transition Commit did not expose authenticated recipient sets")]
+    MissingAuthenticatedRecipientSets,
     /// Valid members did not converge after an atomic Commit application.
     #[error("valid experimental workload members did not converge")]
     DivergentPublicState,
@@ -271,6 +306,28 @@ pub enum ExperimentalBinaryWorkloadError {
         quaternary_candidate_bytes: u64,
         /// Explicitly estimated transition preflight byte length from the real probe.
         transition_preflight_bytes: u64,
+    },
+    /// A real on-demand quaternary candidate probe failed.
+    #[error("the adaptive candidate probe for member {member_index} failed during {stage}")]
+    AdaptiveProbe {
+        /// Stable public workload member identifier being measured.
+        member_index: u32,
+        /// Public, value-free probe stage.
+        stage: &'static str,
+    },
+    /// A measured adaptive workload operation failed at a public lifecycle stage.
+    #[error(
+        "adaptive {phase} operation {sequence} for member {member_index} failed during {stage}"
+    )]
+    AdaptiveOperation {
+        /// One-based public workload sequence.
+        sequence: u32,
+        /// Stable public workload member identifier.
+        member_index: u32,
+        /// Public phase label.
+        phase: &'static str,
+        /// Public, value-free lifecycle stage.
+        stage: &'static str,
     },
 }
 
@@ -334,7 +391,7 @@ pub fn execute_experimental_binary_workload(
             .ok_or(ExperimentalBinaryWorkloadError::DivergentPublicState)?;
         let epoch_before = members[committer_position].group.epoch().as_u64();
         let started = Instant::now();
-        let (wire, hybrid_metrics) = stage_self_update(&mut members[committer_position])?;
+        let (wire, hybrid_metrics, _) = stage_self_update(&mut members[committer_position])?;
         if hybrid_metrics.hybrid_path_delivery_count() == 0 {
             return Err(ExperimentalBinaryWorkloadError::MissingHybridDelivery);
         }
@@ -415,12 +472,34 @@ pub fn execute_experimental_adaptive_workload_with_policy(
     config: &BaselineWorkloadConfig,
     transition_policy: ExperimentalAdaptiveTransitionPolicy,
 ) -> Result<ExperimentalAdaptiveWorkloadExecution, ExperimentalBinaryWorkloadError> {
+    execute_experimental_adaptive_workload_with_completion(config, transition_policy, false)
+}
+
+/// Executes a bounded real adaptive workload and stops immediately after the
+/// first accepted post-transition quaternary update.
+///
+/// `config.operation_count` remains the maximum number of scheduled workload
+/// updates available to authorize the transition and produce that maturity
+/// observation. The result contains every Commit accepted before this
+/// completion condition; no later scheduled update is executed or hidden.
+pub fn execute_experimental_adaptive_workload_until_first_post_transition(
+    config: &BaselineWorkloadConfig,
+    transition_policy: ExperimentalAdaptiveTransitionPolicy,
+) -> Result<ExperimentalAdaptiveWorkloadExecution, ExperimentalBinaryWorkloadError> {
+    execute_experimental_adaptive_workload_with_completion(config, transition_policy, true)
+}
+
+fn execute_experimental_adaptive_workload_with_completion(
+    config: &BaselineWorkloadConfig,
+    transition_policy: ExperimentalAdaptiveTransitionPolicy,
+    stop_after_first_quaternary_update: bool,
+) -> Result<ExperimentalAdaptiveWorkloadExecution, ExperimentalBinaryWorkloadError> {
     validate_controls(config)?;
     if config.operation_count < 2 {
         return Err(ExperimentalBinaryWorkloadError::InvalidControls);
     }
 
-    let probe = measure_adaptive_probe(config)?;
+    let mut probe = measure_adaptive_probe(config)?;
     let preflight = TransitionPreflightMeasurement::from_serialized_outer_message(
         &probe.transition_wire,
         &[TransitionByteRange::new(
@@ -442,7 +521,7 @@ pub fn execute_experimental_adaptive_workload_with_policy(
     let normal_position = member_position(&members, normal_selection.member_index)?;
     let normal_epoch_before = members[normal_position].group.epoch().as_u64();
     let normal_started = Instant::now();
-    let (normal_wire, normal_hybrid_metrics) = stage_self_update(&mut members[normal_position])?;
+    let (normal_wire, normal_hybrid_metrics, _) = stage_self_update(&mut members[normal_position])?;
     let normal_deliveries = deliver_to_receivers(&mut members, normal_position, &normal_wire)?;
     merge_sender_binary(&mut members[normal_position])?;
     let normal_epoch_after = converged_epoch(&members)?;
@@ -475,23 +554,24 @@ pub fn execute_experimental_adaptive_workload_with_policy(
         arity_state: arity_state_from_group(&members[0].group)?,
         policy_record: Some(policy_record.clone()),
         transition: None,
+        topology_snapshot: None,
     });
     sequence = sequence
         .checked_add(1)
         .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
 
-    let normal_candidate_bytes = probe
-        .quaternary_update_bytes_by_member
-        .get(&normal_selection.member_index)
-        .copied()
-        .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+    let normal_candidate_bytes =
+        probe.quaternary_update_bytes(config, normal_selection.member_index)?;
     let mut last_candidate_bytes = normal_candidate_bytes;
-    let mut costs = vec![ImpactfulCommitByteCosts::new(
+    let mut costs = VecDeque::from([ImpactfulCommitByteCosts::new(
         u64::try_from(normal_wire.len())
             .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
         normal_candidate_bytes,
-    )];
-    let mut last_current_bytes = costs[0].current_bytes();
+    )]);
+    let mut last_current_bytes = costs
+        .front()
+        .ok_or(ExperimentalBinaryWorkloadError::Fork)?
+        .current_bytes();
     let mut transition_selection = None;
     let mut transition_position = None;
     let mut transition_workload_sequence = None;
@@ -500,27 +580,34 @@ pub fn execute_experimental_adaptive_workload_with_policy(
     let mut transition_evaluation = None;
     for workload_sequence in 2..=config.operation_count {
         let selection = select_committer(&members, config, workload_sequence)?;
-        let candidate_bytes = probe
-            .quaternary_update_bytes_by_member
-            .get(&selection.member_index)
-            .copied()
-            .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
-        let position = member_position(&members, selection.member_index)?;
+        let candidate_bytes = probe.quaternary_update_bytes(config, selection.member_index)?;
+        let operation_error = |stage| ExperimentalBinaryWorkloadError::AdaptiveOperation {
+            sequence: workload_sequence,
+            member_index: selection.member_index,
+            phase: "normal-binary",
+            stage,
+        };
+        let position = member_position(&members, selection.member_index)
+            .map_err(|_| operation_error("committer-position"))?;
         let epoch_before = members[position].group.epoch().as_u64();
         let started = Instant::now();
-        let (wire, hybrid_metrics) = stage_self_update(&mut members[position])?;
-        let deliveries = deliver_to_receivers(&mut members, position, &wire)?;
-        merge_sender_binary(&mut members[position])?;
-        let epoch_after = converged_epoch(&members)?;
-        ensure_epoch_advance(epoch_before, epoch_after)?;
+        let (wire, hybrid_metrics, _) = stage_self_update(&mut members[position])
+            .map_err(|_| operation_error("sender-stage"))?;
+        let deliveries = deliver_to_receivers(&mut members, position, &wire)
+            .map_err(|_| operation_error("receiver-application"))?;
+        merge_sender_binary(&mut members[position])
+            .map_err(|_| operation_error("sender-application"))?;
+        let epoch_after = converged_epoch(&members).map_err(|_| operation_error("convergence"))?;
+        ensure_epoch_advance(epoch_before, epoch_after)
+            .map_err(|_| operation_error("epoch-advance"))?;
         last_current_bytes = u64::try_from(wire.len())
             .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
         last_candidate_bytes = candidate_bytes;
-        costs.push(ImpactfulCommitByteCosts::new(
+        costs.push_back(ImpactfulCommitByteCosts::new(
             last_current_bytes,
             candidate_bytes,
         ));
-        let record = policy_window
+        let append_outcome = policy_window
             .append_accepted(
                 epoch_after,
                 CommitImpactFacts {
@@ -529,8 +616,16 @@ pub fn execute_experimental_adaptive_workload_with_policy(
                     ..CommitImpactFacts::default()
                 },
             )
-            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
-            .record;
+            .map_err(|_| operation_error("policy-window"))?;
+        if append_outcome.evicted_epoch_after.is_some() {
+            costs
+                .pop_front()
+                .ok_or_else(|| operation_error("cost-window-eviction"))?;
+        }
+        if u32::try_from(costs.len()).ok() != Some(policy_window.q_e()) {
+            return Err(operation_error("cost-window-synchronization"));
+        }
+        let record = append_outcome.record;
         accepted_operations.push(AcceptedExperimentalAdaptiveOperation {
             sequence,
             phase: ExperimentalAdaptiveCommitPhase::NormalBinaryUpdate,
@@ -544,27 +639,32 @@ pub fn execute_experimental_adaptive_workload_with_policy(
             direct_commit_delivery_count: deliveries,
             accepted_lifecycle_elapsed_nanoseconds: started.elapsed().as_nanos(),
             hybrid_delivery: Some(hybrid_metrics),
-            arity_state: arity_state_from_group(&members[0].group)?,
+            arity_state: arity_state_from_group(&members[0].group)
+                .map_err(|_| operation_error("arity-state-observation"))?,
             policy_record: Some(record.clone()),
             transition: None,
+            topology_snapshot: None,
         });
         sequence = sequence
             .checked_add(1)
             .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
-        let normal = arity_state_from_group(&members[0].group)?;
+        let normal = arity_state_from_group(&members[0].group)
+            .map_err(|_| operation_error("arity-state-policy-input"))?;
         let savings = PreflightSavings::from_impactful_costs(
-            &costs,
+            costs.make_contiguous(),
             normal.policy().transition_preflight_bytes(),
         )
-        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        .map_err(|_| operation_error("savings"))?;
         let authorization_savings = match transition_policy {
             ExperimentalAdaptiveTransitionPolicy::AmortizeTransitionPreflight => savings,
             ExperimentalAdaptiveTransitionPolicy::MatchedPerCommitSaving => {
-                PreflightSavings::from_impactful_costs(&costs, 0)
-                    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+                PreflightSavings::from_impactful_costs(costs.make_contiguous(), 0)
+                    .map_err(|_| operation_error("matched-savings"))?
             }
         };
-        let evaluation = TransitionStartEvaluator::new(adaptive_start_config(&normal)?)
+        let start_config =
+            adaptive_start_config(&normal).map_err(|_| operation_error("start-config"))?;
+        let evaluation = TransitionStartEvaluator::new(start_config)
             .evaluate_post_warmup(
                 &record,
                 PolicyTransitionState::Normal,
@@ -572,7 +672,7 @@ pub fn execute_experimental_adaptive_workload_with_policy(
                 &policy_window,
                 Some(authorization_savings),
             )
-            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+            .map_err(|_| operation_error("start-evaluation"))?;
         if evaluation.is_triggered() {
             transition_selection = Some(selection);
             transition_position = Some(position);
@@ -675,6 +775,7 @@ pub fn execute_experimental_adaptive_workload_with_policy(
         arity_state: arity_state_from_group(&members[0].group)?,
         policy_record: None,
         transition: Some(transition_measurement),
+        topology_snapshot: None,
     });
     sequence = sequence
         .checked_add(1)
@@ -686,12 +787,20 @@ pub fn execute_experimental_adaptive_workload_with_policy(
         let committer_position = member_position(&members, selection.member_index)?;
         let epoch_before = members[committer_position].group.epoch().as_u64();
         let started = Instant::now();
-        let (wire, hybrid_metrics) = stage_self_update(&mut members[committer_position])?;
+        let (wire, hybrid_metrics, commit_topology) =
+            stage_self_update(&mut members[committer_position])?;
         let direct_commit_delivery_count =
             deliver_quaternary_to_receivers(&mut members, committer_position, &wire)?;
         merge_sender_quaternary(&mut members[committer_position])?;
         let epoch_after = converged_epoch(&members)?;
         ensure_epoch_advance(epoch_before, epoch_after)?;
+        let topology_snapshot = authenticated_topology_snapshot(
+            &members,
+            selection.member_index,
+            selection.leaf_index,
+            epoch_after,
+            commit_topology,
+        )?;
         accepted_operations.push(AcceptedExperimentalAdaptiveOperation {
             sequence,
             phase: ExperimentalAdaptiveCommitPhase::QuaternaryUpdate,
@@ -709,10 +818,14 @@ pub fn execute_experimental_adaptive_workload_with_policy(
             arity_state: arity_state_from_group(&members[0].group)?,
             policy_record: None,
             transition: None,
+            topology_snapshot: Some(topology_snapshot),
         });
         sequence = sequence
             .checked_add(1)
             .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+        if stop_after_first_quaternary_update {
+            break;
+        }
     }
 
     Ok(ExperimentalAdaptiveWorkloadExecution {
@@ -730,41 +843,59 @@ struct AdaptiveProbe {
     quaternary_update_bytes_by_member: BTreeMap<u32, u64>,
 }
 
+impl AdaptiveProbe {
+    fn quaternary_update_bytes(
+        &mut self,
+        config: &BaselineWorkloadConfig,
+        candidate_member_index: u32,
+    ) -> Result<u64, ExperimentalBinaryWorkloadError> {
+        if let Some(bytes) = self
+            .quaternary_update_bytes_by_member
+            .get(&candidate_member_index)
+        {
+            return Ok(*bytes);
+        }
+        let (candidate_transition_wire, candidate_update_wire) =
+            measure_adaptive_probe_candidate(config, candidate_member_index)?;
+        if candidate_transition_wire.len() != self.transition_wire.len() {
+            return Err(ExperimentalBinaryWorkloadError::AdaptiveProbe {
+                member_index: candidate_member_index,
+                stage: "transition-size-consistency",
+            });
+        }
+        let candidate_bytes = u64::try_from(candidate_update_wire.len())
+            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
+        self.quaternary_update_bytes_by_member
+            .insert(candidate_member_index, candidate_bytes);
+        Ok(candidate_bytes)
+    }
+}
+
 fn measure_adaptive_probe(
     config: &BaselineWorkloadConfig,
 ) -> Result<AdaptiveProbe, ExperimentalBinaryWorkloadError> {
-    // Each candidate comes from a fresh real transition because the fork has
-    // no side-effect-free preview. The sender/path pairing must match the
-    // corresponding normal observation; a single fixed candidate would make
-    // a round-robin policy comparison invalid.
-    let mut transition_wire = None;
+    // Establish preflight and the first matched candidate only. Later
+    // committer/path candidates are measured on demand so a configured upper
+    // bound does not execute unused future probes.
+    let candidate_member_index = adaptive_probe_member_index(config, 1)?;
+    let (transition_wire, candidate_update_wire) =
+        measure_adaptive_probe_candidate(config, candidate_member_index)?;
     let mut quaternary_update_bytes_by_member = BTreeMap::new();
-    for candidate_member_index in adaptive_probe_member_indexes(config)? {
-        let (candidate_transition_wire, candidate_update_wire) =
-            measure_adaptive_probe_candidate(config, candidate_member_index)?;
-        if transition_wire.is_none() {
-            transition_wire = Some(candidate_transition_wire);
-        }
-        if quaternary_update_bytes_by_member
-            .insert(
-                candidate_member_index,
-                u64::try_from(candidate_update_wire.len())
-                    .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
-            )
-            .is_some()
-        {
-            return Err(ExperimentalBinaryWorkloadError::Fork);
-        }
-    }
+    quaternary_update_bytes_by_member.insert(
+        candidate_member_index,
+        u64::try_from(candidate_update_wire.len())
+            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+    );
     Ok(AdaptiveProbe {
-        transition_wire: transition_wire.ok_or(ExperimentalBinaryWorkloadError::Fork)?,
+        transition_wire,
         quaternary_update_bytes_by_member,
     })
 }
 
-fn adaptive_probe_member_indexes(
+fn adaptive_probe_member_index(
     config: &BaselineWorkloadConfig,
-) -> Result<BTreeSet<u32>, ExperimentalBinaryWorkloadError> {
+    sequence: u32,
+) -> Result<u32, ExperimentalBinaryWorkloadError> {
     let eligible = (0..config.initial_member_count)
         .map(|member_index| EligibleCommitter {
             member_index,
@@ -772,29 +903,48 @@ fn adaptive_probe_member_indexes(
             leaf_region: member_index % config.region_count,
         })
         .collect::<Vec<_>>();
-    let mut member_indexes = BTreeSet::new();
-    for sequence in 1..=config.operation_count {
-        let schedule =
-            build_committer_schedule(&eligible, config.committer_strategy.clone(), sequence)
-                .map_err(|_| ExperimentalBinaryWorkloadError::InvalidControls)?;
-        let selection = schedule
-            .selections
-            .last()
-            .ok_or(ExperimentalBinaryWorkloadError::InvalidControls)?;
-        member_indexes.insert(selection.member_index);
-    }
-    Ok(member_indexes)
+    build_committer_schedule(&eligible, config.committer_strategy.clone(), sequence)
+        .map_err(|_| ExperimentalBinaryWorkloadError::InvalidControls)?
+        .selections
+        .last()
+        .map(|selection| selection.member_index)
+        .ok_or(ExperimentalBinaryWorkloadError::InvalidControls)
 }
 
 fn measure_adaptive_probe_candidate(
     config: &BaselineWorkloadConfig,
     candidate_member_index: u32,
 ) -> Result<(Vec<u8>, Vec<u8>), ExperimentalBinaryWorkloadError> {
-    let mut members =
-        create_initial_group_with_extensions(config, adaptive_probe_arity_extensions(config)?)?;
-    let selection = select_committer(&members, config, 1)?;
-    let position = member_position(&members, selection.member_index)?;
-    let next_state = probe_transition_state(&members[0].group)?;
+    let extensions = adaptive_probe_arity_extensions(config).map_err(|_| {
+        ExperimentalBinaryWorkloadError::AdaptiveProbe {
+            member_index: candidate_member_index,
+            stage: "arity-state",
+        }
+    })?;
+    let mut members = create_initial_group_with_extensions(config, extensions).map_err(|_| {
+        ExperimentalBinaryWorkloadError::AdaptiveProbe {
+            member_index: candidate_member_index,
+            stage: "initial-group",
+        }
+    })?;
+    let selection = select_committer(&members, config, 1).map_err(|_| {
+        ExperimentalBinaryWorkloadError::AdaptiveProbe {
+            member_index: candidate_member_index,
+            stage: "transition-committer",
+        }
+    })?;
+    let position = member_position(&members, selection.member_index).map_err(|_| {
+        ExperimentalBinaryWorkloadError::AdaptiveProbe {
+            member_index: candidate_member_index,
+            stage: "transition-committer-position",
+        }
+    })?;
+    let next_state = probe_transition_state(&members[0].group).map_err(|_| {
+        ExperimentalBinaryWorkloadError::AdaptiveProbe {
+            member_index: candidate_member_index,
+            stage: "transition-state",
+        }
+    })?;
     let (transition_commit, _, _) = {
         let ExperimentalWorkloadMember {
             provider,
@@ -804,16 +954,47 @@ fn measure_adaptive_probe_candidate(
         } = &mut members[position];
         group
             .begin_experimental_transition(provider, signer, next_state)
-            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+            .map_err(|_| ExperimentalBinaryWorkloadError::AdaptiveProbe {
+                member_index: candidate_member_index,
+                stage: "transition-stage",
+            })?
     };
-    let transition_wire = transition_commit
-        .tls_serialize_detached()
-        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
-    let _ = deliver_transition_to_receivers(&mut members, position, &transition_wire)?;
-    merge_sender_transition(&mut members[position])?;
-    let _ = converged_epoch(&members)?;
-    let update_position = member_position(&members, candidate_member_index)?;
-    let (quaternary_update_wire, _) = stage_self_update(&mut members[update_position])?;
+    let transition_wire = transition_commit.tls_serialize_detached().map_err(|_| {
+        ExperimentalBinaryWorkloadError::AdaptiveProbe {
+            member_index: candidate_member_index,
+            stage: "transition-serialization",
+        }
+    })?;
+    let _ = deliver_transition_to_receivers(&mut members, position, &transition_wire).map_err(
+        |_| ExperimentalBinaryWorkloadError::AdaptiveProbe {
+            member_index: candidate_member_index,
+            stage: "transition-receiver-application",
+        },
+    )?;
+    merge_sender_transition(&mut members[position]).map_err(|_| {
+        ExperimentalBinaryWorkloadError::AdaptiveProbe {
+            member_index: candidate_member_index,
+            stage: "transition-sender-application",
+        }
+    })?;
+    let _ =
+        converged_epoch(&members).map_err(|_| ExperimentalBinaryWorkloadError::AdaptiveProbe {
+            member_index: candidate_member_index,
+            stage: "transition-convergence",
+        })?;
+    let update_position = member_position(&members, candidate_member_index).map_err(|_| {
+        ExperimentalBinaryWorkloadError::AdaptiveProbe {
+            member_index: candidate_member_index,
+            stage: "candidate-committer-position",
+        }
+    })?;
+    let (quaternary_update_wire, _, _) =
+        stage_self_update(&mut members[update_position]).map_err(|_| {
+            ExperimentalBinaryWorkloadError::AdaptiveProbe {
+                member_index: candidate_member_index,
+                stage: "quaternary-update-stage",
+            }
+        })?;
     Ok((transition_wire, quaternary_update_wire))
 }
 
@@ -1010,7 +1191,14 @@ fn merge_sender_quaternary(
 
 fn stage_self_update(
     member: &mut ExperimentalWorkloadMember,
-) -> Result<(Vec<u8>, ExperimentalHybridCommitMetrics), ExperimentalBinaryWorkloadError> {
+) -> Result<
+    (
+        Vec<u8>,
+        ExperimentalHybridCommitMetrics,
+        ExperimentalHybridCommitTopology,
+    ),
+    ExperimentalBinaryWorkloadError,
+> {
     let bundle = member
         .group
         .self_update(
@@ -1022,11 +1210,15 @@ fn stage_self_update(
     let metrics = bundle
         .experimental_hybrid_metrics()
         .ok_or(ExperimentalBinaryWorkloadError::MissingHybridDelivery)?;
+    let topology = bundle
+        .experimental_hybrid_topology()
+        .cloned()
+        .ok_or(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets)?;
     let (commit, _, _) = bundle.into_contents();
     let wire = commit
         .tls_serialize_detached()
         .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
-    Ok((wire, metrics))
+    Ok((wire, metrics, topology))
 }
 
 fn deliver_to_receivers(
@@ -1333,6 +1525,76 @@ fn transition_mapping_from_group(
     .map_err(|_| ExperimentalBinaryWorkloadError::Fork)
 }
 
+fn authenticated_topology_snapshot(
+    members: &[ExperimentalWorkloadMember],
+    committer_member_index: u32,
+    committer_binary_leaf_index: u32,
+    epoch: u64,
+    commit_topology: ExperimentalHybridCommitTopology,
+) -> Result<AuthenticatedAdaptiveTopologySnapshot, ExperimentalBinaryWorkloadError> {
+    let group = &members
+        .first()
+        .ok_or(ExperimentalBinaryWorkloadError::InvalidControls)?
+        .group;
+    if group.epoch().as_u64() != epoch {
+        return Err(ExperimentalBinaryWorkloadError::DivergentPublicState);
+    }
+    let arity_state = arity_state_from_group(group)?;
+    let mapping = transition_mapping_from_group(group)?;
+    let committer_quaternary_leaf_ordinal = mapping
+        .assignments
+        .iter()
+        .find(|assignment| assignment.binary_leaf_index == committer_binary_leaf_index)
+        .map(|assignment| assignment.quaternary_leaf_ordinal)
+        .ok_or(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets)?;
+    let treecover = DeliveryOnlyTreeCover::from_mapping(1, &mapping)
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let transition_trees =
+        TransitionTrees::from_transitioning_state(&arity_state, mapping.clone(), treecover)
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+
+    let expected_recipients = mapping
+        .assignments
+        .iter()
+        .map(|assignment| assignment.quaternary_leaf_ordinal)
+        .filter(|ordinal| *ordinal != committer_quaternary_leaf_ordinal)
+        .collect::<BTreeSet<_>>();
+    let mut observed_recipients = BTreeSet::new();
+    if commit_topology.recipient_sets().is_empty() {
+        return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
+    }
+    for recipient_set in commit_topology.recipient_sets() {
+        if recipient_set.delivery_tree() != ExperimentalHybridDeliveryTree::ActiveQuaternaryTree
+            || recipient_set.recipient_node_indices().is_empty()
+        {
+            return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
+        }
+        for recipient in recipient_set.recipient_node_indices() {
+            if *recipient == committer_quaternary_leaf_ordinal
+                || !observed_recipients.insert(*recipient)
+            {
+                return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
+            }
+        }
+    }
+    if observed_recipients != expected_recipients {
+        return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
+    }
+    let exact_covers = transition_trees
+        .exact_recipient_covers(&observed_recipients.iter().copied().collect::<Vec<_>>())
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+
+    Ok(AuthenticatedAdaptiveTopologySnapshot {
+        group_id: group.group_id().as_slice().to_vec(),
+        epoch,
+        committer_member_index,
+        committer_quaternary_leaf_ordinal,
+        transition_trees,
+        commit_topology,
+        exact_covers,
+    })
+}
+
 fn adaptive_start_config(
     normal: &ArityState,
 ) -> Result<TransitionStartConfig, ExperimentalBinaryWorkloadError> {
@@ -1427,11 +1689,11 @@ mod tests {
         experimental_hybrid::{
             mkyber_recipient_capabilities, required_mkyber_recipient_capabilities,
             supports_mkyber_recipient_capabilities, ExperimentalHybridDeliveryError,
-            ExperimentalHybridPathDelivery, ExperimentalMkyberError,
-            ExperimentalMkyberNodeKeyStore, ExperimentalMkyberNodePublicKey,
-            ExperimentalNodeKeyError, ExperimentalResolutionNodeId, ForkClassicalHpkeProvider,
-            MkyberRecipientKeyMaterial, MKYBER_RECIPIENT_KEY_MATERIAL_BYTES,
-            MKYBER_RECIPIENT_KEY_MATERIAL_VERSION,
+            ExperimentalHybridDeliveryTree, ExperimentalHybridPathDelivery,
+            ExperimentalMkyberError, ExperimentalMkyberNodeKeyStore,
+            ExperimentalMkyberNodePublicKey, ExperimentalNodeKeyError,
+            ExperimentalResolutionNodeId, ForkClassicalHpkeProvider, MkyberRecipientKeyMaterial,
+            MKYBER_RECIPIENT_KEY_MATERIAL_BYTES, MKYBER_RECIPIENT_KEY_MATERIAL_VERSION,
         },
         prelude::{
             ApplyUpdatePathError, BasicCredential, Capabilities, Ciphersuite, CredentialWithKey,
@@ -1497,9 +1759,15 @@ mod tests {
             committer_strategy: simulation::CommitterStrategy::RoundRobin,
             workload_profile: simulation::WorkloadProfile::UpdateOnly,
         };
-        let probe = super::measure_adaptive_probe(&config).expect("real adaptive probe");
+        let mut probe = super::measure_adaptive_probe(&config).expect("real adaptive probe");
         assert!(!probe.transition_wire.is_empty());
-        assert_eq!(probe.quaternary_update_bytes_by_member.len(), 5);
+        assert_eq!(probe.quaternary_update_bytes_by_member.len(), 1);
+        let second_member =
+            super::adaptive_probe_member_index(&config, 2).expect("second scheduled member");
+        let _ = probe
+            .quaternary_update_bytes(&config, second_member)
+            .expect("second on-demand candidate");
+        assert_eq!(probe.quaternary_update_bytes_by_member.len(), 2);
         let error = super::execute_experimental_adaptive_workload(&config)
             .expect_err("eleven normal observations must not authorize transition");
         assert!(matches!(
@@ -2210,6 +2478,127 @@ mod tests {
         )
     }
 
+    #[allow(clippy::type_complexity)]
+    fn experimental_binary_triple_with_policy_controls(
+        target_group_size: u32,
+        warmup_accepted_commits: u32,
+    ) -> (
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+    ) {
+        let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair_with_policy_controls(
+                target_group_size,
+                warmup_accepted_commits,
+            );
+        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+        let domain = MkyberDomain::new([0x91; 32]);
+        let charlie_provider = OpenMlsRustCrypto::default();
+        let charlie_signer =
+            SignatureKeyPair::new(ciphersuite.signature_algorithm()).expect("Charlie signer");
+        let charlie_bundle = KeyPackage::builder()
+            .build_with_experimental_mkyber(
+                ciphersuite,
+                &charlie_provider,
+                &charlie_signer,
+                CredentialWithKey {
+                    credential: BasicCredential::new(b"experimental-charlie".to_vec()).into(),
+                    signature_key: charlie_signer.public().into(),
+                },
+                domain,
+            )
+            .expect("Charlie experimental KeyPackage");
+        let (add_commit, welcome, _) = alice
+            .add_members(
+                &alice_provider,
+                &alice_signer,
+                core::slice::from_ref(charlie_bundle.key_package()),
+            )
+            .expect("Alice adds Charlie");
+        let add_wire = add_commit
+            .tls_serialize_detached()
+            .expect("Charlie add Commit serialization");
+        let bob_staged = staged_commit_from_wire(&mut bob, &bob_provider, &add_wire);
+        bob.merge_staged_commit_experimental_atomic(&bob_provider, bob_staged)
+            .expect("Bob merges Charlie add");
+        alice
+            .merge_pending_commit_experimental_atomic(&alice_provider)
+            .expect("Alice merges Charlie add");
+        let welcome = match MlsMessageIn::tls_deserialize_exact(
+            welcome
+                .tls_serialize_detached()
+                .expect("Charlie Welcome serialization"),
+        )
+        .expect("Charlie Welcome parsing")
+        .extract()
+        {
+            MlsMessageBodyIn::Welcome(welcome) => welcome,
+            _ => panic!("expected Charlie Welcome"),
+        };
+        let charlie = StagedWelcome::new_from_welcome(
+            &charlie_provider,
+            &MlsGroupJoinConfig::builder()
+                .use_ratchet_tree_extension(true)
+                .build(),
+            welcome,
+            None,
+        )
+        .expect("Charlie staged Welcome")
+        .into_group(&charlie_provider)
+        .expect("Charlie joins");
+        (
+            alice_provider,
+            alice_signer,
+            alice,
+            bob_provider,
+            bob_signer,
+            bob,
+            charlie_provider,
+            charlie_signer,
+            charlie,
+        )
+    }
+
+    fn transitioned_experimental_pair() -> (
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+    ) {
+        let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair_with_policy_controls(2, 0);
+        let transition_state = triggered_transition_state(&alice);
+        let (transition_commit, _, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, transition_state)
+            .expect("Alice stages transition");
+        let transition_wire = transition_commit
+            .tls_serialize_detached()
+            .expect("transition serialization");
+        let bob_transition = staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+        bob.merge_staged_commit_experimental_transition_atomic(&bob_provider, bob_transition)
+            .expect("Bob merges transition");
+        alice
+            .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+            .expect("Alice merges transition");
+        (
+            alice_provider,
+            alice_signer,
+            alice,
+            bob_provider,
+            bob_signer,
+            bob,
+        )
+    }
+
     fn normal_binary_arity_extensions() -> Extensions<GroupContext> {
         normal_binary_arity_extensions_with_controls(128, 2)
     }
@@ -2268,6 +2657,24 @@ mod tests {
         let update = bob
             .self_update(bob_provider, bob_signer, leaf_node_parameters)
             .expect("Bob stages hybrid self-update");
+        let topology = update
+            .experimental_hybrid_topology()
+            .expect("signed public recipient-set topology");
+        assert!(!topology.recipient_sets().is_empty());
+        let expected_tree = match arity_state_from_group(bob).lifecycle() {
+            ArityLifecycle::Normal => ExperimentalHybridDeliveryTree::BinaryTree,
+            ArityLifecycle::Transitioning(_) => {
+                ExperimentalHybridDeliveryTree::ActiveQuaternaryTree
+            }
+        };
+        assert!(topology
+            .recipient_sets()
+            .iter()
+            .all(
+                |recipient_set| recipient_set.delivery_tree() == expected_tree
+                    && !recipient_set.recipient_node_indices().is_empty()
+                    && recipient_set.canonical_delivery_bytes() > 0
+            ));
         let (update_commit, _, _) = update.into_contents();
         update_commit
             .tls_serialize_detached()
@@ -2518,6 +2925,232 @@ mod tests {
     }
 
     #[test]
+    fn retained_transition_nodes_survive_update_and_invalidate_old_direct_path_on_remove() {
+        let (
+            alice_provider,
+            alice_signer,
+            mut alice,
+            bob_provider,
+            bob_signer,
+            mut bob,
+            charlie_provider,
+            _charlie_signer,
+            mut charlie,
+        ) = experimental_binary_triple_with_policy_controls(3, 0);
+
+        let transition_state = triggered_transition_state(&alice);
+        let (transition_commit, _, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, transition_state.clone())
+            .expect("Alice stages three-member transition");
+        let transition_wire = transition_commit
+            .tls_serialize_detached()
+            .expect("transition serialization");
+        let bob_transition = staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+        let charlie_transition =
+            staged_commit_from_wire(&mut charlie, &charlie_provider, &transition_wire);
+        bob.merge_staged_commit_experimental_transition_atomic(&bob_provider, bob_transition)
+            .expect("Bob merges transition");
+        charlie
+            .merge_staged_commit_experimental_transition_atomic(
+                &charlie_provider,
+                charlie_transition,
+            )
+            .expect("Charlie merges transition");
+        alice
+            .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+            .expect("Alice merges transition");
+
+        let initial = alice
+            .experimental_transition_node_availability_status()
+            .expect("initial retained transition state");
+        let initial_snapshot = alice
+            .experimental_transition_node_availability_snapshot()
+            .expect("initial retained availability snapshot");
+        assert_eq!(initial.active_member_count(), 3);
+        assert_eq!(initial.usable_new_node_count(), 0);
+        assert!(initial.usable_old_node_count() > 0);
+        assert_eq!(
+            initial_snapshot.active_quaternary_leaf_ordinals(),
+            &[0, 1, 2]
+        );
+        assert!(initial_snapshot.usable_new_parent_nodes().is_empty());
+        assert_eq!(
+            initial_snapshot.usable_old_parent_indices().len(),
+            initial.usable_old_node_count() as usize
+        );
+        let ArityLifecycle::Transitioning(transitioning) = transition_state.lifecycle() else {
+            panic!("expected transitioning state");
+        };
+        assert_eq!(
+            initial.mapping_hash(),
+            transitioning.mapping_hash().as_bytes()
+        );
+        for group in [&bob, &charlie] {
+            let status = group
+                .experimental_transition_node_availability_status()
+                .expect("receiver retained transition state");
+            assert_eq!(status.active_member_count(), initial.active_member_count());
+            assert_eq!(status.mapping_hash(), initial.mapping_hash());
+            assert_eq!(status.treecover_hash(), initial.treecover_hash());
+            assert_eq!(
+                status.usable_old_node_count(),
+                initial.usable_old_node_count()
+            );
+            assert_eq!(status.usable_new_node_count(), 0);
+            assert_eq!(
+                group
+                    .experimental_transition_node_availability_snapshot()
+                    .expect("receiver availability snapshot"),
+                initial_snapshot
+            );
+        }
+
+        let dave_provider = OpenMlsRustCrypto::default();
+        let dave_signer = SignatureKeyPair::new(
+            Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.signature_algorithm(),
+        )
+        .expect("Dave signer");
+        let dave_bundle = KeyPackage::builder()
+            .build_with_experimental_mkyber(
+                Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+                &dave_provider,
+                &dave_signer,
+                CredentialWithKey {
+                    credential: BasicCredential::new(b"experimental-dave".to_vec()).into(),
+                    signature_key: dave_signer.public().into(),
+                },
+                MkyberDomain::new([0x91; 32]),
+            )
+            .expect("Dave experimental KeyPackage");
+        let epoch_before_rejected_add = alice.epoch();
+        assert!(
+            alice
+                .add_members(
+                    &alice_provider,
+                    &alice_signer,
+                    core::slice::from_ref(dave_bundle.key_package()),
+                )
+                .is_err(),
+            "post-transition Add must fail against the frozen mapping"
+        );
+        assert_eq!(alice.epoch(), epoch_before_rejected_add);
+        assert_eq!(
+            alice.experimental_transition_node_availability_status(),
+            Some(initial)
+        );
+
+        let charlie_leaf = charlie.own_leaf_index();
+        let (remove_commit, welcome, _) = bob
+            .remove_members(&bob_provider, &bob_signer, &[charlie_leaf])
+            .expect("Bob stages post-transition Charlie Remove");
+        assert!(welcome.is_none());
+        let remove_wire = remove_commit
+            .tls_serialize_detached()
+            .expect("Remove serialization");
+        let alice_remove = staged_commit_from_wire(&mut alice, &alice_provider, &remove_wire);
+        let charlie_remove = staged_commit_from_wire(&mut charlie, &charlie_provider, &remove_wire);
+        alice
+            .merge_staged_commit_experimental_quaternary_atomic(&alice_provider, alice_remove)
+            .expect("Alice merges post-transition Remove");
+        charlie
+            .merge_staged_commit_experimental_quaternary_atomic(&charlie_provider, charlie_remove)
+            .expect("Charlie accepts self-removal");
+        bob.merge_pending_commit_experimental_quaternary_atomic(&bob_provider)
+            .expect("Bob merges post-transition Remove");
+
+        let alice_after_remove = alice
+            .experimental_transition_node_availability_status()
+            .expect("Alice retained state after Remove");
+        let bob_after_remove = bob
+            .experimental_transition_node_availability_status()
+            .expect("Bob retained state after Remove");
+        let alice_snapshot_after_remove = alice
+            .experimental_transition_node_availability_snapshot()
+            .expect("Alice availability after Remove");
+        let bob_snapshot_after_remove = bob
+            .experimental_transition_node_availability_snapshot()
+            .expect("Bob availability after Remove");
+        assert_eq!(alice_after_remove.active_member_count(), 2);
+        assert_eq!(bob_after_remove.active_member_count(), 2);
+        assert_eq!(
+            initial.usable_old_node_count() - alice_after_remove.usable_old_node_count(),
+            1,
+            "the sparse three-member tree retains one non-blank value on Charlie's old direct path"
+        );
+        assert_eq!(
+            alice_after_remove.usable_old_node_count(),
+            bob_after_remove.usable_old_node_count()
+        );
+        assert_eq!(alice_after_remove.usable_new_node_count(), 1);
+        assert_eq!(
+            alice_after_remove.usable_new_node_count(),
+            bob_after_remove.usable_new_node_count()
+        );
+        assert_eq!(alice_after_remove.mapping_hash(), initial.mapping_hash());
+        assert_eq!(bob_after_remove.mapping_hash(), initial.mapping_hash());
+        assert_eq!(alice_snapshot_after_remove, bob_snapshot_after_remove);
+        assert_eq!(
+            alice_snapshot_after_remove.active_quaternary_leaf_ordinals(),
+            &[0, 1]
+        );
+        assert_eq!(
+            alice_snapshot_after_remove
+                .usable_old_parent_indices()
+                .len(),
+            alice_after_remove.usable_old_node_count() as usize
+        );
+        assert_eq!(
+            alice_snapshot_after_remove.usable_new_parent_nodes().len(),
+            alice_after_remove.usable_new_node_count() as usize
+        );
+        assert_eq!(
+            alice_snapshot_after_remove.frozen_mapping(),
+            initial_snapshot.frozen_mapping(),
+            "Remove must preserve the complete frozen mapping and leave a hole"
+        );
+        assert_eq!(alice.epoch(), bob.epoch());
+        assert_eq!(alice.export_ratchet_tree(), bob.export_ratchet_tree());
+
+        let reloaded_alice = MlsGroup::load(alice_provider.storage(), alice.group_id())
+            .expect("Alice storage read")
+            .expect("stored Alice group");
+        assert_eq!(
+            reloaded_alice.experimental_transition_node_availability_status(),
+            Some(alice_after_remove)
+        );
+        assert_eq!(
+            reloaded_alice.experimental_transition_node_availability_snapshot(),
+            Some(alice_snapshot_after_remove)
+        );
+
+        let update_wire = hybrid_self_update_wire(
+            &mut alice,
+            &alice_provider,
+            &alice_signer,
+            LeafNodeParameters::default(),
+        );
+        let bob_update = staged_commit_from_wire(&mut bob, &bob_provider, &update_wire);
+        bob.merge_staged_commit_experimental_quaternary_atomic(&bob_provider, bob_update)
+            .expect("Bob merges Update through frozen mapping hole");
+        alice
+            .merge_pending_commit_experimental_quaternary_atomic(&alice_provider)
+            .expect("Alice merges Update through frozen mapping hole");
+        assert_eq!(alice.epoch(), bob.epoch());
+        assert_eq!(alice.export_ratchet_tree(), bob.export_ratchet_tree());
+        assert_eq!(
+            alice.experimental_transition_node_availability_snapshot(),
+            bob.experimental_transition_node_availability_snapshot()
+        );
+        assert_eq!(
+            alice
+                .experimental_transition_node_availability_status()
+                .expect("Alice final retained state")
+                .active_member_count(),
+            2
+        );
+    }
+
+    #[test]
     fn signed_quaternary_commit_rejects_wrong_parent_metadata_and_recipient_without_mutation() {
         for mutation in [
             ExperimentalUpdatePathTestMutation::WrongFirstQuaternaryRecipient,
@@ -2553,6 +3186,7 @@ mod tests {
             let tree_before = alice.export_ratchet_tree();
             let state_before = arity_state_from_group(&alice);
             let authority_before = alice.experimental_quaternary_epoch_secret_status();
+            let availability_before = alice.experimental_transition_node_availability_status();
             let protocol_message = MlsMessageIn::tls_deserialize_exact(&wire)
                 .expect("signed mutated Commit parsing")
                 .try_into_protocol_message()
@@ -2572,6 +3206,10 @@ mod tests {
             assert_eq!(
                 alice.experimental_quaternary_epoch_secret_status(),
                 authority_before
+            );
+            assert_eq!(
+                alice.experimental_transition_node_availability_status(),
+                availability_before
             );
         }
     }
@@ -2612,6 +3250,7 @@ mod tests {
         let tree_before = alice.export_ratchet_tree();
         let state_before = arity_state_from_group(&alice);
         let authority_before = alice.experimental_quaternary_epoch_secret_status();
+        let availability_before = alice.experimental_transition_node_availability_status();
         let protocol_message = MlsMessageIn::tls_deserialize_exact(&wire)
             .expect("capability Commit parsing")
             .try_into_protocol_message()
@@ -2631,6 +3270,10 @@ mod tests {
         assert_eq!(
             alice.experimental_quaternary_epoch_secret_status(),
             authority_before
+        );
+        assert_eq!(
+            alice.experimental_transition_node_availability_status(),
+            availability_before
         );
     }
 
@@ -2667,6 +3310,7 @@ mod tests {
         let tree_before = alice.export_ratchet_tree();
         let state_before = arity_state_from_group(&alice);
         let authority_before = alice.experimental_quaternary_epoch_secret_status();
+        let availability_before = alice.experimental_transition_node_availability_status();
         let tampered_message = MlsMessageIn::tls_deserialize_exact(&tampered_wire)
             .expect("tampered quaternary Commit remains syntactically valid")
             .try_into_protocol_message()
@@ -2681,6 +3325,10 @@ mod tests {
         assert_eq!(
             alice.experimental_quaternary_epoch_secret_status(),
             authority_before
+        );
+        assert_eq!(
+            alice.experimental_transition_node_availability_status(),
+            availability_before
         );
     }
 
@@ -2718,6 +3366,7 @@ mod tests {
         let tree_before = alice.export_ratchet_tree();
         let state_before = arity_state_from_group(&alice);
         let authority_before = alice.experimental_quaternary_epoch_secret_status();
+        let availability_before = alice.experimental_transition_node_availability_status();
         let replay_message = MlsMessageIn::tls_deserialize_exact(&wire)
             .expect("replay quaternary Commit parsing")
             .try_into_protocol_message()
@@ -2732,6 +3381,10 @@ mod tests {
         assert_eq!(
             alice.experimental_quaternary_epoch_secret_status(),
             authority_before
+        );
+        assert_eq!(
+            alice.experimental_transition_node_availability_status(),
+            availability_before
         );
     }
 
@@ -3296,6 +3949,125 @@ mod tests {
             assert_eq!(reloaded.epoch(), before_epoch);
             assert_eq!(reloaded.export_ratchet_tree(), before_tree);
             assert_eq!(reloaded.extensions(), &before_extensions);
+            assert!(reloaded.pending_commit().is_some());
+        }
+    }
+
+    #[test]
+    fn quaternary_receiver_merge_rolls_back_retained_nodes_on_every_storage_failure() {
+        let (control_provider, _control_signer, mut control, bob_provider, bob_signer, mut bob) =
+            transitioned_experimental_pair();
+        let control_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        let control_staged =
+            staged_commit_from_wire(&mut control, &control_provider, &control_wire);
+        control_provider.storage().set_transaction_failure_at(None);
+        control
+            .merge_staged_commit_experimental_quaternary_atomic(&control_provider, control_staged)
+            .expect("control quaternary receiver merge");
+        let mutation_count = control_provider.storage().last_transaction_mutation_count();
+        assert!(mutation_count > 0);
+
+        for failure_at in 0..mutation_count {
+            let (alice_provider, _alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+                transitioned_experimental_pair();
+            let update_wire = hybrid_self_update_wire(
+                &mut bob,
+                &bob_provider,
+                &bob_signer,
+                LeafNodeParameters::default(),
+            );
+            let staged = staged_commit_from_wire(&mut alice, &alice_provider, &update_wire);
+            let before_epoch = alice.epoch();
+            let before_tree = alice.export_ratchet_tree();
+            let before_availability = alice.experimental_transition_node_availability_status();
+            let before_storage = alice_provider.storage().values.read().unwrap().clone();
+            alice_provider
+                .storage()
+                .set_transaction_failure_at(Some(failure_at));
+
+            assert!(alice
+                .merge_staged_commit_experimental_quaternary_atomic(&alice_provider, staged)
+                .is_err());
+            assert_eq!(alice.epoch(), before_epoch);
+            assert_eq!(alice.export_ratchet_tree(), before_tree);
+            assert_eq!(
+                alice.experimental_transition_node_availability_status(),
+                before_availability
+            );
+            assert_eq!(
+                *alice_provider.storage().values.read().unwrap(),
+                before_storage
+            );
+            let reloaded = MlsGroup::load(alice_provider.storage(), alice.group_id())
+                .expect("failed quaternary transaction remains loadable")
+                .expect("stored pre-merge group");
+            assert_eq!(
+                reloaded.experimental_transition_node_availability_status(),
+                before_availability
+            );
+        }
+    }
+
+    #[test]
+    fn quaternary_pending_merge_rolls_back_retained_nodes_on_every_storage_failure() {
+        let (_alice_provider, _alice_signer, _alice, control_provider, control_signer, mut control) =
+            transitioned_experimental_pair();
+        let _control_wire = hybrid_self_update_wire(
+            &mut control,
+            &control_provider,
+            &control_signer,
+            LeafNodeParameters::default(),
+        );
+        control_provider.storage().set_transaction_failure_at(None);
+        control
+            .merge_pending_commit_experimental_quaternary_atomic(&control_provider)
+            .expect("control quaternary pending merge");
+        let mutation_count = control_provider.storage().last_transaction_mutation_count();
+        assert!(mutation_count > 0);
+
+        for failure_at in 0..mutation_count {
+            let (_alice_provider, _alice_signer, _alice, bob_provider, bob_signer, mut bob) =
+                transitioned_experimental_pair();
+            let _update_wire = hybrid_self_update_wire(
+                &mut bob,
+                &bob_provider,
+                &bob_signer,
+                LeafNodeParameters::default(),
+            );
+            let before_epoch = bob.epoch();
+            let before_tree = bob.export_ratchet_tree();
+            let before_availability = bob.experimental_transition_node_availability_status();
+            let before_storage = bob_provider.storage().values.read().unwrap().clone();
+            bob_provider
+                .storage()
+                .set_transaction_failure_at(Some(failure_at));
+
+            assert!(bob
+                .merge_pending_commit_experimental_quaternary_atomic(&bob_provider)
+                .is_err());
+            assert_eq!(bob.epoch(), before_epoch);
+            assert_eq!(bob.export_ratchet_tree(), before_tree);
+            assert_eq!(
+                bob.experimental_transition_node_availability_status(),
+                before_availability
+            );
+            assert!(bob.pending_commit().is_some());
+            assert_eq!(
+                *bob_provider.storage().values.read().unwrap(),
+                before_storage
+            );
+            let reloaded = MlsGroup::load(bob_provider.storage(), bob.group_id())
+                .expect("failed quaternary pending transaction remains loadable")
+                .expect("stored pending group");
+            assert_eq!(
+                reloaded.experimental_transition_node_availability_status(),
+                before_availability
+            );
             assert!(reloaded.pending_commit().is_some());
         }
     }

@@ -467,6 +467,14 @@ impl PublicGroup {
         self.treesync().tree_size()
     }
 
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_parent_node_values(&self) -> Vec<(u32, EncryptionKey)> {
+        self.treesync()
+            .full_parents()
+            .map(|(index, node)| (index.u32(), node.encryption_key().clone()))
+            .collect()
+    }
+
     fn interim_transcript_hash(&self) -> &[u8] {
         &self.interim_transcript_hash
     }
