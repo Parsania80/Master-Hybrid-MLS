@@ -18,7 +18,7 @@ printf 'Choose a mode:\n'
 printf '  1) Short protocol demo (real comparison plus charts; about 20 seconds)\n'
 printf '  2) Complete thesis tables (comparison, RSS, operation, maturity, model, and final tables)\n'
 printf '  3) Clear 64-member real-protocol report (topology delivery costs unavailable)\n'
-printf '  4) Real fork delivery-health report (2 -> 4, random Update/Remove, authenticated retirement)\n'
+printf '  4) Real fork delivery-health report (2 -> 4, random Add/Update/Remove, authenticated retirement)\n'
 printf 'Selection [1/2/3/4]: '
 IFS= read -r mode_choice || fail 'could not read mode selection'
 
@@ -135,7 +135,7 @@ if [[ "$generate_delivery_health" == true ]]; then
     printf 'Arity: %s -> %s; initial clients: %s\n' \
         "$initial_arity" "$target_arity" "$initial_members"
     printf 'Public random seed: 42; post-transition Commit limit: 128\n'
-    printf 'Operations: random Update/Remove with a random valid committer\n\n'
+    printf 'Operations: random Add/Update/Remove before transition, then Update/Remove until retirement\n\n'
     run_step 'Run authenticated fork workload' env CARGO_BUILD_JOBS=1 CARGO_TERM_COLOR=never \
         nice -n 10 ionice -c 3 cargo run --quiet -p report --bin simulate_delivery_health \
         --release --locked --offline -- \

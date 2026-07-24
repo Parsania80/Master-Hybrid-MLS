@@ -48,7 +48,7 @@ echo === Adaptive Hybrid MLS Interactive Demo ===
 echo Windows Rust toolchain: %WINDOWS_RUST_MODE%
 echo Choose a mode:
 echo   3^) Clear 64-member real-protocol report
-echo   4^) Real fork delivery-health report (2 -^> 4, random Update/Remove, authenticated retirement)
+echo   4^) Real fork delivery-health report (2 -^> 4, random Add/Update/Remove, authenticated retirement)
 set /p "MODE=Selection [3/4]: "
 if "%MODE%"=="3" goto clear_report
 if "%MODE%"=="4" goto delivery_health
@@ -95,7 +95,7 @@ echo Output: %OUTPUT_DIR%\
 echo Report: %REPORT_DIR%\
 echo Arity: %INITIAL_ARITY% -^> %TARGET_ARITY%; initial clients: %INITIAL_MEMBERS%
 echo Public random seed: 42; post-transition Commit limit: 128
-echo Operations: random Update/Remove with a random valid committer
+echo Operations: random Add/Update/Remove before transition, then Update/Remove until retirement
 set /p "CONFIRM=Proceed? [y/N]: "
 if /I not "%CONFIRM%"=="y" if /I not "%CONFIRM%"=="yes" (
     echo Cancelled. No protocol command was run.

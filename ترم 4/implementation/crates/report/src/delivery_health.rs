@@ -232,6 +232,7 @@ struct DeliveryHealthSummary {
     random_seed: u64,
     pre_transition_update_count: u32,
     post_transition_commit_count: u32,
+    add_commit_count: u32,
     update_commit_count: u32,
     remove_commit_count: u32,
     transition_commit_sequence: u32,
@@ -270,11 +271,14 @@ fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, Deliv
     let execution_config = simulation::BaselineWorkloadConfig {
         group_id: b"task86-real-delivery-health".to_vec(),
         initial_member_count: config.initial_member_count,
-        maximum_member_count: config.initial_member_count,
-        operation_count: 2,
+        maximum_member_count: config
+            .initial_member_count
+            .checked_add(16)
+            .ok_or(DeliveryHealthError::Overflow)?,
+        operation_count: config.maximum_post_transition_commits,
         region_count: 2,
         committer_strategy: simulation::CommitterStrategy::RoundRobin,
-        workload_profile: simulation::WorkloadProfile::UpdateOnly,
+        workload_profile: simulation::WorkloadProfile::Mixed,
     };
     let execution = execute_experimental_delivery_health_workload(
         &execution_config,
@@ -287,11 +291,15 @@ fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, Deliv
             schema_version: DELIVERY_HEALTH_SCHEMA_VERSION,
             commit_sequence: observation.sequence,
             phase: "pre-transition",
-            operation: "update",
+            operation: match observation.operation {
+                ExperimentalDeliveryHealthOperation::Add => "add",
+                ExperimentalDeliveryHealthOperation::Update => "update",
+                ExperimentalDeliveryHealthOperation::Remove => "remove",
+            },
             committer_member_index: observation.committer_member_index,
             committer_target_node_index: observation.committer_member_index,
             removed_member_index: None,
-            active_member_count: config.initial_member_count,
+            active_member_count: observation.active_member_count,
             impactful_commits_since_transition: None,
             new_usable_internal_node_count: None,
             old_usable_internal_node_count: None,
@@ -342,6 +350,7 @@ fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, Deliv
     for observation in &execution.post_transition_observations {
         let health = observation.health;
         let operation = match observation.operation {
+            ExperimentalDeliveryHealthOperation::Add => "add",
             ExperimentalDeliveryHealthOperation::Update => "update",
             ExperimentalDeliveryHealthOperation::Remove => "remove",
         };
@@ -430,6 +439,16 @@ fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, Deliv
         .iter()
         .filter(|observation| observation.operation == ExperimentalDeliveryHealthOperation::Update)
         .count() as u32;
+    let add_commit_count = execution
+        .pre_transition_observations
+        .iter()
+        .filter(|observation| observation.operation == ExperimentalDeliveryHealthOperation::Add)
+        .count() as u32
+        + execution
+            .post_transition_observations
+            .iter()
+            .filter(|observation| observation.operation == ExperimentalDeliveryHealthOperation::Add)
+            .count() as u32;
     let remove_commit_count = execution
         .post_transition_observations
         .iter()
@@ -446,6 +465,7 @@ fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, Deliv
             random_seed: execution.random_seed,
             pre_transition_update_count: execution.pre_transition_observations.len() as u32,
             post_transition_commit_count: execution.post_transition_observations.len() as u32,
+            add_commit_count,
             update_commit_count,
             remove_commit_count,
             transition_commit_sequence: execution.transition.sequence,
@@ -685,6 +705,7 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             random_seed: config.random_seed,
             pre_transition_update_count: PRE_TRANSITION_UPDATE_COUNT,
             post_transition_commit_count,
+            add_commit_count: 0,
             update_commit_count: update_count,
             remove_commit_count: remove_count,
             transition_commit_sequence: transition_sequence,
@@ -1257,10 +1278,10 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     .expect("string write");
 
     writeln!(document, "## Pre-transition byte comparison\n").expect("string write");
-    writeln!(document, "Negative saving means the target arity sends fewer modelled bytes. The transition starts after the required two winning observations.\n").expect("string write");
+    writeln!(document, "Negative saving means the target arity sends fewer modelled bytes. Binary Add/Update/Remove operations are sampled until the authenticated policy gate authorizes transition.\n").expect("string write");
     writeln!(
         document,
-        "| Commit | Committer node index | Old arity bytes sent | New arity bytes sent | Saving (new - old) | Decision |\n|---:|---:|---:|---:|---:|---|"
+        "| Commit | Operation | Committer node index | Active clients | Old arity bytes sent | New arity bytes sent | Saving (new - old) | Decision |\n|---:|---|---:|---:|---:|---:|---:|---|"
     )
     .expect("string write");
     for event in result
@@ -1270,9 +1291,11 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     {
         writeln!(
             document,
-            "| {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} |",
             event.commit_sequence,
+            event.operation,
             event.committer_target_node_index,
+            event.active_member_count,
             optional_u64(event.old_arity_bytes_sent),
             optional_u64(event.new_arity_bytes_sent),
             optional_i64(event.saving_new_minus_old_bytes),
@@ -1328,7 +1351,7 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     writeln!(document, "\n## Transition-end result\n").expect("string write");
     writeln!(
         document,
-        "TreeCover is deleted when `h_newcost > 0.7` or `h_oldcost < 0.5`. The condition was **{}** after `{}` post-transition Commit(s); trigger: `{}`. Updates: `{}`. Removes: `{}`. Final clients: `{}`.\n",
+        "TreeCover is deleted when `h_newcost > 0.7` or `h_oldcost < 0.5`. The condition was **{}** after `{}` post-transition Commit(s); trigger: `{}`. Adds: `{}`. Updates: `{}`. Removes: `{}`. Final clients: `{}`.\n",
         if summary.retirement_condition_met {
             "met"
         } else {
@@ -1336,6 +1359,7 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
         },
         summary.post_transition_commit_count,
         summary.retirement_trigger,
+        summary.add_commit_count,
         summary.update_commit_count,
         summary.remove_commit_count,
         summary.final_member_count,
@@ -1350,7 +1374,7 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     writeln!(document, "- `C_real` models actual delivery priority for each required target set: use one usable new-tree node; otherwise use the smallest usable old-TreeCover cover; otherwise send directly to uncovered active leaves. `C_real` does not enter either health formula.").expect("string write");
     writeln!(document, "- `C_ideal` counts the non-empty target-tree sibling nodes when every required internal value is usable.").expect("string write");
     writeln!(document, "- The new tree starts with no usable internal values. An `update` populates the target-tree internal nodes on its committer path. A `remove` invalidates old and new direct-path ancestors known by the removed member, removes that client, then refreshes the removing committer's new-tree path.").expect("string write");
-    writeln!(document, "- Operation labels are `add`, `remove`, or `update`; this workload currently randomizes `remove` and `update` only. A removal never selects its committer as the target.").expect("string write");
+    writeln!(document, "- Operation labels are `add`, `remove`, or `update`; binary operations are randomized across all three, while the post-transition frozen mapping safely permits only `remove` and `update`. A removal never selects its committer as the target.").expect("string write");
     writeln!(document, "- Modelled delivery bytes use `744 × C_real + 132 × active clients`. They model the real delivery-target priority but are not emitted full MLS Commit bytes.").expect("string write");
     writeln!(document, "\n## Boundary\n").expect("string write");
     writeln!(document, "These rows are real experimental-fork observations. Each accepted Commit was authenticated, atomically merged, and followed by a ciphertext-free retained-availability snapshot. The final row is a signed authenticated retirement Commit; its transaction deletes the retained TreeCover key envelope and exposes only redacted deletion counts. This remains thesis-local experimental software, not an interoperability or production-security claim.").expect("string write");
