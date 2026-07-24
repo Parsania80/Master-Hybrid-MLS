@@ -425,6 +425,18 @@ pub enum ExperimentalBinaryWorkloadError {
         /// Public, value-free probe stage.
         stage: &'static str,
     },
+    /// A probe failure with a bounded public fork error description.
+    #[error(
+        "the adaptive candidate probe for member {member_index} failed during {stage}: {detail}"
+    )]
+    AdaptiveProbeFailure {
+        /// Stable public workload member identifier being measured.
+        member_index: u32,
+        /// Public lifecycle stage.
+        stage: &'static str,
+        /// Public error category supplied by the fork.
+        detail: String,
+    },
     /// A measured adaptive workload operation failed at a public lifecycle stage.
     #[error(
         "adaptive {phase} operation {sequence} for member {member_index} failed during {stage}"
@@ -446,6 +458,16 @@ pub enum ExperimentalBinaryWorkloadError {
         sequence: u32,
         /// Public, value-free lifecycle stage.
         stage: &'static str,
+    },
+    /// A delivery-health operation failed with a bounded public fork error.
+    #[error("delivery-health operation {sequence} failed during {stage}: {detail}")]
+    DeliveryHealthOperationFailure {
+        /// One-based public Commit sequence.
+        sequence: u32,
+        /// Public lifecycle stage.
+        stage: &'static str,
+        /// Public error category supplied by the fork.
+        detail: String,
     },
     /// The bounded real delivery-health schedule did not reach strict retirement.
     #[error("the real delivery-health schedule reached its limit without retirement")]
@@ -886,12 +908,13 @@ pub fn execute_experimental_delivery_health_workload(
                         next_state,
                         evidence,
                     )
-                    .map_err(
-                        |_| ExperimentalBinaryWorkloadError::DeliveryHealthOperation {
+                    .map_err(|error| {
+                        ExperimentalBinaryWorkloadError::DeliveryHealthOperationFailure {
                             sequence,
                             stage: "retirement-commit-creation",
-                        },
-                    )?
+                            detail: error.to_string(),
+                        }
+                    })?
             };
             let retirement_wire = retirement_commit.tls_serialize_detached().map_err(|_| {
                 ExperimentalBinaryWorkloadError::DeliveryHealthOperation {
@@ -899,13 +922,20 @@ pub fn execute_experimental_delivery_health_workload(
                     stage: "retirement-serialization",
                 }
             })?;
-            deliver_retirement_to_receivers(&mut members, retire_position, &retirement_wire)
-                .map_err(
-                    |_| ExperimentalBinaryWorkloadError::DeliveryHealthOperation {
-                        sequence,
-                        stage: "retirement-receiver-application",
-                    },
-                )?;
+            let retirement_sender_leaf = members[retire_position].group.own_leaf_index().u32();
+            deliver_retirement_to_receivers(
+                &mut members,
+                retire_position,
+                retirement_sender_leaf,
+                &retirement_wire,
+            )
+            .map_err(|detail| {
+                ExperimentalBinaryWorkloadError::DeliveryHealthOperationFailure {
+                    sequence,
+                    stage: "retirement-receiver-application",
+                    detail,
+                }
+            })?;
             merge_sender_retirement(&mut members[retire_position]).map_err(|_| {
                 ExperimentalBinaryWorkloadError::DeliveryHealthOperation {
                     sequence,
@@ -925,12 +955,20 @@ pub fn execute_experimental_delivery_health_workload(
                     sequence,
                     stage: "retirement-status",
                 })?;
+            let public_retirement_status = (status.evidence(), status.erased_old_node_count());
             if members.iter().any(|member| {
                 member
                     .group
                     .experimental_transition_node_availability_snapshot()
                     .is_some()
-                    || member.group.experimental_treecover_retirement_status() != Some(status)
+                    || member.group.experimental_treecover_retirement_status().map(
+                        |member_status| {
+                            (
+                                member_status.evidence(),
+                                member_status.erased_old_node_count(),
+                            )
+                        },
+                    ) != Some(public_retirement_status)
             }) {
                 return Err(ExperimentalBinaryWorkloadError::DivergentPublicState);
             }
@@ -975,8 +1013,8 @@ pub fn execute_experimental_delivery_health_workload(
 /// separate real probe run because the fork currently lacks a side-effect-free
 /// transition preview. They are retained as estimates and compared with the
 /// real emitted transition; they are never relabeled as observations from the
-/// measured group. Old TreeCover retirement is explicitly unsupported because
-/// the fork has no authenticated retirement Commit API.
+/// measured group. Retirement is handled by the dedicated authenticated
+/// TreeCover retirement Commit path.
 pub fn execute_experimental_adaptive_workload(
     config: &BaselineWorkloadConfig,
 ) -> Result<ExperimentalAdaptiveWorkloadExecution, ExperimentalBinaryWorkloadError> {
@@ -1479,10 +1517,13 @@ fn measure_adaptive_probe_candidate(
         } = &mut members[position];
         group
             .begin_experimental_transition(provider, signer, next_state)
-            .map_err(|_| ExperimentalBinaryWorkloadError::AdaptiveProbe {
-                member_index: candidate_member_index,
-                stage: "transition-stage",
-            })?
+            .map_err(
+                |error| ExperimentalBinaryWorkloadError::AdaptiveProbeFailure {
+                    member_index: candidate_member_index,
+                    stage: "transition-stage",
+                    detail: error.to_string(),
+                },
+            )?
     };
     let transition_wire = transition_commit.tls_serialize_detached().map_err(|_| {
         ExperimentalBinaryWorkloadError::AdaptiveProbe {
@@ -1824,21 +1865,46 @@ fn deliver_quaternary_to_receivers(
 fn deliver_retirement_to_receivers(
     members: &mut [ExperimentalWorkloadMember],
     committer_position: usize,
+    sender_leaf_index: u32,
     wire: &[u8],
-) -> Result<u32, ExperimentalBinaryWorkloadError> {
+) -> Result<u32, String> {
     let mut count = 0_u32;
     for (position, member) in members.iter_mut().enumerate() {
         if position == committer_position {
             continue;
         }
-        let staged = staged_commit_from_wire(&mut member.group, &member.provider, wire)?;
+        let message = MlsMessageIn::tls_deserialize_exact(wire)
+            .map_err(|_| "retirement message deserialization failed".to_owned())?
+            .try_into_protocol_message()
+            .map_err(|_| "retirement message conversion failed".to_owned())?;
+        let sender_debug = match &message {
+            openmls_hybrid::prelude::ProtocolMessage::PublicMessage(public) => {
+                format!("{:?}", public.sender())
+            }
+            openmls_hybrid::prelude::ProtocolMessage::PrivateMessage(_) => {
+                "private-message".to_owned()
+            }
+        };
+        let processed = member
+            .group
+            .process_message(&member.provider, message)
+            .map_err(|error| {
+                format!(
+                    "sender={sender_debug}, sender_leaf={sender_leaf_index}, receiver_own_leaf={}, receiver_tree_leaves={:?}, {error}",
+                    member.group.own_leaf_index().u32()
+                    , member.group.members().map(|entry| entry.index.u32()).collect::<Vec<_>>()
+                )
+            })?;
+        let ProcessedMessageContent::StagedCommitMessage(staged) = processed.into_content() else {
+            return Err("retirement message was not a staged Commit".to_owned());
+        };
         member
             .group
-            .merge_staged_commit_experimental_retirement_atomic(&member.provider, staged)
-            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+            .merge_staged_commit_experimental_retirement_atomic(&member.provider, *staged)
+            .map_err(|error| error.to_string())?;
         count = count
             .checked_add(1)
-            .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+            .ok_or_else(|| "retirement receiver count overflowed".to_owned())?;
     }
     Ok(count)
 }
@@ -2007,6 +2073,8 @@ fn normal_binary_arity_extensions() -> Extensions<GroupContext> {
         Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(
             &[ExtensionType::Unknown(
                 arity_state::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE,
+            ), ExtensionType::Unknown(
+                openmls_hybrid::experimental_hybrid::TREECOVER_RETIREMENT_EVIDENCE_EXTENSION_TYPE,
             )],
             &[],
             &[],
@@ -2086,6 +2154,8 @@ fn arity_extensions_from_policy(
         Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(
             &[ExtensionType::Unknown(
                 arity_state::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE,
+            ), ExtensionType::Unknown(
+                openmls_hybrid::experimental_hybrid::TREECOVER_RETIREMENT_EVIDENCE_EXTENSION_TYPE,
             )],
             &[],
             &[],

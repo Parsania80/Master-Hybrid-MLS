@@ -117,7 +117,7 @@ The locked 128-member, three-update release comparison is the core real experime
 | Binary baseline MLS | Real upstream workload observation | RFC 9420 baseline behavior within this pinned local harness; not a certification. |
 | Binary-with-mKyber | Real fork workload observation | Non-standard, thesis-local experimental protocol; no interoperability or security-proof claim. |
 | Adaptive 2-to-4 | Real fork transition and one post-transition update | Matched-per-Commit policy authorized the run; the retained amortized-preflight value is negative, so no amortized break-even is claimed. |
-| TreeCover retirement | Unsupported in the real fork | Formula authorization is not a retirement Commit, private-key deletion, or secret-erasure result. |
+| TreeCover retirement | Real authenticated fork retirement | Schema-5 evidence covers this fork's atomic state transition and retained-envelope erasure only; it is not production cryptography. |
 | Arity-4/8 codec rows and 4-to-8 transition | Educational canonical-codec replay | Useful for teaching formulas only; not live MLS Commit, convergence, or lifecycle evidence. |
 | Byte/time error rows | Analytical model against recorded local observations | Values are model checks, not a full MLS framing model or general CPU benchmark. |
 
@@ -134,7 +134,14 @@ under `output/<run>/` and `report/<run>/`. Windows omits Linux-only `nice` and
 `ionice`, but keeps the same Cargo lock/offline flags, seed, operation sequence,
 commit limit, and report fields.
 
-Linux continuation after the Windows environment blocker: run the three locked/offline quality commands, then execute the low-priority 64-member command documented above with fresh `output/task75-clear-64-seed42` and `report/task75-clear-64-seed42` paths. Inspect `clear_report.csv`, `clear_events.csv`, and `clear_report.md`; do not overwrite an existing run directory. Measured Commit bytes, formula values, timings, and the random committer trace must come from the real Linux run.
+If `link.exe` is unavailable, `test.bat` automatically uses the official
+`1.93.1-x86_64-pc-windows-gnu` toolchain from `E:\rustup-gnu` and places Cargo
+build products under the ASCII-only `E:\cargo-target\master-hybrid-mls` path.
+This avoids both MSVC and the MinGW linker limitation on the repository's
+non-ASCII parent directory. The installed minimal GNU toolchain occupies about
+841 MiB.
+
+Linux continuation after the Windows environment blocker: run the three locked/offline quality commands, then execute mode 4 with a fresh run label. Inspect `summary.csv`, `events.csv`, and `report.md`; do not overwrite an existing run directory. Measured Commit bytes, formula values, authenticated retirement evidence, and the random committer trace must come from the real Linux run.
 
 The real Task 75–78 seed-42 64-member run is complete under `output/task75-clear-64-seed42/` and `report/task75-clear-64-seed42/`. It accepted baseline Update/Add/Remove operations, two separate adaptive normal-binary updates, a 16,332-byte transition, and one 16,133-byte quaternary update. The reduced-priority run completed in 4.11 seconds with 73,832 KiB peak RSS and zero swaps. Its former `C_ideal=14,400`, `C_leaf=56,064`, `C_new=20,352`, `C_old=32,256`, `h_new=6/7`, `h_old=4/7`, and logical-retirement claim are withdrawn: those fields came from fixed-width 1/2/4/8 partitions rather than the actual `T_new` and eligible `T_old` covers. The genuine operation bytes, timing, and public committer trace remain valid.
 
@@ -179,7 +186,7 @@ retirement authorization in authenticated `0xF003` evidence. A successful
 retirement Commit returns the fork to normal 4/4 state and clears the retained
 transition node/keypair envelope; only redacted status and counts are exposed.
 
-When filling the Persian normal-operation table, do not label the Task 64 rows as 128-member measurements: its real arity-2 baseline/fork operations use four members, while its arity-4 row is an educational 16-member serializer. The real 128-member Task 62 rows are whole-workload aggregates, not single normal-operation rows. In the transition table, `109144` is the Task 62 adaptive workload's total Commit bytes and is not the first transition message; the Task 65 first transition message is `25629` bytes, cumulative bytes through maturity evaluation are `109172`, real TreeCover retirement is unsupported, and the measured run has no observed amortized break-even.
+When filling the Persian normal-operation table, do not label the Task 64 rows as 128-member measurements: its real arity-2 baseline/fork operations use four members, while its arity-4 row is an educational 16-member serializer. The real 128-member Task 62 rows are whole-workload aggregates, not single normal-operation rows. In the transition table, `109144` is the Task 62 adaptive workload's total Commit bytes and is not the first transition message; the Task 65 first transition message is `25629` bytes, cumulative bytes through maturity evaluation are `109172`, and no amortized break-even is claimed. Task 86's schema-5 report is the maintained real-retirement boundary.
 
 ## Security and interoperability warning
 

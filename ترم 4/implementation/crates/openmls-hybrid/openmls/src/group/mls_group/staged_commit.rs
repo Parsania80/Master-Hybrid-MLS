@@ -261,6 +261,36 @@ impl MlsGroup {
         // Determine if Commit has a path
         #[cfg(feature = "experimental-hybrid")]
         let mut experimental_quaternary_parent_keypairs = Vec::new();
+        #[cfg(feature = "experimental-hybrid")]
+        let retirement_path_uses_prior_context = {
+            let prior_transitioning = self
+                .public_group
+                .group_context()
+                .extensions()
+                .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
+                .and_then(|extension| ArityState::from_extension_value(&extension.0).ok())
+                .is_some_and(|state| matches!(state.lifecycle(), ArityLifecycle::Transitioning(_)));
+            let next_normal = apply_proposals_values
+                .extensions
+                .as_ref()
+                .and_then(|extensions| {
+                    extensions.unknown(
+                        crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE,
+                    )
+                })
+                .and_then(|extension| ArityState::from_extension_value(&extension.0).ok())
+                .is_some_and(|state| matches!(state.lifecycle(), ArityLifecycle::Normal));
+            let retirement_evidence = apply_proposals_values
+                .extensions
+                .as_ref()
+                .and_then(|extensions| {
+                    extensions.unknown(
+                        crate::experimental_hybrid::TREECOVER_RETIREMENT_EVIDENCE_EXTENSION_TYPE,
+                    )
+                })
+                .is_some();
+            prior_transitioning && next_normal && retirement_evidence
+        };
         let (commit_secret, new_keypairs, new_leaf_keypair_option, update_path_leaf_node) =
             if let Some(path) = commit.path.clone() {
                 // Update the public group
@@ -272,7 +302,14 @@ impl MlsGroup {
                     &path,
                 )?;
 
-                // Update group context
+                #[cfg(feature = "experimental-hybrid")]
+                if !retirement_path_uses_prior_context {
+                    diff.update_group_context(
+                        provider.crypto(),
+                        apply_proposals_values.extensions.clone(),
+                    )?;
+                }
+                #[cfg(not(feature = "experimental-hybrid"))]
                 diff.update_group_context(
                     provider.crypto(),
                     apply_proposals_values.extensions.clone(),
@@ -310,6 +347,13 @@ impl MlsGroup {
                     #[cfg(feature = "experimental-hybrid")]
                     self.group_epoch_secrets().experimental_transition_mapping(),
                 )?;
+                #[cfg(feature = "experimental-hybrid")]
+                if retirement_path_uses_prior_context {
+                    diff.update_group_context(
+                        provider.crypto(),
+                        apply_proposals_values.extensions.clone(),
+                    )?;
+                }
                 #[cfg(feature = "experimental-hybrid")]
                 {
                     experimental_quaternary_parent_keypairs = parent_keypairs;
@@ -485,6 +529,30 @@ impl MlsGroup {
         let old_epoch_keypairs = self
             .read_epoch_keypairs(storage)
             .map_err(MergeCommitError::StorageError)?;
+        #[cfg(feature = "experimental-hybrid")]
+        let mut old_epoch_keypairs = old_epoch_keypairs;
+        #[cfg(feature = "experimental-hybrid")]
+        let retirement_commit = staged_commit
+            .group_context()
+            .extensions()
+            .unknown(crate::experimental_hybrid::TREECOVER_RETIREMENT_EVIDENCE_EXTENSION_TYPE)
+            .is_some();
+        #[cfg(feature = "experimental-hybrid")]
+        if retirement_commit {
+            if let Some(retained) = self
+                .group_epoch_secrets()
+                .experimental_transition_node_state()
+            {
+                for keypair in retained.local_old_keypairs() {
+                    if !old_epoch_keypairs
+                        .iter()
+                        .any(|existing| existing.public_key() == keypair.public_key())
+                    {
+                        old_epoch_keypairs.push(keypair);
+                    }
+                }
+            }
+        }
         match staged_commit.state {
             StagedCommitState::PublicState(staged_state) => {
                 self.public_group
@@ -574,6 +642,7 @@ impl MlsGroup {
                         || new_owned_encryption_keys.len() == epoch_keypairs.len()
                 );
                 if !compact_quaternary_epoch
+                    && !retirement_commit
                     && new_owned_encryption_keys.len() != epoch_keypairs.len()
                 {
                     return Err(LibraryError::custom(

@@ -36,7 +36,11 @@ confused with a formula result or a caller-supplied state change.
 ## Consequences
 
 The interactive report no longer emits `UnsupportedSimulationOnly` for this
-workload and no longer describes retirement as unsupported. It still does not
-claim production security, distributed/network atomicity, RFC interoperability,
-or a general secret-erasure proof. Linux execution remains the operator runtime
-acceptance because the Windows development environment lacks the MSVC linker.
+workload and no longer describes retirement as unsupported. Retirement delivery
+uses the authenticated transitioning context for the compact path before
+publishing normal 4/4 state; member-local erased-private counts therefore remain
+redacted and are not required to match across members. It still does not claim
+production security, distributed/network atomicity, RFC interoperability, or a
+general secret-erasure proof. Windows acceptance is available through the
+official GNU/MinGW toolchain on `E:` when MSVC is absent; Linux remains the
+operator comparison run.

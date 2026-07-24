@@ -67,6 +67,17 @@ impl PublicGroupDiff<'_> {
         >,
     ) -> Result<PathComputationResult, CreateCommitError> {
         let ciphersuite = self.group_context().ciphersuite();
+        #[cfg(feature = "experimental-hybrid")]
+        let prior_experimental_arity_state = self
+            .group_context()
+            .extensions()
+            .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
+            .and_then(|extension| ArityState::from_extension_value(&extension.0).ok());
+        #[cfg(feature = "experimental-hybrid")]
+        let prior_group_context = self
+            .group_context()
+            .tls_serialize_detached()
+            .map_err(LibraryError::missing_bound_check)?;
 
         let leaf_node_params = if let CommitType::External(credential_with_key) = commit_type {
             let capabilities = match leaf_node_params.capabilities() {
@@ -162,10 +173,21 @@ impl PublicGroupDiff<'_> {
             .extensions()
             .unknown(crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE)
         {
-            let arity_state = ArityState::from_extension_value(&extension.0).map_err(|_| {
-                LibraryError::custom("invalid authenticated experimental ArityState")
-            })?;
-            if matches!(arity_state.lifecycle(), ArityLifecycle::Transitioning(_)) {
+            let next_arity_state =
+                ArityState::from_extension_value(&extension.0).map_err(|_| {
+                    LibraryError::custom("invalid authenticated experimental ArityState")
+                })?;
+            let delivery_arity_state = if matches!(
+                next_arity_state.lifecycle(),
+                ArityLifecycle::Transitioning(_)
+            ) {
+                Some(next_arity_state.clone())
+            } else {
+                prior_experimental_arity_state
+                    .clone()
+                    .filter(|state| matches!(state.lifecycle(), ArityLifecycle::Transitioning(_)))
+            };
+            if let Some(arity_state) = delivery_arity_state.as_ref() {
                 let domain = encrypted_path
                     .leaf_node()
                     .encryption_key()
@@ -177,7 +199,7 @@ impl PublicGroupDiff<'_> {
                 let delivery_plan = self.experimental_quaternary_delivery_plan(
                     leaf_index,
                     leaf_index,
-                    &arity_state,
+                    arity_state,
                     frozen_transition_mapping,
                 )?;
                 let root_path = plain_path.last().ok_or_else(|| {
@@ -196,12 +218,24 @@ impl PublicGroupDiff<'_> {
                     .iter()
                     .map(|(leaf_ordinal, _, key)| (*leaf_ordinal, key.clone()))
                     .collect::<Vec<_>>();
+                let hybrid_group_context =
+                    if matches!(next_arity_state.lifecycle(), ArityLifecycle::Normal)
+                        && prior_experimental_arity_state
+                            .as_ref()
+                            .is_some_and(|state| {
+                                matches!(state.lifecycle(), ArityLifecycle::Transitioning(_))
+                            })
+                    {
+                        &prior_group_context
+                    } else {
+                        &serialized_group_context
+                    };
                 let (root_parent_path, root_keypair) = root_path
                     .encrypt_experimental_quaternary_parent(
                         crypto,
                         ciphersuite,
                         &root_recipients,
-                        &serialized_group_context,
+                        hybrid_group_context,
                         root_position,
                     )?;
                 experimental_quaternary_parent_keypairs.push(root_keypair);
