@@ -127,6 +127,13 @@ The clear 64-member real report is generated with `CARGO_BUILD_JOBS=1 cargo run 
 
 Mode 4 of `test.sh` runs the real fork delivery-health report: it fixes the authenticated 2→4 topology, accepts a bounded 64–128 initial client count, uses public seed 42, applies seeded real Update/Remove Commits, and stops at the first strict health trigger. Schema 5 records the actual transition and post-transition Commit bytes, endpoint counts from the authenticated retained-node snapshot, exact and decimal health, and an authenticated retirement Commit with redacted erasure counts. The retirement row proves only this fork's in-process atomic state transition and key-envelope removal; it is not a production, interoperability, or cryptographic-security claim. The command is `CARGO_BUILD_JOBS=1 nice -n 10 ionice -c 3 cargo run -p report --bin simulate_delivery_health --release --locked --offline -- --initial-arity 2 --target-arity 4 --initial-members 64 --seed 42 --maximum-commits 128 --output output/<run> --report report/<run>`.
 
+On Windows, run `test.bat`, select mode `4`, enter the same 64–128 client
+range, and use a fresh run label. It invokes the identical report binary and
+writes the same schema-5 `summary.csv`, `events.csv`, and `report.md` artifacts
+under `output/<run>/` and `report/<run>/`. Windows omits Linux-only `nice` and
+`ionice`, but keeps the same Cargo lock/offline flags, seed, operation sequence,
+commit limit, and report fields.
+
 Linux continuation after the Windows environment blocker: run the three locked/offline quality commands, then execute the low-priority 64-member command documented above with fresh `output/task75-clear-64-seed42` and `report/task75-clear-64-seed42` paths. Inspect `clear_report.csv`, `clear_events.csv`, and `clear_report.md`; do not overwrite an existing run directory. Measured Commit bytes, formula values, timings, and the random committer trace must come from the real Linux run.
 
 The real Task 75–78 seed-42 64-member run is complete under `output/task75-clear-64-seed42/` and `report/task75-clear-64-seed42/`. It accepted baseline Update/Add/Remove operations, two separate adaptive normal-binary updates, a 16,332-byte transition, and one 16,133-byte quaternary update. The reduced-priority run completed in 4.11 seconds with 73,832 KiB peak RSS and zero swaps. Its former `C_ideal=14,400`, `C_leaf=56,064`, `C_new=20,352`, `C_old=32,256`, `h_new=6/7`, `h_old=4/7`, and logical-retirement claim are withdrawn: those fields came from fixed-width 1/2/4/8 partitions rather than the actual `T_new` and eligible `T_old` covers. The genuine operation bytes, timing, and public committer trace remain valid.
