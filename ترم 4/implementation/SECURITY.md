@@ -211,10 +211,17 @@ byte columns are explicitly modeled canonical field counts
 (`744 * C_real + 132 * active clients`), not emitted MLS
 messages or network observations. The full transition Commit remains
 unavailable rather than being inferred from that model.
-The real clear report fails closed with
-`LiveAuthenticatedNodeValueFallbackNotImplemented`, because the fork does not
-yet retain/authenticate the required old-TreeCover node values or process
-post-transition Remove. Live maturity, retirement, and TreeCover secret erasure
+Task 85 now transactionally retains the frozen authenticated mapping, initial
+non-blank old parents and locally possessed pairs, cumulative new-tree parent
+pairs, and active-member holes. Its public snapshot contains only the frozen
+mapping, active leaf ordinals, usable node coordinates, hashes, versions, and
+counts—never keys or ciphertexts. A real post-transition Remove invalidates the
+removed member's retained old and stale-new direct paths before the fresh
+committer path is installed; post-transition Add/remapping fails closed.
+Private values remain redacted, and injected sender/receiver storage failures
+preserve the prior retained state. The clear report still fails closed because
+Task 86 has not connected these live observations to endpoint counting.
+Authenticated full TreeCover retirement and complete old-tree secret erasure
 remain unsupported.
 
 ## Minimum Security Gates Before Experiments

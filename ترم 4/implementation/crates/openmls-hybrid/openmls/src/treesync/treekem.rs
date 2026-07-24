@@ -13,7 +13,9 @@ use openmls_traits::{
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize, VLBytes};
+#[cfg(feature = "experimental-hybrid")]
+use tls_codec::VLBytes;
+use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize};
 
 use super::{
     diff::TreeSyncDiff,

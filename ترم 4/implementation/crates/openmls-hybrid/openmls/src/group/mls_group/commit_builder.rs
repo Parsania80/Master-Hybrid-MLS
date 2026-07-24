@@ -604,6 +604,12 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
 
         let proposal_reference_list = proposal_queue.commit_list();
 
+        #[cfg(feature = "experimental-hybrid")]
+        let frozen_transition_mapping = group
+            .group_epoch_secrets()
+            .experimental_transition_mapping()
+            .cloned();
+
         // Make a copy of the public group to apply proposals safely
         let mut diff = group.public_group.empty_diff();
 
@@ -656,7 +662,9 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
                         &commit_type,
                         &cur_stage.leaf_node_parameters,
                         new_signer.signer,
-                        apply_proposals_values.extensions.clone()
+                        apply_proposals_values.extensions.clone(),
+                        #[cfg(feature = "experimental-hybrid")]
+                        frozen_transition_mapping.as_ref(),
                     )?
                 } else {
                     diff.compute_path(
@@ -667,7 +675,9 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
                         &commit_type,
                         &cur_stage.leaf_node_parameters,
                         old_signer,
-                        apply_proposals_values.extensions.clone()
+                        apply_proposals_values.extensions.clone(),
+                        #[cfg(feature = "experimental-hybrid")]
+                        frozen_transition_mapping.as_ref(),
                     )?
                 }
             } else {

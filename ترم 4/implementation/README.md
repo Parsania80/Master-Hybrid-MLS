@@ -158,10 +158,18 @@ falls directly to its active leaves; old TreeCover values never inflate
 `C_new` or `h_newcost`. A Remove invalidates the removed member's complete old
 direct path. Per-Commit health cells show both an exact reduced fraction and a
 six-place decimal. The separate `C_real` counter follows new → old → leaf
-priority and alone drives modeled delivery bytes. The live experimental fork still lacks retained authenticated
-node-value availability, post-transition Remove, real TreeCover key deletion,
-and an authenticated retirement Commit; those protocol changes remain Tasks
-85–86.
+priority and alone drives modeled delivery bytes. Task 85 now gives the live
+experimental fork a transactionally persisted frozen transition mapping,
+initial old-parent values and locally held pairs, cumulative new-tree parent
+pairs, and active-member holes. A ciphertext-free API supplies the public
+frozen mapping, active leaf ordinals, and usable old/new node coordinates for
+the next report bridge. Real post-transition Update and Remove
+converge through that frozen mapping; Remove invalidates the removed member's
+retained old direct path and stale new path before installing the committer's
+fresh path. Post-transition Add/remapping fails closed. These live values are
+not yet connected to the interactive health report, the carrier remains
+binary, and authenticated full TreeCover retirement/key erasure is still
+unsupported; those remaining protocol/report changes are Task 86.
 
 When filling the Persian normal-operation table, do not label the Task 64 rows as 128-member measurements: its real arity-2 baseline/fork operations use four members, while its arity-4 row is an educational 16-member serializer. The real 128-member Task 62 rows are whole-workload aggregates, not single normal-operation rows. In the transition table, `109144` is the Task 62 adaptive workload's total Commit bytes and is not the first transition message; the Task 65 first transition message is `25629` bytes, cumulative bytes through maturity evaluation are `109172`, real TreeCover retirement is unsupported, and the measured run has no observed amortized break-even.
 

@@ -2478,6 +2478,127 @@ mod tests {
         )
     }
 
+    #[allow(clippy::type_complexity)]
+    fn experimental_binary_triple_with_policy_controls(
+        target_group_size: u32,
+        warmup_accepted_commits: u32,
+    ) -> (
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+    ) {
+        let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair_with_policy_controls(
+                target_group_size,
+                warmup_accepted_commits,
+            );
+        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+        let domain = MkyberDomain::new([0x91; 32]);
+        let charlie_provider = OpenMlsRustCrypto::default();
+        let charlie_signer =
+            SignatureKeyPair::new(ciphersuite.signature_algorithm()).expect("Charlie signer");
+        let charlie_bundle = KeyPackage::builder()
+            .build_with_experimental_mkyber(
+                ciphersuite,
+                &charlie_provider,
+                &charlie_signer,
+                CredentialWithKey {
+                    credential: BasicCredential::new(b"experimental-charlie".to_vec()).into(),
+                    signature_key: charlie_signer.public().into(),
+                },
+                domain,
+            )
+            .expect("Charlie experimental KeyPackage");
+        let (add_commit, welcome, _) = alice
+            .add_members(
+                &alice_provider,
+                &alice_signer,
+                core::slice::from_ref(charlie_bundle.key_package()),
+            )
+            .expect("Alice adds Charlie");
+        let add_wire = add_commit
+            .tls_serialize_detached()
+            .expect("Charlie add Commit serialization");
+        let bob_staged = staged_commit_from_wire(&mut bob, &bob_provider, &add_wire);
+        bob.merge_staged_commit_experimental_atomic(&bob_provider, bob_staged)
+            .expect("Bob merges Charlie add");
+        alice
+            .merge_pending_commit_experimental_atomic(&alice_provider)
+            .expect("Alice merges Charlie add");
+        let welcome = match MlsMessageIn::tls_deserialize_exact(
+            welcome
+                .tls_serialize_detached()
+                .expect("Charlie Welcome serialization"),
+        )
+        .expect("Charlie Welcome parsing")
+        .extract()
+        {
+            MlsMessageBodyIn::Welcome(welcome) => welcome,
+            _ => panic!("expected Charlie Welcome"),
+        };
+        let charlie = StagedWelcome::new_from_welcome(
+            &charlie_provider,
+            &MlsGroupJoinConfig::builder()
+                .use_ratchet_tree_extension(true)
+                .build(),
+            welcome,
+            None,
+        )
+        .expect("Charlie staged Welcome")
+        .into_group(&charlie_provider)
+        .expect("Charlie joins");
+        (
+            alice_provider,
+            alice_signer,
+            alice,
+            bob_provider,
+            bob_signer,
+            bob,
+            charlie_provider,
+            charlie_signer,
+            charlie,
+        )
+    }
+
+    fn transitioned_experimental_pair() -> (
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+        OpenMlsRustCrypto,
+        SignatureKeyPair,
+        MlsGroup,
+    ) {
+        let (alice_provider, alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+            experimental_binary_pair_with_policy_controls(2, 0);
+        let transition_state = triggered_transition_state(&alice);
+        let (transition_commit, _, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, transition_state)
+            .expect("Alice stages transition");
+        let transition_wire = transition_commit
+            .tls_serialize_detached()
+            .expect("transition serialization");
+        let bob_transition = staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+        bob.merge_staged_commit_experimental_transition_atomic(&bob_provider, bob_transition)
+            .expect("Bob merges transition");
+        alice
+            .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+            .expect("Alice merges transition");
+        (
+            alice_provider,
+            alice_signer,
+            alice,
+            bob_provider,
+            bob_signer,
+            bob,
+        )
+    }
+
     fn normal_binary_arity_extensions() -> Extensions<GroupContext> {
         normal_binary_arity_extensions_with_controls(128, 2)
     }
@@ -2804,6 +2925,232 @@ mod tests {
     }
 
     #[test]
+    fn retained_transition_nodes_survive_update_and_invalidate_old_direct_path_on_remove() {
+        let (
+            alice_provider,
+            alice_signer,
+            mut alice,
+            bob_provider,
+            bob_signer,
+            mut bob,
+            charlie_provider,
+            _charlie_signer,
+            mut charlie,
+        ) = experimental_binary_triple_with_policy_controls(3, 0);
+
+        let transition_state = triggered_transition_state(&alice);
+        let (transition_commit, _, _) = alice
+            .begin_experimental_transition(&alice_provider, &alice_signer, transition_state.clone())
+            .expect("Alice stages three-member transition");
+        let transition_wire = transition_commit
+            .tls_serialize_detached()
+            .expect("transition serialization");
+        let bob_transition = staged_commit_from_wire(&mut bob, &bob_provider, &transition_wire);
+        let charlie_transition =
+            staged_commit_from_wire(&mut charlie, &charlie_provider, &transition_wire);
+        bob.merge_staged_commit_experimental_transition_atomic(&bob_provider, bob_transition)
+            .expect("Bob merges transition");
+        charlie
+            .merge_staged_commit_experimental_transition_atomic(
+                &charlie_provider,
+                charlie_transition,
+            )
+            .expect("Charlie merges transition");
+        alice
+            .merge_pending_commit_experimental_transition_atomic(&alice_provider)
+            .expect("Alice merges transition");
+
+        let initial = alice
+            .experimental_transition_node_availability_status()
+            .expect("initial retained transition state");
+        let initial_snapshot = alice
+            .experimental_transition_node_availability_snapshot()
+            .expect("initial retained availability snapshot");
+        assert_eq!(initial.active_member_count(), 3);
+        assert_eq!(initial.usable_new_node_count(), 0);
+        assert!(initial.usable_old_node_count() > 0);
+        assert_eq!(
+            initial_snapshot.active_quaternary_leaf_ordinals(),
+            &[0, 1, 2]
+        );
+        assert!(initial_snapshot.usable_new_parent_nodes().is_empty());
+        assert_eq!(
+            initial_snapshot.usable_old_parent_indices().len(),
+            initial.usable_old_node_count() as usize
+        );
+        let ArityLifecycle::Transitioning(transitioning) = transition_state.lifecycle() else {
+            panic!("expected transitioning state");
+        };
+        assert_eq!(
+            initial.mapping_hash(),
+            transitioning.mapping_hash().as_bytes()
+        );
+        for group in [&bob, &charlie] {
+            let status = group
+                .experimental_transition_node_availability_status()
+                .expect("receiver retained transition state");
+            assert_eq!(status.active_member_count(), initial.active_member_count());
+            assert_eq!(status.mapping_hash(), initial.mapping_hash());
+            assert_eq!(status.treecover_hash(), initial.treecover_hash());
+            assert_eq!(
+                status.usable_old_node_count(),
+                initial.usable_old_node_count()
+            );
+            assert_eq!(status.usable_new_node_count(), 0);
+            assert_eq!(
+                group
+                    .experimental_transition_node_availability_snapshot()
+                    .expect("receiver availability snapshot"),
+                initial_snapshot
+            );
+        }
+
+        let dave_provider = OpenMlsRustCrypto::default();
+        let dave_signer = SignatureKeyPair::new(
+            Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.signature_algorithm(),
+        )
+        .expect("Dave signer");
+        let dave_bundle = KeyPackage::builder()
+            .build_with_experimental_mkyber(
+                Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+                &dave_provider,
+                &dave_signer,
+                CredentialWithKey {
+                    credential: BasicCredential::new(b"experimental-dave".to_vec()).into(),
+                    signature_key: dave_signer.public().into(),
+                },
+                MkyberDomain::new([0x91; 32]),
+            )
+            .expect("Dave experimental KeyPackage");
+        let epoch_before_rejected_add = alice.epoch();
+        assert!(
+            alice
+                .add_members(
+                    &alice_provider,
+                    &alice_signer,
+                    core::slice::from_ref(dave_bundle.key_package()),
+                )
+                .is_err(),
+            "post-transition Add must fail against the frozen mapping"
+        );
+        assert_eq!(alice.epoch(), epoch_before_rejected_add);
+        assert_eq!(
+            alice.experimental_transition_node_availability_status(),
+            Some(initial)
+        );
+
+        let charlie_leaf = charlie.own_leaf_index();
+        let (remove_commit, welcome, _) = bob
+            .remove_members(&bob_provider, &bob_signer, &[charlie_leaf])
+            .expect("Bob stages post-transition Charlie Remove");
+        assert!(welcome.is_none());
+        let remove_wire = remove_commit
+            .tls_serialize_detached()
+            .expect("Remove serialization");
+        let alice_remove = staged_commit_from_wire(&mut alice, &alice_provider, &remove_wire);
+        let charlie_remove = staged_commit_from_wire(&mut charlie, &charlie_provider, &remove_wire);
+        alice
+            .merge_staged_commit_experimental_quaternary_atomic(&alice_provider, alice_remove)
+            .expect("Alice merges post-transition Remove");
+        charlie
+            .merge_staged_commit_experimental_quaternary_atomic(&charlie_provider, charlie_remove)
+            .expect("Charlie accepts self-removal");
+        bob.merge_pending_commit_experimental_quaternary_atomic(&bob_provider)
+            .expect("Bob merges post-transition Remove");
+
+        let alice_after_remove = alice
+            .experimental_transition_node_availability_status()
+            .expect("Alice retained state after Remove");
+        let bob_after_remove = bob
+            .experimental_transition_node_availability_status()
+            .expect("Bob retained state after Remove");
+        let alice_snapshot_after_remove = alice
+            .experimental_transition_node_availability_snapshot()
+            .expect("Alice availability after Remove");
+        let bob_snapshot_after_remove = bob
+            .experimental_transition_node_availability_snapshot()
+            .expect("Bob availability after Remove");
+        assert_eq!(alice_after_remove.active_member_count(), 2);
+        assert_eq!(bob_after_remove.active_member_count(), 2);
+        assert_eq!(
+            initial.usable_old_node_count() - alice_after_remove.usable_old_node_count(),
+            1,
+            "the sparse three-member tree retains one non-blank value on Charlie's old direct path"
+        );
+        assert_eq!(
+            alice_after_remove.usable_old_node_count(),
+            bob_after_remove.usable_old_node_count()
+        );
+        assert_eq!(alice_after_remove.usable_new_node_count(), 1);
+        assert_eq!(
+            alice_after_remove.usable_new_node_count(),
+            bob_after_remove.usable_new_node_count()
+        );
+        assert_eq!(alice_after_remove.mapping_hash(), initial.mapping_hash());
+        assert_eq!(bob_after_remove.mapping_hash(), initial.mapping_hash());
+        assert_eq!(alice_snapshot_after_remove, bob_snapshot_after_remove);
+        assert_eq!(
+            alice_snapshot_after_remove.active_quaternary_leaf_ordinals(),
+            &[0, 1]
+        );
+        assert_eq!(
+            alice_snapshot_after_remove
+                .usable_old_parent_indices()
+                .len(),
+            alice_after_remove.usable_old_node_count() as usize
+        );
+        assert_eq!(
+            alice_snapshot_after_remove.usable_new_parent_nodes().len(),
+            alice_after_remove.usable_new_node_count() as usize
+        );
+        assert_eq!(
+            alice_snapshot_after_remove.frozen_mapping(),
+            initial_snapshot.frozen_mapping(),
+            "Remove must preserve the complete frozen mapping and leave a hole"
+        );
+        assert_eq!(alice.epoch(), bob.epoch());
+        assert_eq!(alice.export_ratchet_tree(), bob.export_ratchet_tree());
+
+        let reloaded_alice = MlsGroup::load(alice_provider.storage(), alice.group_id())
+            .expect("Alice storage read")
+            .expect("stored Alice group");
+        assert_eq!(
+            reloaded_alice.experimental_transition_node_availability_status(),
+            Some(alice_after_remove)
+        );
+        assert_eq!(
+            reloaded_alice.experimental_transition_node_availability_snapshot(),
+            Some(alice_snapshot_after_remove)
+        );
+
+        let update_wire = hybrid_self_update_wire(
+            &mut alice,
+            &alice_provider,
+            &alice_signer,
+            LeafNodeParameters::default(),
+        );
+        let bob_update = staged_commit_from_wire(&mut bob, &bob_provider, &update_wire);
+        bob.merge_staged_commit_experimental_quaternary_atomic(&bob_provider, bob_update)
+            .expect("Bob merges Update through frozen mapping hole");
+        alice
+            .merge_pending_commit_experimental_quaternary_atomic(&alice_provider)
+            .expect("Alice merges Update through frozen mapping hole");
+        assert_eq!(alice.epoch(), bob.epoch());
+        assert_eq!(alice.export_ratchet_tree(), bob.export_ratchet_tree());
+        assert_eq!(
+            alice.experimental_transition_node_availability_snapshot(),
+            bob.experimental_transition_node_availability_snapshot()
+        );
+        assert_eq!(
+            alice
+                .experimental_transition_node_availability_status()
+                .expect("Alice final retained state")
+                .active_member_count(),
+            2
+        );
+    }
+
+    #[test]
     fn signed_quaternary_commit_rejects_wrong_parent_metadata_and_recipient_without_mutation() {
         for mutation in [
             ExperimentalUpdatePathTestMutation::WrongFirstQuaternaryRecipient,
@@ -2839,6 +3186,7 @@ mod tests {
             let tree_before = alice.export_ratchet_tree();
             let state_before = arity_state_from_group(&alice);
             let authority_before = alice.experimental_quaternary_epoch_secret_status();
+            let availability_before = alice.experimental_transition_node_availability_status();
             let protocol_message = MlsMessageIn::tls_deserialize_exact(&wire)
                 .expect("signed mutated Commit parsing")
                 .try_into_protocol_message()
@@ -2858,6 +3206,10 @@ mod tests {
             assert_eq!(
                 alice.experimental_quaternary_epoch_secret_status(),
                 authority_before
+            );
+            assert_eq!(
+                alice.experimental_transition_node_availability_status(),
+                availability_before
             );
         }
     }
@@ -2898,6 +3250,7 @@ mod tests {
         let tree_before = alice.export_ratchet_tree();
         let state_before = arity_state_from_group(&alice);
         let authority_before = alice.experimental_quaternary_epoch_secret_status();
+        let availability_before = alice.experimental_transition_node_availability_status();
         let protocol_message = MlsMessageIn::tls_deserialize_exact(&wire)
             .expect("capability Commit parsing")
             .try_into_protocol_message()
@@ -2917,6 +3270,10 @@ mod tests {
         assert_eq!(
             alice.experimental_quaternary_epoch_secret_status(),
             authority_before
+        );
+        assert_eq!(
+            alice.experimental_transition_node_availability_status(),
+            availability_before
         );
     }
 
@@ -2953,6 +3310,7 @@ mod tests {
         let tree_before = alice.export_ratchet_tree();
         let state_before = arity_state_from_group(&alice);
         let authority_before = alice.experimental_quaternary_epoch_secret_status();
+        let availability_before = alice.experimental_transition_node_availability_status();
         let tampered_message = MlsMessageIn::tls_deserialize_exact(&tampered_wire)
             .expect("tampered quaternary Commit remains syntactically valid")
             .try_into_protocol_message()
@@ -2967,6 +3325,10 @@ mod tests {
         assert_eq!(
             alice.experimental_quaternary_epoch_secret_status(),
             authority_before
+        );
+        assert_eq!(
+            alice.experimental_transition_node_availability_status(),
+            availability_before
         );
     }
 
@@ -3004,6 +3366,7 @@ mod tests {
         let tree_before = alice.export_ratchet_tree();
         let state_before = arity_state_from_group(&alice);
         let authority_before = alice.experimental_quaternary_epoch_secret_status();
+        let availability_before = alice.experimental_transition_node_availability_status();
         let replay_message = MlsMessageIn::tls_deserialize_exact(&wire)
             .expect("replay quaternary Commit parsing")
             .try_into_protocol_message()
@@ -3018,6 +3381,10 @@ mod tests {
         assert_eq!(
             alice.experimental_quaternary_epoch_secret_status(),
             authority_before
+        );
+        assert_eq!(
+            alice.experimental_transition_node_availability_status(),
+            availability_before
         );
     }
 
@@ -3582,6 +3949,125 @@ mod tests {
             assert_eq!(reloaded.epoch(), before_epoch);
             assert_eq!(reloaded.export_ratchet_tree(), before_tree);
             assert_eq!(reloaded.extensions(), &before_extensions);
+            assert!(reloaded.pending_commit().is_some());
+        }
+    }
+
+    #[test]
+    fn quaternary_receiver_merge_rolls_back_retained_nodes_on_every_storage_failure() {
+        let (control_provider, _control_signer, mut control, bob_provider, bob_signer, mut bob) =
+            transitioned_experimental_pair();
+        let control_wire = hybrid_self_update_wire(
+            &mut bob,
+            &bob_provider,
+            &bob_signer,
+            LeafNodeParameters::default(),
+        );
+        let control_staged =
+            staged_commit_from_wire(&mut control, &control_provider, &control_wire);
+        control_provider.storage().set_transaction_failure_at(None);
+        control
+            .merge_staged_commit_experimental_quaternary_atomic(&control_provider, control_staged)
+            .expect("control quaternary receiver merge");
+        let mutation_count = control_provider.storage().last_transaction_mutation_count();
+        assert!(mutation_count > 0);
+
+        for failure_at in 0..mutation_count {
+            let (alice_provider, _alice_signer, mut alice, bob_provider, bob_signer, mut bob) =
+                transitioned_experimental_pair();
+            let update_wire = hybrid_self_update_wire(
+                &mut bob,
+                &bob_provider,
+                &bob_signer,
+                LeafNodeParameters::default(),
+            );
+            let staged = staged_commit_from_wire(&mut alice, &alice_provider, &update_wire);
+            let before_epoch = alice.epoch();
+            let before_tree = alice.export_ratchet_tree();
+            let before_availability = alice.experimental_transition_node_availability_status();
+            let before_storage = alice_provider.storage().values.read().unwrap().clone();
+            alice_provider
+                .storage()
+                .set_transaction_failure_at(Some(failure_at));
+
+            assert!(alice
+                .merge_staged_commit_experimental_quaternary_atomic(&alice_provider, staged)
+                .is_err());
+            assert_eq!(alice.epoch(), before_epoch);
+            assert_eq!(alice.export_ratchet_tree(), before_tree);
+            assert_eq!(
+                alice.experimental_transition_node_availability_status(),
+                before_availability
+            );
+            assert_eq!(
+                *alice_provider.storage().values.read().unwrap(),
+                before_storage
+            );
+            let reloaded = MlsGroup::load(alice_provider.storage(), alice.group_id())
+                .expect("failed quaternary transaction remains loadable")
+                .expect("stored pre-merge group");
+            assert_eq!(
+                reloaded.experimental_transition_node_availability_status(),
+                before_availability
+            );
+        }
+    }
+
+    #[test]
+    fn quaternary_pending_merge_rolls_back_retained_nodes_on_every_storage_failure() {
+        let (_alice_provider, _alice_signer, _alice, control_provider, control_signer, mut control) =
+            transitioned_experimental_pair();
+        let _control_wire = hybrid_self_update_wire(
+            &mut control,
+            &control_provider,
+            &control_signer,
+            LeafNodeParameters::default(),
+        );
+        control_provider.storage().set_transaction_failure_at(None);
+        control
+            .merge_pending_commit_experimental_quaternary_atomic(&control_provider)
+            .expect("control quaternary pending merge");
+        let mutation_count = control_provider.storage().last_transaction_mutation_count();
+        assert!(mutation_count > 0);
+
+        for failure_at in 0..mutation_count {
+            let (_alice_provider, _alice_signer, _alice, bob_provider, bob_signer, mut bob) =
+                transitioned_experimental_pair();
+            let _update_wire = hybrid_self_update_wire(
+                &mut bob,
+                &bob_provider,
+                &bob_signer,
+                LeafNodeParameters::default(),
+            );
+            let before_epoch = bob.epoch();
+            let before_tree = bob.export_ratchet_tree();
+            let before_availability = bob.experimental_transition_node_availability_status();
+            let before_storage = bob_provider.storage().values.read().unwrap().clone();
+            bob_provider
+                .storage()
+                .set_transaction_failure_at(Some(failure_at));
+
+            assert!(bob
+                .merge_pending_commit_experimental_quaternary_atomic(&bob_provider)
+                .is_err());
+            assert_eq!(bob.epoch(), before_epoch);
+            assert_eq!(bob.export_ratchet_tree(), before_tree);
+            assert_eq!(
+                bob.experimental_transition_node_availability_status(),
+                before_availability
+            );
+            assert!(bob.pending_commit().is_some());
+            assert_eq!(
+                *bob_provider.storage().values.read().unwrap(),
+                before_storage
+            );
+            let reloaded = MlsGroup::load(bob_provider.storage(), bob.group_id())
+                .expect("failed quaternary pending transaction remains loadable")
+                .expect("stored pending group");
+            assert_eq!(
+                reloaded.experimental_transition_node_availability_status(),
+                before_availability
+            );
             assert!(reloaded.pending_commit().is_some());
         }
     }
