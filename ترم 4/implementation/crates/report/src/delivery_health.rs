@@ -22,7 +22,7 @@ use thiserror::Error;
 use crate::generation::{validate_artifact_directory, write_new, ReportArtifactError};
 
 /// Version of the public delivery-health simulation schema.
-pub const DELIVERY_HEALTH_SCHEMA_VERSION: u16 = 3;
+pub const DELIVERY_HEALTH_SCHEMA_VERSION: u16 = 4;
 /// One-row summary CSV.
 pub const DELIVERY_HEALTH_SUMMARY_FILE_NAME: &str = "summary.csv";
 /// Ordered simulated Commit trace.
@@ -165,6 +165,7 @@ struct DeliveryCounts {
     c_leaf: u32,
     c_new: u32,
     c_old: u32,
+    c_real: u32,
     c_ideal: u32,
     h_new: Rational,
     h_old: Rational,
@@ -199,6 +200,7 @@ struct DeliveryHealthEvent {
     c_leaf: Option<u32>,
     c_new: Option<u32>,
     c_old: Option<u32>,
+    c_real: Option<u32>,
     c_ideal: Option<u32>,
     h_new_exact: Option<String>,
     h_new_decimal: Option<String>,
@@ -233,6 +235,7 @@ struct DeliveryHealthSummary {
     final_c_leaf: u32,
     final_c_new: u32,
     final_c_old: u32,
+    final_c_real: u32,
     final_c_ideal: u32,
     final_h_new_exact: String,
     final_h_new_decimal: String,
@@ -240,6 +243,7 @@ struct DeliveryHealthSummary {
     final_h_old_decimal: String,
     average_c_new: String,
     average_c_old: String,
+    average_c_real: String,
     average_h_newcost: String,
     average_h_oldcost: String,
     average_bytes_sent: String,
@@ -322,6 +326,7 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             c_leaf: None,
             c_new: None,
             c_old: None,
+            c_real: None,
             c_ideal: None,
             h_new_exact: None,
             h_new_decimal: None,
@@ -348,7 +353,7 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
         &old_usable,
     )?;
     let transition_delivery_bytes =
-        modeled_delivery_bytes(transition_counts.c_leaf, member_count(&members)?)?;
+        modeled_delivery_bytes(transition_counts.c_real, member_count(&members)?)?;
     let transition_sequence = sequence;
     events.push(measured_event(
         MeasuredEventFacts {
@@ -405,7 +410,7 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             &new_usable,
             &old_usable,
         )?;
-        let bytes_sent = modeled_delivery_bytes(final_counts.c_new, member_count(&members)?)?;
+        let bytes_sent = modeled_delivery_bytes(final_counts.c_real, member_count(&members)?)?;
         let trigger = retirement_trigger_text(final_counts);
         events.push(measured_event(
             MeasuredEventFacts {
@@ -456,6 +461,7 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             final_c_leaf: final_counts.c_leaf,
             final_c_new: final_counts.c_new,
             final_c_old: final_counts.c_old,
+            final_c_real: final_counts.c_real,
             final_c_ideal: final_counts.c_ideal,
             final_h_new_exact: final_counts.h_new.text(),
             final_h_new_decimal: final_counts.h_new.decimal(),
@@ -463,6 +469,7 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             final_h_old_decimal: final_counts.h_old.decimal(),
             average_c_new: averages.c_new,
             average_c_old: averages.c_old,
+            average_c_real: averages.c_real,
             average_h_newcost: averages.h_new,
             average_h_oldcost: averages.h_old,
             average_bytes_sent: averages.bytes_sent,
@@ -518,6 +525,29 @@ impl TreeLayout {
                 Ok(TreeNode {
                     depth,
                     ordinal: leaf / self.span(depth)?,
+                })
+            })
+            .collect()
+    }
+
+    fn children(self, node: TreeNode) -> Result<Vec<TreeNode>, DeliveryHealthError> {
+        if node.depth >= self.height {
+            return Ok(Vec::new());
+        }
+        let first = node
+            .ordinal
+            .checked_mul(u32::from(self.arity))
+            .ok_or(DeliveryHealthError::Overflow)?;
+        (0..u32::from(self.arity))
+            .map(|offset| {
+                Ok(TreeNode {
+                    depth: node
+                        .depth
+                        .checked_add(1)
+                        .ok_or(DeliveryHealthError::Overflow)?,
+                    ordinal: first
+                        .checked_add(offset)
+                        .ok_or(DeliveryHealthError::Overflow)?,
                 })
             })
             .collect()
@@ -587,15 +617,32 @@ fn calculate_counts(
         required_sibling_nodes(new_layout, committer.new_leaf, members, TreeKind::New)?;
     let c_ideal = u32::try_from(new_required.len()).map_err(|_| DeliveryHealthError::Overflow)?;
     let mut c_new = 0_u32;
+    let mut c_real = 0_u32;
     for node in new_required {
+        let targets = members_under_node(new_layout, node, members, TreeKind::New)?;
+        let new_node_usable = node.depth < new_layout.height && new_usable.contains(&node);
         c_new = c_new
-            .checked_add(node_or_leaf_fallback_count(
-                new_layout,
-                node,
-                members,
-                TreeKind::New,
-                new_usable,
-            )?)
+            .checked_add(if new_node_usable {
+                1
+            } else {
+                u32::try_from(targets.len()).map_err(|_| DeliveryHealthError::Overflow)?
+            })
+            .ok_or(DeliveryHealthError::Overflow)?;
+        c_real = c_real
+            .checked_add(if new_node_usable {
+                1
+            } else {
+                cover_targets_with_old(
+                    old_layout,
+                    TreeNode {
+                        depth: 0,
+                        ordinal: 0,
+                    },
+                    members,
+                    &targets,
+                    old_usable,
+                )?
+            })
             .ok_or(DeliveryHealthError::Overflow)?;
     }
 
@@ -632,6 +679,7 @@ fn calculate_counts(
         c_leaf,
         c_new,
         c_old,
+        c_real,
         c_ideal,
         h_new,
         h_old,
@@ -695,6 +743,31 @@ fn node_or_leaf_fallback_count(
         return Ok(1);
     }
     u32::try_from(contained.len()).map_err(|_| DeliveryHealthError::Overflow)
+}
+
+fn cover_targets_with_old(
+    layout: TreeLayout,
+    node: TreeNode,
+    members: &[Member],
+    targets: &BTreeSet<u32>,
+    usable: &BTreeSet<TreeNode>,
+) -> Result<u32, DeliveryHealthError> {
+    let contained = members_under_node(layout, node, members, TreeKind::Old)?;
+    if contained.is_disjoint(targets) {
+        return Ok(0);
+    }
+    if node.depth < layout.height && usable.contains(&node) && contained.is_subset(targets) {
+        return Ok(1);
+    }
+    if node.depth == layout.height {
+        return Ok(1);
+    }
+    layout.children(node)?.iter().try_fold(0_u32, |sum, child| {
+        sum.checked_add(cover_targets_with_old(
+            layout, *child, members, targets, usable,
+        )?)
+        .ok_or(DeliveryHealthError::Overflow)
+    })
 }
 
 fn members_under_node(
@@ -776,6 +849,7 @@ fn measured_event(
         c_leaf: Some(counts.c_leaf),
         c_new: Some(counts.c_new),
         c_old: Some(counts.c_old),
+        c_real: Some(counts.c_real),
         c_ideal: Some(counts.c_ideal),
         h_new_exact: Some(counts.h_new.text()),
         h_new_decimal: Some(counts.h_new.decimal()),
@@ -813,6 +887,7 @@ fn checked_next(value: u32) -> Result<u32, DeliveryHealthError> {
 struct PostTransitionAverages {
     c_new: String,
     c_old: String,
+    c_real: String,
     h_new: String,
     h_old: String,
     bytes_sent: String,
@@ -860,6 +935,7 @@ fn calculate_post_transition_averages(
     }
     let mut c_new_sum = 0_u64;
     let mut c_old_sum = 0_u64;
+    let mut c_real_sum = 0_u64;
     let mut bytes_sum = 0_u64;
     let mut h_new_sum = 0_f64;
     let mut h_old_sum = 0_f64;
@@ -867,6 +943,7 @@ fn calculate_post_transition_averages(
         let c_leaf = event.c_leaf.ok_or(DeliveryHealthError::Overflow)?;
         let c_new = event.c_new.ok_or(DeliveryHealthError::Overflow)?;
         let c_old = event.c_old.ok_or(DeliveryHealthError::Overflow)?;
+        let c_real = event.c_real.ok_or(DeliveryHealthError::Overflow)?;
         let c_ideal = event.c_ideal.ok_or(DeliveryHealthError::Overflow)?;
         let denominator = f64::from(c_leaf) - f64::from(c_ideal);
         if denominator <= 0.0 {
@@ -878,6 +955,9 @@ fn calculate_post_transition_averages(
         c_old_sum = c_old_sum
             .checked_add(u64::from(c_old))
             .ok_or(DeliveryHealthError::Overflow)?;
+        c_real_sum = c_real_sum
+            .checked_add(u64::from(c_real))
+            .ok_or(DeliveryHealthError::Overflow)?;
         bytes_sum = bytes_sum
             .checked_add(event.bytes_sent.ok_or(DeliveryHealthError::Overflow)?)
             .ok_or(DeliveryHealthError::Overflow)?;
@@ -887,6 +967,7 @@ fn calculate_post_transition_averages(
     Ok(PostTransitionAverages {
         c_new: format!("{:.6}", c_new_sum as f64 / count as f64),
         c_old: format!("{:.6}", c_old_sum as f64 / count as f64),
+        c_real: format!("{:.6}", c_real_sum as f64 / count as f64),
         h_new: format!("{:.6}", h_new_sum / count as f64),
         h_old: format!("{:.6}", h_old_sum / count as f64),
         bytes_sent: format!("{:.6}", bytes_sum as f64 / count as f64),
@@ -969,19 +1050,20 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     writeln!(document, "\n## Transition cost\n").expect("string write");
     writeln!(
         document,
-        "| Transition Commit | Committer node index | Modelled transition delivery bytes | Full MLS transition Commit bytes |\n|---:|---:|---:|---|\n| {} | {} | {} | {} |\n",
+        "| Transition Commit | Committer node index | C_real delivery targets | Modelled transition delivery bytes | Full MLS transition Commit bytes |\n|---:|---:|---:|---:|---|\n| {} | {} | {} | {} | {} |\n",
         summary.transition_commit_sequence,
         transition.committer_target_node_index,
+        optional_u32(transition.c_real),
         summary.modeled_transition_delivery_bytes,
         summary.full_transition_commit_bytes_state,
     )
     .expect("string write");
-    writeln!(document, "The modelled transition delivery cost uses worst-case direct-leaf fallback. It is not a measured full MLS Commit.\n").expect("string write");
+    writeln!(document, "The modelled transition delivery cost uses `C_real`: new-tree value first, then old TreeCover values, then direct leaves. It is not a measured full MLS Commit.\n").expect("string write");
 
     writeln!(document, "## Post-transition commits\n").expect("string write");
     writeln!(
         document,
-        "| Committer node index | Operation type | C_new | C_old | h_newcost | h_oldcost | Bytes sent |\n|---:|---|---:|---:|---:|---:|---:|"
+        "| Committer node index | Operation type | C_new | C_old | C_real | h_newcost | h_oldcost | Bytes sent |\n|---:|---|---:|---:|---:|---:|---:|---:|"
     )
     .expect("string write");
     for event in result
@@ -991,11 +1073,12 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     {
         writeln!(
             document,
-            "| {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} |",
             event.committer_target_node_index,
             event.operation,
             optional_u32(event.c_new),
             optional_u32(event.c_old),
+            optional_u32(event.c_real),
             health_display(event.h_new_exact.as_deref(), event.h_new_decimal.as_deref()),
             health_display(event.h_old_exact.as_deref(), event.h_old_decimal.as_deref()),
             optional_u64(event.bytes_sent),
@@ -1025,19 +1108,21 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     writeln!(document, "- `C_leaf` is the current active-client count, matching the operator's worst-case convention.").expect("string write");
     writeln!(document, "- `C_new` evaluates every required target-tree sibling using only the new tree: one send for a usable new-tree node; otherwise one direct send to every active leaf beneath that required node. Old TreeCover values never contribute to `C_new` or `h_newcost`.").expect("string write");
     writeln!(document, "- `C_old` places the same committer in the old TreeCover: one send for each usable required old node; an unavailable required node falls directly to every active leaf beneath it. It does not recursively reuse smaller descendant TreeCover nodes.").expect("string write");
+    writeln!(document, "- `C_real` models actual delivery priority for each required target set: use one usable new-tree node; otherwise use the smallest usable old-TreeCover cover; otherwise send directly to uncovered active leaves. `C_real` does not enter either health formula.").expect("string write");
     writeln!(document, "- `C_ideal` counts the non-empty target-tree sibling nodes when every required internal value is usable.").expect("string write");
     writeln!(document, "- The new tree starts with no usable internal values. An `update` populates the target-tree internal nodes on its committer path. A `remove` invalidates old and new direct-path ancestors known by the removed member, removes that client, then refreshes the removing committer's new-tree path.").expect("string write");
     writeln!(document, "- Operation labels are `add`, `remove`, or `update`; this workload currently randomizes `remove` and `update` only. A removal never selects its committer as the target.").expect("string write");
-    writeln!(document, "- Modelled delivery bytes use `744 × delivery targets + 132 × active clients`. They are separate from the endpoint counts and are not full MLS Commit bytes.").expect("string write");
+    writeln!(document, "- Modelled delivery bytes use `744 × C_real + 132 × active clients`. They model the real delivery-target priority but are not emitted full MLS Commit bytes.").expect("string write");
     writeln!(document, "\n## Boundary\n").expect("string write");
     writeln!(document, "This is a public node-value availability simulation. The current fork does not yet retain a fixed old-TreeCover key store, authenticate its deletion updates, or execute post-transition Remove Commits. Therefore `UnsupportedSimulationOnly` is not real MLS key erasure or live TreeCover retirement.").expect("string write");
 
     writeln!(document, "\n## Post-transition averages\n").expect("string write");
     writeln!(
         document,
-        "| Average C_new | Average C_old | Average h_newcost | Average h_oldcost | Average bytes sent |\n|---:|---:|---:|---:|---:|\n| {} | {} | {} | {} | {} |\n",
+        "| Average C_new | Average C_old | Average C_real | Average h_newcost | Average h_oldcost | Average bytes sent |\n|---:|---:|---:|---:|---:|---:|\n| {} | {} | {} | {} | {} | {} |\n",
         summary.average_c_new,
         summary.average_c_old,
+        summary.average_c_real,
         summary.average_h_newcost,
         summary.average_h_oldcost,
         summary.average_bytes_sent,
@@ -1109,6 +1194,7 @@ mod tests {
         assert_eq!(counts.c_ideal, 9);
         assert_eq!(counts.c_new, 63);
         assert_eq!(counts.c_old, 6);
+        assert_eq!(counts.c_real, 21);
 
         let fully_mature_new =
             all_populated_internal_nodes(new_layout, &members, TreeKind::New).expect("new nodes");
@@ -1122,6 +1208,7 @@ mod tests {
         )
         .expect("mature counts");
         assert_eq!(mature_counts.c_new, mature_counts.c_ideal);
+        assert_eq!(mature_counts.c_real, mature_counts.c_ideal);
 
         let leaf_fallback_counts = calculate_counts(
             old_layout,
@@ -1134,6 +1221,7 @@ mod tests {
         .expect("leaf fallback counts");
         assert_eq!(leaf_fallback_counts.c_new, 63);
         assert_eq!(leaf_fallback_counts.c_old, 63);
+        assert_eq!(leaf_fallback_counts.c_real, 63);
     }
 
     #[test]
@@ -1164,6 +1252,11 @@ mod tests {
         assert_eq!(counts.c_ideal, 10);
         assert_eq!(counts.c_new, 126);
         assert_eq!(counts.c_old, 37);
+        assert_eq!(counts.c_real, 37);
+        assert_eq!(
+            modeled_delivery_bytes(counts.c_real, counts.c_leaf).expect("real-route bytes"),
+            44_292
+        );
         assert_eq!(counts.h_new.text(), "1/117");
         assert_eq!(counts.h_new.decimal(), "0.008547");
         assert_eq!(counts.h_old.text(), "10/13");
@@ -1259,15 +1352,27 @@ mod tests {
         let result = simulate(config).expect("simulation");
         let report = markdown(config, &result);
         assert!(report.contains(
-            "| Committer node index | Operation type | C_new | C_old | h_newcost | h_oldcost | Bytes sent |"
+            "| Committer node index | Operation type | C_new | C_old | C_real | h_newcost | h_oldcost | Bytes sent |"
         ));
         assert!(report.contains(
-            "| Average C_new | Average C_old | Average h_newcost | Average h_oldcost | Average bytes sent |"
+            "| Average C_new | Average C_old | Average C_real | Average h_newcost | Average h_oldcost | Average bytes sent |"
         ));
         assert!(report.contains("Saving (new - old)"));
         assert!(report.contains("h_newcost > 0.7"));
         assert!(report.contains("1/117 (0.008547)"));
         assert!(report.contains("10/13 (0.769231)"));
-        assert_eq!(result.summary.modeled_transition_delivery_bytes, 112_128);
+        assert_eq!(
+            result.summary.modeled_transition_delivery_bytes,
+            modeled_delivery_bytes(
+                result
+                    .events
+                    .iter()
+                    .find(|event| event.phase == "transition")
+                    .and_then(|event| event.c_real)
+                    .expect("transition C_real"),
+                128
+            )
+            .expect("transition bytes")
+        );
     }
 }

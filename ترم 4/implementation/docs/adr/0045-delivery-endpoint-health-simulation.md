@@ -31,11 +31,17 @@ a live MLS observation.
    required old node counts one; an unavailable required node falls directly
    to every active leaf beneath it. Smaller descendant TreeCover nodes are not
    recursively reused for that missing required node.
-5. Use the operator's worst-case convention `C_leaf = active member count`.
+5. Calculate a separate `C_real` for modeled delivery. For every required
+   target-tree recipient set:
+   - use one usable new-tree node when available;
+   - otherwise use the smallest usable old-TreeCover cover;
+   - otherwise send directly to each still-uncovered active leaf.
+   `C_real` never enters either health formula.
+6. Use the operator's worst-case convention `C_leaf = active member count`.
    `C_ideal` is the number of non-empty target-tree siblings when all required
    target values are usable. Thus a full 128-member arity-4 path has
    `C_ideal = 3 + 3 + 3 + 1 = 10`.
-6. Calculate without byte substitutions:
+7. Calculate without byte substitutions:
 
    ```text
    h_newcost = (C_leaf - C_new) / (C_leaf - C_ideal)
@@ -45,30 +51,30 @@ a live MLS observation.
    The denominator must be positive. Fractions remain exact and are not
    clamped. Retirement is selected when `h_newcost > 0.70` or
    `h_oldcost < 0.50`.
-7. Simulate two pre-transition Updates, one transition, and then seeded-random
+8. Simulate two pre-transition Updates, one transition, and then seeded-random
    Update/Remove Commits with random valid committers. A Remove chooses a
    distinct active target, invalidates every old and new ancestor known by that
    target, removes it, and refreshes the deleting committer's new-tree path.
    An Update refreshes its committer's new-tree path. The transition starts
    with no usable new-tree internal values.
-8. Before transition, two Update observations compare educational canonical
+9. Before transition, two Update observations compare educational canonical
    delivery-byte models for the old and target arities. Each model uses
    `744 * delivery_targets + 132 * active_clients`, where delivery targets are
    `ceil(active_clients / arity)`. Saving is reported as `new - old`, so a
    negative value means the target arity wins. The transition starts only after
    both required observations win.
-9. The transition delivery model uses worst-case direct-leaf fallback. The
-   report marks the full MLS transition Commit bytes unavailable because this
-   simulator does not emit one. Post-transition bytes use the same canonical
-   field-count model with `C_new` as delivery targets.
-10. Interactive mode fixes public seed `42`, caps post-transition work at 128
+10. Transition and post-transition delivery bytes use
+    `744 * C_real + 132 * active_clients`. The report marks the full MLS
+    transition Commit bytes unavailable because this simulator does not emit
+    one.
+11. Interactive mode fixes public seed `42`, caps post-transition work at 128
    Commits, and stops on the first retirement condition. It creates fresh
    `summary.csv`, `events.csv`, and `report.md` artifacts. The Markdown contains
    a pre-transition byte comparison, transition-cost table, one health row per
    post-transition Commit, and clean post-transition averages. Each per-Commit
    health cell contains both its reduced exact fraction and six-place decimal.
-11. Run the mode with `CARGO_BUILD_JOBS=1`, nice level 10, and idle I/O priority.
-12. Every artifact must state
+12. Run the mode with `CARGO_BUILD_JOBS=1`, nice level 10, and idle I/O priority.
+13. Every artifact must state
     `public_node_value_availability_simulation_not_live_mls_key_erasure` and
     `UnsupportedSimulationOnly`. The older real clear-report mode must keep its
     thesis `C_*`/maturity fields unavailable and must not emit the rejected
@@ -78,6 +84,8 @@ a live MLS observation.
 
 - The simulator now keeps the new- and old-tree health routes independent and
   can show both new-tree progress and old-tree degradation.
+- `C_real` makes the modeled byte calculation auditable without contaminating
+  either health score.
 - The public seed makes the operation, committer, and removal sequence
   reproducible without controlling cryptographic entropy.
 - A run may retire after its first impactful Commit if the exact threshold is
@@ -94,6 +102,8 @@ a live MLS observation.
 - A 128-member removal regression proves that seven old direct-path values are
   invalidated and that the affected required old node falls directly to its
   active leaves.
+- Tests prove `C_real` follows new → old → leaf priority and that modeled bytes
+  use `C_real`, not `C_new` or `C_old`.
 - Unit tests prove Remove never targets its committer and reduces the old
   usable-node set in the seed-42 workload.
 - CLI tests cover required arguments, defaults, and malformed values.
