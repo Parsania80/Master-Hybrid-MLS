@@ -337,7 +337,7 @@ impl<'a> PublicGroupDiff<'a> {
             .zip(&recipient_path)
             .position(|(sender_branch, recipient_branch)| sender_branch != recipient_branch)
             .and_then(|depth| parent_nodes.get(depth).copied());
-        let recipient_targets = member_ids
+        let mut recipient_targets = member_ids
             .iter()
             .filter(|(binary_leaf_index, _)| **binary_leaf_index != sender_leaf_index.u32())
             .map(|(binary_leaf_index, member_id)| {
@@ -376,6 +376,9 @@ impl<'a> PublicGroupDiff<'a> {
                 Ok((assignment.quaternary_leaf_ordinal, parent, key))
             })
             .collect::<Result<Vec<_>, LibraryError>>()?;
+        // The member index map is ordered by binary leaf, while the hybrid
+        // codec requires canonical increasing quaternary recipient ordinals.
+        recipient_targets.sort_by_key(|(leaf_ordinal, _, _)| *leaf_ordinal);
         Ok(ExperimentalQuaternaryDeliveryPlan {
             parent_nodes,
             recipient_leaf_ordinal: recipient_assignment.quaternary_leaf_ordinal,

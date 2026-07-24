@@ -22,20 +22,33 @@ if errorlevel 1 (
     exit /b 1
 )
 
+set "CARGO_TOOLCHAIN_ARG="
+set "WINDOWS_RUST_MODE=MSVC"
 where link.exe >nul 2>nul
 if errorlevel 1 call :activate_msvc
 where link.exe >nul 2>nul
 if errorlevel 1 (
-    echo test.bat: the MSVC linker is unavailable. 1>&2
-    echo Install Visual Studio Build Tools with the "Desktop development with C++" workload, then rerun test.bat. 1>&2
-    exit /b 1
+    set "GNU_RUSTUP_HOME=E:\rustup-gnu"
+    set "GNU_TOOLCHAIN=1.93.1-x86_64-pc-windows-gnu"
+    if not exist "E:\rustup-gnu\toolchains\1.93.1-x86_64-pc-windows-gnu\bin\rustc.exe" (
+        echo test.bat: neither the MSVC linker nor the E:\rustup-gnu toolchain is available. 1>&2
+        echo Install the GNU toolchain once with: 1>&2
+        echo   set RUSTUP_HOME=E:\rustup-gnu 1>&2
+        echo   rustup toolchain install 1.93.1-x86_64-pc-windows-gnu --profile minimal 1>&2
+        exit /b 1
+    )
+    set "RUSTUP_HOME=E:\rustup-gnu"
+    set "CARGO_TARGET_DIR=E:\cargo-target\master-hybrid-mls"
+    set "CARGO_TOOLCHAIN_ARG=+1.93.1-x86_64-pc-windows-gnu"
+    set "WINDOWS_RUST_MODE=GNU/MinGW from E:"
 )
 
 echo.
 echo === Adaptive Hybrid MLS Interactive Demo ===
+echo Windows Rust toolchain: %WINDOWS_RUST_MODE%
 echo Choose a mode:
 echo   3^) Clear 64-member real-protocol report
-echo   4^) Real fork delivery-health report (2 -^> 4, random Update/Remove, authenticated retirement)
+echo   4^) Real fork delivery-health report (2 -^> 4, random Add/Update/Remove, authenticated retirement)
 set /p "MODE=Selection [3/4]: "
 if "%MODE%"=="3" goto clear_report
 if "%MODE%"=="4" goto delivery_health
@@ -53,7 +66,7 @@ if errorlevel 1 (
     exit /b 2
 )
 
-for /f %%I in ('powershell.exe -NoProfile -Command "Get-Date -AsUTC -Format yyyyMMddTHHmmssZ"') do set "UTC_STAMP=%%I"
+for /f %%I in ('powershell.exe -NoProfile -Command "(Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')"') do set "UTC_STAMP=%%I"
 if not defined UTC_STAMP set "UTC_STAMP=%RANDOM%-%RANDOM%"
 set "DEFAULT_RUN=professor-demo-%UTC_STAMP%"
 set /p "RUN_NAME=Public run label [%DEFAULT_RUN%]: "
@@ -82,7 +95,8 @@ echo Output: %OUTPUT_DIR%\
 echo Report: %REPORT_DIR%\
 echo Arity: %INITIAL_ARITY% -^> %TARGET_ARITY%; initial clients: %INITIAL_MEMBERS%
 echo Public random seed: 42; post-transition Commit limit: 128
-echo Operations: random Update/Remove with a random valid committer
+echo Operations: random Add/Update/Remove before transition, then Update/Remove until retirement
+echo Minimum trace: 5 binary observations before transition; 5 post-transition Commits before retirement
 set /p "CONFIRM=Proceed? [y/N]: "
 if /I not "%CONFIRM%"=="y" if /I not "%CONFIRM%"=="yes" (
     echo Cancelled. No protocol command was run.
@@ -94,7 +108,7 @@ echo === Real Fork Delivery-Health Report ===
 echo Running authenticated fork workload...
 set "CARGO_BUILD_JOBS=1"
 set "CARGO_TERM_COLOR=never"
-cargo run --quiet -p report --bin simulate_delivery_health --release --locked --offline -- ^
+cargo %CARGO_TOOLCHAIN_ARG% run --quiet -p report --bin simulate_delivery_health --release --locked --offline -- ^
     --initial-arity %INITIAL_ARITY% ^
     --target-arity %TARGET_ARITY% ^
     --initial-members %INITIAL_MEMBERS% ^
@@ -131,7 +145,7 @@ echo The report remains thesis-local experimental software; no production or int
 exit /b 0
 
 :clear_report
-for /f %%I in ('powershell.exe -NoProfile -Command "Get-Date -AsUTC -Format yyyyMMddTHHmmssZ"') do set "UTC_STAMP=%%I"
+for /f %%I in ('powershell.exe -NoProfile -Command "(Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')"') do set "UTC_STAMP=%%I"
 if not defined UTC_STAMP set "UTC_STAMP=%RANDOM%-%RANDOM%"
 set "DEFAULT_RUN=clear-64-windows-%UTC_STAMP%"
 set /p "RUN_NAME=Public run label [%DEFAULT_RUN%]: "
@@ -169,7 +183,7 @@ echo.
 echo Running clear 64-member experiment...
 set "CARGO_BUILD_JOBS=1"
 set "CARGO_TERM_COLOR=never"
-cargo run --quiet -p report --bin run_clear_64 --release --locked --offline -- ^
+cargo %CARGO_TOOLCHAIN_ARG% run --quiet -p report --bin run_clear_64 --release --locked --offline -- ^
     --seed 42 ^
     --output "%OUTPUT_DIR%" ^
     --report "%REPORT_DIR%"

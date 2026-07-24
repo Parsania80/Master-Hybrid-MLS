@@ -28,9 +28,9 @@ a live MLS observation.
    - otherwise count one direct send to every active leaf beneath that node.
    The old TreeCover never contributes to `C_new` or `h_newcost`.
 4. Calculate `C_old` separately on the old-tree committer path. Each usable
-   required old node counts one; an unavailable required node falls directly
-   to every active leaf beneath it. Smaller descendant TreeCover nodes are not
-   recursively reused for that missing required node.
+   required old node counts one; an unavailable required node is recursively
+   split into safe usable descendant TreeCover nodes. Only when no safe
+   internal value remains does the count fall to active leaves.
 5. Calculate a separate `C_real` for modeled delivery. For every required
    target-tree recipient set:
    - use one usable new-tree node when available;

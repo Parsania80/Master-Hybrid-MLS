@@ -657,18 +657,24 @@ impl TransitionTrees {
             .collect::<BTreeSet<_>>();
         let required_old =
             required_sibling_nodes(2, old_height, committer_binary_leaf, &active_binary)?;
-        let mut c_old = 0_u32;
+        let mut old_targets = BTreeSet::new();
         for required in required_old {
-            let targets =
-                descendants_at_node(2, old_height, required, &active_binary_to_quaternary)?;
-            let target_count = u32::try_from(targets.len())
-                .map_err(|_| TransitionTreeError::ExactCoverOverflow)?;
-            let usable = binary_parent_index(old_height, required)?
-                .is_some_and(|parent_index| usable_old.contains(&parent_index));
-            c_old = c_old
-                .checked_add(if usable { 1 } else { target_count })
-                .ok_or(TransitionTreeError::ExactCoverOverflow)?;
+            old_targets.extend(descendants_at_node(
+                2,
+                old_height,
+                required,
+                &active_binary_to_quaternary,
+            )?);
         }
+        // A missing old node is not a leaf-only failure. Its safe binary
+        // children remain valid TreeCover recipients, so recurse through the
+        // authenticated old cover exactly as C_real does.
+        let c_old = old_priority_cover_count(
+            old_height,
+            &active_binary_to_quaternary,
+            &old_targets,
+            &usable_old,
+        )?;
         let denominator = c_leaf
             .checked_sub(c_ideal)
             .filter(|value| *value > 0)
