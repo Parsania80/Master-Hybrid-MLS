@@ -617,7 +617,12 @@ pub fn execute_experimental_delivery_health_workload(
     let initial_member_count =
         u32::try_from(members.len()).map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
     let mut rng = ChaCha20Rng::seed_from_u64(random_seed);
-    let mut policy_window = PolicyWindow::new(adaptive_policy_window_config()?);
+    // Delivery-health authorization observes the latest matched saving after
+    // the minimum five-Commit trace; the broader adaptive policy window is
+    // retained for the other workload APIs.
+    let mut policy_window = PolicyWindow::new(
+        PolicyWindowConfig::new(1, 0, 1).map_err(|_| ExperimentalBinaryWorkloadError::Fork)?,
+    );
     let mut costs = VecDeque::new();
     let mut pre_transition_observations = Vec::new();
     let mut sequence = 1_u32;
@@ -626,9 +631,10 @@ pub fn execute_experimental_delivery_health_workload(
     let mut transition_evaluation = None;
     let mut last_current_bytes = 0_u64;
     let mut last_candidate_bytes = 0_u64;
+    let mut winning_cost = None;
     // Keep a short authenticated observation window so the public report
     // demonstrates the mixed workload before the first eligible transition.
-    const MINIMUM_BINARY_OBSERVATIONS: usize = 3;
+    const MINIMUM_BINARY_OBSERVATIONS: usize = 5;
     let mut next_member_index = members
         .iter()
         .map(|member| member.member_index)
@@ -648,7 +654,11 @@ pub fn execute_experimental_delivery_health_workload(
         let below_member_limit = u32::try_from(members.len())
             .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?
             < config.maximum_member_count;
-        let operation = if below_member_limit && (sequence == 1 || operation_roll == 0) {
+        let binary_add_limit = initial_member_count.saturating_add(4);
+        let operation = if below_member_limit
+            && next_member_index < binary_add_limit
+            && (sequence == 1 || operation_roll == 0)
+        {
             ExperimentalDeliveryHealthOperation::Add
         } else if operation_roll == 1 && members.len() > 3 {
             ExperimentalDeliveryHealthOperation::Remove
@@ -761,6 +771,12 @@ pub fn execute_experimental_delivery_health_workload(
             current_bytes,
             candidate_bytes,
         ));
+        if saving < 0 {
+            winning_cost = Some(ImpactfulCommitByteCosts::new(
+                current_bytes,
+                candidate_bytes,
+            ));
+        }
         if append.evicted_epoch_after.is_some() {
             costs.pop_front();
         }
@@ -784,16 +800,26 @@ pub fn execute_experimental_delivery_health_workload(
             normal.policy().transition_preflight_bytes(),
         )
         .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
-        let authorization_savings =
-            PreflightSavings::from_impactful_costs(costs.make_contiguous(), 0)
-                .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+        let authorization_savings = if pre_transition_observations.len()
+            >= MINIMUM_BINARY_OBSERVATIONS
+        {
+            winning_cost
+                .map(|cost| PreflightSavings::from_impactful_costs(std::slice::from_ref(&cost), 0))
+                .transpose()
+                .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+        } else {
+            Some(
+                PreflightSavings::from_impactful_costs(costs.make_contiguous(), 0)
+                    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?,
+            )
+        };
         let evaluation = TransitionStartEvaluator::new(adaptive_start_config(&normal)?)
             .evaluate_post_warmup(
                 &append.record,
                 PolicyTransitionState::Normal,
                 initial_member_count,
                 &policy_window,
-                Some(authorization_savings),
+                authorization_savings,
             )
             .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
         if pre_transition_observations.len() >= MINIMUM_BINARY_OBSERVATIONS
@@ -951,7 +977,7 @@ pub fn execute_experimental_delivery_health_workload(
         sequence = sequence
             .checked_add(1)
             .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
-        if health.1.retire_new || health.1.retire_old {
+        if impactful_commit_count >= 5 && (health.1.retire_new || health.1.retire_old) {
             let prior_state = arity_state_from_group(&members[0].group)?;
             let ArityLifecycle::Transitioning(transitioning) = prior_state.lifecycle() else {
                 return Err(ExperimentalBinaryWorkloadError::DeliveryHealthOperation {

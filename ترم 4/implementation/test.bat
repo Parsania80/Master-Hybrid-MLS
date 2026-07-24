@@ -96,6 +96,7 @@ echo Report: %REPORT_DIR%\
 echo Arity: %INITIAL_ARITY% -^> %TARGET_ARITY%; initial clients: %INITIAL_MEMBERS%
 echo Public random seed: 42; post-transition Commit limit: 128
 echo Operations: random Add/Update/Remove before transition, then Update/Remove until retirement
+echo Minimum trace: 5 binary observations before transition; 5 post-transition Commits before retirement
 set /p "CONFIRM=Proceed? [y/N]: "
 if /I not "%CONFIRM%"=="y" if /I not "%CONFIRM%"=="yes" (
     echo Cancelled. No protocol command was run.

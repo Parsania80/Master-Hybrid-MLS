@@ -136,6 +136,7 @@ if [[ "$generate_delivery_health" == true ]]; then
         "$initial_arity" "$target_arity" "$initial_members"
     printf 'Public random seed: 42; post-transition Commit limit: 128\n'
     printf 'Operations: random Add/Update/Remove before transition, then Update/Remove until retirement\n\n'
+    printf 'Minimum trace: 5 binary observations before transition; 5 post-transition Commits before retirement\n\n'
     run_step 'Run authenticated fork workload' env CARGO_BUILD_JOBS=1 CARGO_TERM_COLOR=never \
         nice -n 10 ionice -c 3 cargo run --quiet -p report --bin simulate_delivery_health \
         --release --locked --offline -- \
