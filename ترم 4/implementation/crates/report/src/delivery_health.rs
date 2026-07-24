@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(dead_code)]
 
 //! Public node-value health simulation for adaptive delivery.
 //!
@@ -20,9 +21,13 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::generation::{validate_artifact_directory, write_new, ReportArtifactError};
+use experimental_mls_adapter::{
+    execute_experimental_delivery_health_workload, ExperimentalBinaryWorkloadError,
+    ExperimentalDeliveryHealthOperation,
+};
 
 /// Version of the public delivery-health simulation schema.
-pub const DELIVERY_HEALTH_SCHEMA_VERSION: u16 = 4;
+pub const DELIVERY_HEALTH_SCHEMA_VERSION: u16 = 5;
 /// One-row summary CSV.
 pub const DELIVERY_HEALTH_SUMMARY_FILE_NAME: &str = "summary.csv";
 /// Ordered simulated Commit trace.
@@ -117,6 +122,9 @@ pub enum DeliveryHealthError {
     /// CSV serialization failed.
     #[error("delivery-health CSV serialization failed")]
     Csv(#[source] csv::Error),
+    /// The authenticated real fork workload rejected or could not complete.
+    #[error("the real fork delivery-health workload failed")]
+    RealFork(#[from] ExperimentalBinaryWorkloadError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -255,6 +263,233 @@ struct SimulationResult {
     events: Vec<DeliveryHealthEvent>,
 }
 
+fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHealthError> {
+    if (config.initial_arity, config.target_arity) != (2, 4) {
+        return Err(DeliveryHealthError::UnsupportedArityPair);
+    }
+    let execution_config = simulation::BaselineWorkloadConfig {
+        group_id: b"task86-real-delivery-health".to_vec(),
+        initial_member_count: config.initial_member_count,
+        maximum_member_count: config.initial_member_count,
+        operation_count: 2,
+        region_count: 2,
+        committer_strategy: simulation::CommitterStrategy::RoundRobin,
+        workload_profile: simulation::WorkloadProfile::UpdateOnly,
+    };
+    let execution = execute_experimental_delivery_health_workload(
+        &execution_config,
+        config.random_seed,
+        config.maximum_post_transition_commits,
+    )?;
+    let mut events = Vec::new();
+    for observation in &execution.pre_transition_observations {
+        events.push(DeliveryHealthEvent {
+            schema_version: DELIVERY_HEALTH_SCHEMA_VERSION,
+            commit_sequence: observation.sequence,
+            phase: "pre-transition",
+            operation: "update",
+            committer_member_index: observation.committer_member_index,
+            committer_target_node_index: observation.committer_member_index,
+            removed_member_index: None,
+            active_member_count: config.initial_member_count,
+            impactful_commits_since_transition: None,
+            new_usable_internal_node_count: None,
+            old_usable_internal_node_count: None,
+            c_leaf: None,
+            c_new: None,
+            c_old: None,
+            c_real: None,
+            c_ideal: None,
+            h_new_exact: None,
+            h_new_decimal: None,
+            h_old_exact: None,
+            h_old_decimal: None,
+            old_arity_bytes_sent: Some(observation.old_arity_commit_bytes),
+            new_arity_bytes_sent: Some(observation.new_arity_candidate_bytes),
+            saving_new_minus_old_bytes: Some(observation.saving_new_minus_old_bytes),
+            bytes_sent: Some(observation.old_arity_commit_bytes),
+            retirement_condition: "NewArityWins",
+        });
+    }
+    let transition_health = execution.transition.health;
+    events.push(DeliveryHealthEvent {
+        schema_version: DELIVERY_HEALTH_SCHEMA_VERSION,
+        commit_sequence: execution.transition.sequence,
+        phase: "transition",
+        operation: "transition",
+        committer_member_index: execution.transition.committer_member_index,
+        committer_target_node_index: execution.transition.committer_quaternary_leaf_ordinal,
+        removed_member_index: None,
+        active_member_count: config.initial_member_count,
+        impactful_commits_since_transition: Some(0),
+        new_usable_internal_node_count: Some(0),
+        old_usable_internal_node_count: None,
+        c_leaf: Some(transition_health.c_leaf),
+        c_new: Some(transition_health.c_new),
+        c_old: Some(transition_health.c_old),
+        c_real: Some(transition_health.c_real),
+        c_ideal: Some(transition_health.c_ideal),
+        h_new_exact: Some(fraction_text(transition_health.h_new)),
+        h_new_decimal: Some(fraction_decimal(transition_health.h_new)),
+        h_old_exact: Some(fraction_text(transition_health.h_old)),
+        h_old_decimal: Some(fraction_decimal(transition_health.h_old)),
+        old_arity_bytes_sent: None,
+        new_arity_bytes_sent: None,
+        saving_new_minus_old_bytes: None,
+        bytes_sent: Some(execution.transition.emitted_commit_bytes),
+        retirement_condition: "NotEvaluatedAtTransition",
+    });
+    for observation in &execution.post_transition_observations {
+        let health = observation.health;
+        let operation = match observation.operation {
+            ExperimentalDeliveryHealthOperation::Update => "update",
+            ExperimentalDeliveryHealthOperation::Remove => "remove",
+        };
+        events.push(DeliveryHealthEvent {
+            schema_version: DELIVERY_HEALTH_SCHEMA_VERSION,
+            commit_sequence: observation.sequence,
+            phase: "post-transition",
+            operation,
+            committer_member_index: observation.committer_member_index,
+            committer_target_node_index: observation.committer_quaternary_leaf_ordinal,
+            removed_member_index: observation.removed_member_index,
+            active_member_count: observation.active_member_count,
+            impactful_commits_since_transition: Some(observation.impactful_commit_count),
+            new_usable_internal_node_count: Some(observation.usable_new_node_count),
+            old_usable_internal_node_count: Some(observation.usable_old_node_count),
+            c_leaf: Some(health.c_leaf),
+            c_new: Some(health.c_new),
+            c_old: Some(health.c_old),
+            c_real: Some(health.c_real),
+            c_ideal: Some(health.c_ideal),
+            h_new_exact: Some(fraction_text(health.h_new)),
+            h_new_decimal: Some(fraction_decimal(health.h_new)),
+            h_old_exact: Some(fraction_text(health.h_old)),
+            h_old_decimal: Some(fraction_decimal(health.h_old)),
+            old_arity_bytes_sent: None,
+            new_arity_bytes_sent: None,
+            saving_new_minus_old_bytes: None,
+            bytes_sent: Some(observation.emitted_commit_bytes),
+            retirement_condition: retirement_trigger_text_flags(
+                health.retire_new,
+                health.retire_old,
+            ),
+        });
+    }
+    let retirement_health = execution
+        .post_transition_observations
+        .last()
+        .ok_or(DeliveryHealthError::NoEligibleMember)?
+        .health;
+    let retirement = &execution.retirement;
+    events.push(DeliveryHealthEvent {
+        schema_version: DELIVERY_HEALTH_SCHEMA_VERSION,
+        commit_sequence: retirement.sequence,
+        phase: "retirement",
+        operation: "retirement",
+        committer_member_index: retirement.committer_member_index,
+        committer_target_node_index: execution
+            .post_transition_observations
+            .last()
+            .map(|observation| observation.committer_quaternary_leaf_ordinal)
+            .unwrap_or_default(),
+        removed_member_index: None,
+        active_member_count: execution.final_member_count,
+        impactful_commits_since_transition: Some(retirement.evidence.impactful_commit_count()),
+        new_usable_internal_node_count: Some(
+            execution
+                .post_transition_observations
+                .last()
+                .map(|observation| observation.usable_new_node_count)
+                .unwrap_or_default(),
+        ),
+        old_usable_internal_node_count: Some(0),
+        c_leaf: Some(retirement_health.c_leaf),
+        c_new: Some(retirement_health.c_new),
+        c_old: Some(retirement_health.c_old),
+        c_real: Some(retirement_health.c_real),
+        c_ideal: Some(retirement_health.c_ideal),
+        h_new_exact: Some(fraction_text(retirement_health.h_new)),
+        h_new_decimal: Some(fraction_decimal(retirement_health.h_new)),
+        h_old_exact: Some(fraction_text(retirement_health.h_old)),
+        h_old_decimal: Some(fraction_decimal(retirement_health.h_old)),
+        old_arity_bytes_sent: None,
+        new_arity_bytes_sent: None,
+        saving_new_minus_old_bytes: None,
+        bytes_sent: Some(retirement.emitted_commit_bytes),
+        retirement_condition: "AuthenticatedRetirementCommitAccepted",
+    });
+    let final_health = execution
+        .post_transition_observations
+        .last()
+        .ok_or(DeliveryHealthError::NoEligibleMember)?
+        .health;
+    let averages = calculate_post_transition_averages(&events)?;
+    let update_commit_count = execution
+        .post_transition_observations
+        .iter()
+        .filter(|observation| observation.operation == ExperimentalDeliveryHealthOperation::Update)
+        .count() as u32;
+    let remove_commit_count = execution
+        .post_transition_observations
+        .iter()
+        .filter(|observation| observation.operation == ExperimentalDeliveryHealthOperation::Remove)
+        .count() as u32;
+    Ok(SimulationResult {
+        summary: DeliveryHealthSummary {
+            schema_version: DELIVERY_HEALTH_SCHEMA_VERSION,
+            provenance: "real_fork_authenticated_delivery_health_and_atomic_treecover_erasure",
+            initial_arity: 2,
+            target_arity: 4,
+            initial_member_count: execution.initial_member_count,
+            final_member_count: execution.final_member_count,
+            random_seed: execution.random_seed,
+            pre_transition_update_count: execution.pre_transition_observations.len() as u32,
+            post_transition_commit_count: execution.post_transition_observations.len() as u32,
+            update_commit_count,
+            remove_commit_count,
+            transition_commit_sequence: execution.transition.sequence,
+            modeled_transition_delivery_bytes: execution.transition.emitted_commit_bytes,
+            full_transition_commit_bytes_state: "ObservedRealForkCommitBytes",
+            retirement_condition_met: true,
+            retirement_after_impactful_commit: Some(retirement.evidence.impactful_commit_count()),
+            retirement_trigger: retirement_trigger_text_flags(
+                retirement.evidence.retire_new(),
+                retirement.evidence.retire_old(),
+            ),
+            final_c_leaf: final_health.c_leaf,
+            final_c_new: final_health.c_new,
+            final_c_old: final_health.c_old,
+            final_c_real: final_health.c_real,
+            final_c_ideal: final_health.c_ideal,
+            final_h_new_exact: fraction_text(final_health.h_new),
+            final_h_new_decimal: fraction_decimal(final_health.h_new),
+            final_h_old_exact: fraction_text(final_health.h_old),
+            final_h_old_decimal: fraction_decimal(final_health.h_old),
+            average_c_new: averages.c_new,
+            average_c_old: averages.c_old,
+            average_c_real: averages.c_real,
+            average_h_newcost: averages.h_new,
+            average_h_oldcost: averages.h_old,
+            average_bytes_sent: averages.bytes_sent,
+            live_protocol_retirement_state:
+                "AuthenticatedAtomicRetirementCommitAndTreeCoverKeyErasure",
+        },
+        events,
+    })
+}
+
+fn fraction_text(fraction: transition_tree::DeliveryHealthFraction) -> String {
+    format!("{}/{}", fraction.numerator(), fraction.denominator())
+}
+
+fn fraction_decimal(fraction: transition_tree::DeliveryHealthFraction) -> String {
+    format!(
+        "{:.6}",
+        fraction.numerator() as f64 / fraction.denominator() as f64
+    )
+}
+
 /// Runs the deterministic Update/Remove simulation and writes create-new
 /// public CSV plus `report.md` artifacts.
 pub fn generate_delivery_health_report(
@@ -282,7 +517,7 @@ pub fn generate_delivery_health_report(
         }
     }
 
-    let result = simulate(config)?;
+    let result = simulate_real(config)?;
     fs::create_dir_all(output_directory)
         .map_err(|error| DeliveryHealthError::Artifact(ReportArtifactError::Write(error)))?;
     fs::create_dir_all(report_directory)
@@ -864,7 +1099,11 @@ fn measured_event(
 }
 
 fn retirement_trigger_text(counts: DeliveryCounts) -> &'static str {
-    match (counts.retire_new, counts.retire_old) {
+    retirement_trigger_text_flags(counts.retire_new, counts.retire_old)
+}
+
+fn retirement_trigger_text_flags(retire_new: bool, retire_old: bool) -> &'static str {
+    match (retire_new, retire_old) {
         (true, true) => "NewHealthAndOldDegradation",
         (true, false) => "NewHealth",
         (false, true) => "OldDegradation",
@@ -1058,7 +1297,7 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
         summary.full_transition_commit_bytes_state,
     )
     .expect("string write");
-    writeln!(document, "The modelled transition delivery cost uses `C_real`: new-tree value first, then old TreeCover values, then direct leaves. It is not a measured full MLS Commit.\n").expect("string write");
+    writeln!(document, "The transition row is the observed full serialized Commit from the experimental fork. Endpoint health uses the retained authenticated availability snapshot after that Commit.\n").expect("string write");
 
     writeln!(document, "## Post-transition commits\n").expect("string write");
     writeln!(
@@ -1114,7 +1353,7 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     writeln!(document, "- Operation labels are `add`, `remove`, or `update`; this workload currently randomizes `remove` and `update` only. A removal never selects its committer as the target.").expect("string write");
     writeln!(document, "- Modelled delivery bytes use `744 × C_real + 132 × active clients`. They model the real delivery-target priority but are not emitted full MLS Commit bytes.").expect("string write");
     writeln!(document, "\n## Boundary\n").expect("string write");
-    writeln!(document, "This is a public node-value availability simulation. The current fork does not yet retain a fixed old-TreeCover key store, authenticate its deletion updates, or execute post-transition Remove Commits. Therefore `UnsupportedSimulationOnly` is not real MLS key erasure or live TreeCover retirement.").expect("string write");
+    writeln!(document, "These rows are real experimental-fork observations. Each accepted Commit was authenticated, atomically merged, and followed by a ciphertext-free retained-availability snapshot. The final row is a signed authenticated retirement Commit; its transaction deletes the retained TreeCover key envelope and exposes only redacted deletion counts. This remains thesis-local experimental software, not an interoperability or production-security claim.").expect("string write");
 
     writeln!(document, "\n## Post-transition averages\n").expect("string write");
     writeln!(

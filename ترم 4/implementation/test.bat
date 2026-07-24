@@ -3,7 +3,7 @@ setlocal EnableExtensions DisableDelayedExpansion
 
 cd /d "%~dp0"
 if not "%~1"=="" (
-    echo test.bat: run test.bat without command-line parameters; it will prompt for a run label. 1>&2
+    echo test.bat: run test.bat without command-line parameters; it will prompt for the mode and inputs. 1>&2
     exit /b 2
 )
 
@@ -31,16 +31,35 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo.
+echo === Adaptive Hybrid MLS Interactive Demo ===
+echo Choose a mode:
+echo   3^) Clear 64-member real-protocol report
+echo   4^) Real fork delivery-health report (2 -^> 4, random Update/Remove, authenticated retirement)
+set /p "MODE=Selection [3/4]: "
+if "%MODE%"=="3" goto clear_report
+if "%MODE%"=="4" goto delivery_health
+echo test.bat: select 3 or 4 from the displayed mode menu. 1>&2
+exit /b 2
+
+:delivery_health
+set "INITIAL_ARITY=2"
+set "TARGET_ARITY=4"
+set /p "INITIAL_MEMBERS=Initial MLS client number [64..128]: "
+set "INITIAL_MEMBERS_ENV=%INITIAL_MEMBERS%"
+powershell.exe -NoProfile -Command "$value = $env:INITIAL_MEMBERS_ENV; if ($value -notmatch '^[0-9]+$' -or [int]$value -lt 64 -or [int]$value -gt 128) { exit 1 }"
+if errorlevel 1 (
+    echo test.bat: initial MLS client number must be an integer between 64 and 128. 1>&2
+    exit /b 2
+)
+
 for /f %%I in ('powershell.exe -NoProfile -Command "Get-Date -AsUTC -Format yyyyMMddTHHmmssZ"') do set "UTC_STAMP=%%I"
 if not defined UTC_STAMP set "UTC_STAMP=%RANDOM%-%RANDOM%"
-set "DEFAULT_RUN=clear-64-windows-%UTC_STAMP%"
-
-echo.
-echo === Clear 64-Member MLS Report for Windows ===
+set "DEFAULT_RUN=professor-demo-%UTC_STAMP%"
 set /p "RUN_NAME=Public run label [%DEFAULT_RUN%]: "
 if not defined RUN_NAME set "RUN_NAME=%DEFAULT_RUN%"
-set "CLEAR_RUN_NAME=%RUN_NAME%"
-powershell.exe -NoProfile -Command "if ($env:CLEAR_RUN_NAME -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]*$') { exit 1 }"
+set "RUN_NAME_ENV=%RUN_NAME%"
+powershell.exe -NoProfile -Command "if ($env:RUN_NAME_ENV -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]*$') { exit 1 }"
 if errorlevel 1 (
     echo test.bat: run name must contain only letters, digits, underscores, or hyphens. 1>&2
     exit /b 2
@@ -57,9 +76,89 @@ if exist "%REPORT_DIR%" (
     exit /b 1
 )
 
+echo.
+echo Selected mode: real fork delivery-health report
+echo Output: %OUTPUT_DIR%\
+echo Report: %REPORT_DIR%\
+echo Arity: %INITIAL_ARITY% -^> %TARGET_ARITY%; initial clients: %INITIAL_MEMBERS%
+echo Public random seed: 42; post-transition Commit limit: 128
+echo Operations: random Update/Remove with a random valid committer
+set /p "CONFIRM=Proceed? [y/N]: "
+if /I not "%CONFIRM%"=="y" if /I not "%CONFIRM%"=="yes" (
+    echo Cancelled. No protocol command was run.
+    exit /b 0
+)
+
+echo.
+echo === Real Fork Delivery-Health Report ===
+echo Running authenticated fork workload...
+set "CARGO_BUILD_JOBS=1"
+set "CARGO_TERM_COLOR=never"
+cargo run --quiet -p report --bin simulate_delivery_health --release --locked --offline -- ^
+    --initial-arity %INITIAL_ARITY% ^
+    --target-arity %TARGET_ARITY% ^
+    --initial-members %INITIAL_MEMBERS% ^
+    --seed 42 ^
+    --maximum-commits 128 ^
+    --output "%OUTPUT_DIR%" ^
+    --report "%REPORT_DIR%"
+if errorlevel 1 (
+    echo test.bat: the authenticated fork workload failed. 1>&2
+    exit /b 1
+)
+
+if not exist "%OUTPUT_DIR%\summary.csv" (
+    echo test.bat: summary.csv was not created. 1>&2
+    exit /b 1
+)
+if not exist "%OUTPUT_DIR%\events.csv" (
+    echo test.bat: events.csv was not created. 1>&2
+    exit /b 1
+)
+if not exist "%REPORT_DIR%\report.md" (
+    echo test.bat: report.md was not created. 1>&2
+    exit /b 1
+)
+
+echo.
+echo Generated:
+echo   Summary: %OUTPUT_DIR%\summary.csv
+echo   Events:  %OUTPUT_DIR%\events.csv
+echo   Report:  %REPORT_DIR%\report.md
+echo.
+echo Scope: real authenticated fork Commit observations and atomic TreeCover retirement.
+echo The report remains thesis-local experimental software; no production or interoperability claim is made.
+exit /b 0
+
+:clear_report
+for /f %%I in ('powershell.exe -NoProfile -Command "Get-Date -AsUTC -Format yyyyMMddTHHmmssZ"') do set "UTC_STAMP=%%I"
+if not defined UTC_STAMP set "UTC_STAMP=%RANDOM%-%RANDOM%"
+set "DEFAULT_RUN=clear-64-windows-%UTC_STAMP%"
+set /p "RUN_NAME=Public run label [%DEFAULT_RUN%]: "
+if not defined RUN_NAME set "RUN_NAME=%DEFAULT_RUN%"
+set "RUN_NAME_ENV=%RUN_NAME%"
+powershell.exe -NoProfile -Command "if ($env:RUN_NAME_ENV -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]*$') { exit 1 }"
+if errorlevel 1 (
+    echo test.bat: run name must contain only letters, digits, underscores, or hyphens. 1>&2
+    exit /b 2
+)
+
+set "OUTPUT_DIR=output\%RUN_NAME%"
+set "REPORT_DIR=report\%RUN_NAME%"
+if exist "%OUTPUT_DIR%" (
+    echo test.bat: output directory already exists: %OUTPUT_DIR% 1>&2
+    exit /b 1
+)
+if exist "%REPORT_DIR%" (
+    echo test.bat: report directory already exists: %REPORT_DIR% 1>&2
+    exit /b 1
+)
+
+echo.
+echo === Clear 64-Member MLS Report for Windows ===
 echo Members: 64
 echo Real baseline operations: Update, Add, Remove
-echo Adaptive run: seeded-random Updates through transition and one maturity evaluation
+echo Adaptive operations: seeded-random Updates through transition and one maturity evaluation
 set /p "CONFIRM=Proceed? [y/N]: "
 if /I not "%CONFIRM%"=="y" if /I not "%CONFIRM%"=="yes" (
     echo Cancelled. No protocol command was run.
@@ -69,9 +168,13 @@ if /I not "%CONFIRM%"=="y" if /I not "%CONFIRM%"=="yes" (
 echo.
 echo Running clear 64-member experiment...
 set "CARGO_BUILD_JOBS=1"
-cargo run --quiet -p report --bin run_clear_64 --release --locked --offline -- --seed 42 --output "output/%RUN_NAME%" --report "report/%RUN_NAME%"
+set "CARGO_TERM_COLOR=never"
+cargo run --quiet -p report --bin run_clear_64 --release --locked --offline -- ^
+    --seed 42 ^
+    --output "%OUTPUT_DIR%" ^
+    --report "%REPORT_DIR%"
 if errorlevel 1 (
-    echo test.bat: the experiment failed. 1>&2
+    echo test.bat: the clear experiment failed. 1>&2
     exit /b 1
 )
 
@@ -94,7 +197,8 @@ echo Summary: %OUTPUT_DIR%\clear_report.csv
 echo Events:  %OUTPUT_DIR%\clear_events.csv
 echo Report:  %REPORT_DIR%\clear_report.md
 echo.
-echo TreeCover retirement is formula-authorized/modelled; the live fork retirement Commit remains unsupported.
+echo Scope: real local protocol execution; lifecycle timing is environment-dependent.
+echo The experimental modes are thesis-local and non-interoperable with stock MLS.
 exit /b 0
 
 :activate_msvc

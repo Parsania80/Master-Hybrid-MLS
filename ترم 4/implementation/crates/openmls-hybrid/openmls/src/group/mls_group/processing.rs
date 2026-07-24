@@ -14,6 +14,10 @@ use crate::{
 };
 
 #[cfg(feature = "experimental-hybrid")]
+use crate::experimental_hybrid::{
+    ExperimentalTreeCoverRetirementEvidence, TREECOVER_RETIREMENT_EVIDENCE_EXTENSION_TYPE,
+};
+#[cfg(feature = "experimental-hybrid")]
 use crate::schedule::ExperimentalTransitionNodeState;
 #[cfg(feature = "experimental-hybrid")]
 use crate::storage::TransactionalStorageProvider;
@@ -588,6 +592,187 @@ impl MlsGroup {
         Ok(())
     }
 
+    /// Creates the authenticated `Transitioning -> Normal` TreeCover
+    /// retirement Commit.
+    ///
+    /// The signed GroupContext carries both the successor `ArityState` and the
+    /// exact strict-threshold observation that authorized retirement.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn retire_experimental_treecover<Provider>(
+        &mut self,
+        provider: &Provider,
+        signer: &impl Signer,
+        next_state: ArityState,
+        evidence: ExperimentalTreeCoverRetirementEvidence,
+    ) -> ExperimentalTransitionCommitResult<Provider::StorageError>
+    where
+        Provider: OpenMlsProvider,
+    {
+        self.validate_experimental_quaternary_epoch_authority()?;
+        let prior_state = self.experimental_arity_state()?;
+        self.validate_experimental_retirement_target(
+            self.epoch().as_u64(),
+            &prior_state,
+            &next_state,
+            evidence,
+        )?;
+        let extensions = self.experimental_extensions_with_retirement(&next_state, evidence)?;
+        self.update_group_context_extensions(provider, extensions, signer)
+    }
+
+    /// Atomically applies a receiver's authenticated retirement Commit,
+    /// activates the normal-quaternary epoch authority, then deletes the
+    /// complete retained TreeCover envelope before publication.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn merge_staged_commit_experimental_retirement_atomic<Provider>(
+        &mut self,
+        provider: &Provider,
+        staged_commit: StagedCommit,
+    ) -> Result<(), MergeCommitError<Provider::StorageError>>
+    where
+        Provider: OpenMlsProvider,
+        Provider::Storage: TransactionalStorageProvider<CURRENT_VERSION>,
+    {
+        let prior_epoch = self.epoch().as_u64();
+        let prior_state = self.experimental_arity_state()?;
+        self.validate_experimental_quaternary_epoch_authority()?;
+        let retained = self
+            .group_epoch_secrets()
+            .experimental_transition_node_state()
+            .cloned()
+            .ok_or_else(|| {
+                LibraryError::custom("experimental retirement has no retained TreeCover")
+            })?;
+        let ArityLifecycle::Transitioning(transitioning) = prior_state.lifecycle() else {
+            return Err(
+                LibraryError::custom("experimental retirement is not transitioning").into(),
+            );
+        };
+        let mapping_hash = *transitioning.mapping_hash().as_bytes();
+        let storage = provider.storage();
+        let transaction = storage
+            .begin_transaction()
+            .map_err(MergeCommitError::StorageError)?;
+        let mut candidate = Self::load(&transaction, self.group_id())
+            .map_err(MergeCommitError::StorageError)?
+            .ok_or_else(|| LibraryError::custom("experimental group is missing from storage"))?;
+        candidate.aad.clone_from(&self.aad);
+        candidate.merge_staged_commit_with_storage(&transaction, staged_commit)?;
+        let next_state = candidate.experimental_arity_state()?;
+        let evidence = candidate.experimental_treecover_retirement_evidence()?;
+        candidate.validate_experimental_retirement_target(
+            prior_epoch,
+            &prior_state,
+            &next_state,
+            evidence,
+        )?;
+        candidate.activate_experimental_retired_authority(
+            provider,
+            &transaction,
+            &next_state,
+            mapping_hash,
+        )?;
+        candidate
+            .group_epoch_secrets
+            .install_experimental_treecover_retirement_status(retained.retirement_status(evidence));
+        transaction
+            .write_group_epoch_secrets(candidate.group_id(), &candidate.group_epoch_secrets)
+            .map_err(MergeCommitError::StorageError)?;
+        candidate.validate_experimental_retired_quaternary_state()?;
+        storage
+            .commit_transaction(transaction)
+            .map_err(MergeCommitError::StorageError)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    /// Atomically applies the sender's pending authenticated retirement Commit.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn merge_pending_commit_experimental_retirement_atomic<Provider>(
+        &mut self,
+        provider: &Provider,
+    ) -> Result<(), MergePendingCommitError<Provider::StorageError>>
+    where
+        Provider: OpenMlsProvider,
+        Provider::Storage: TransactionalStorageProvider<CURRENT_VERSION>,
+    {
+        let prior_epoch = self.epoch().as_u64();
+        let prior_state = self
+            .experimental_arity_state()
+            .map_err(MlsGroupStateError::from)?;
+        self.validate_experimental_quaternary_epoch_authority()
+            .map_err(MlsGroupStateError::from)?;
+        let retained = self
+            .group_epoch_secrets()
+            .experimental_transition_node_state()
+            .cloned()
+            .ok_or_else(|| {
+                MlsGroupStateError::LibraryError(LibraryError::custom(
+                    "experimental retirement has no retained TreeCover",
+                ))
+            })?;
+        let ArityLifecycle::Transitioning(transitioning) = prior_state.lifecycle() else {
+            return Err(MlsGroupStateError::LibraryError(LibraryError::custom(
+                "experimental retirement is not transitioning",
+            ))
+            .into());
+        };
+        let mapping_hash = *transitioning.mapping_hash().as_bytes();
+        let storage = provider.storage();
+        let transaction = storage.begin_transaction().map_err(|error| {
+            MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+        })?;
+        let mut candidate = Self::load(&transaction, self.group_id())
+            .map_err(|error| {
+                MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+            })?
+            .ok_or_else(|| {
+                MlsGroupStateError::LibraryError(LibraryError::custom(
+                    "experimental group is missing from storage",
+                ))
+            })?;
+        candidate.aad.clone_from(&self.aad);
+        candidate.merge_pending_commit_with_storage(&transaction)?;
+        let next_state = candidate
+            .experimental_arity_state()
+            .map_err(MlsGroupStateError::from)?;
+        let evidence = candidate
+            .experimental_treecover_retirement_evidence()
+            .map_err(MlsGroupStateError::from)?;
+        candidate
+            .validate_experimental_retirement_target(
+                prior_epoch,
+                &prior_state,
+                &next_state,
+                evidence,
+            )
+            .map_err(MlsGroupStateError::from)?;
+        candidate
+            .activate_experimental_retired_authority(
+                provider,
+                &transaction,
+                &next_state,
+                mapping_hash,
+            )
+            .map_err(MlsGroupStateError::from)?;
+        candidate
+            .group_epoch_secrets
+            .install_experimental_treecover_retirement_status(retained.retirement_status(evidence));
+        transaction
+            .write_group_epoch_secrets(candidate.group_id(), &candidate.group_epoch_secrets)
+            .map_err(|error| {
+                MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+            })?;
+        candidate
+            .validate_experimental_retired_quaternary_state()
+            .map_err(MlsGroupStateError::from)?;
+        storage.commit_transaction(transaction).map_err(|error| {
+            MergePendingCommitError::MergeCommitError(MergeCommitError::StorageError(error))
+        })?;
+        *self = candidate;
+        Ok(())
+    }
+
     /// Returns redacted metadata for the active, persisted experimental
     /// quaternary epoch authority. Secret bytes are never exposed.
     #[cfg(feature = "experimental-hybrid")]
@@ -614,6 +799,15 @@ impl MlsGroup {
     ) -> Option<crate::schedule::ExperimentalTransitionNodeAvailabilitySnapshot> {
         self.group_epoch_secrets()
             .experimental_transition_node_availability_snapshot()
+    }
+
+    /// Returns redacted proof that the persisted TreeCover envelope was erased.
+    #[cfg(feature = "experimental-hybrid")]
+    pub fn experimental_treecover_retirement_status(
+        &self,
+    ) -> Option<crate::schedule::ExperimentalTreeCoverRetirementStatus> {
+        self.group_epoch_secrets()
+            .experimental_treecover_retirement_status()
     }
 
     /// Atomically applies a staged UpdatePath while the fork-local
@@ -849,6 +1043,133 @@ impl MlsGroup {
     }
 
     #[cfg(feature = "experimental-hybrid")]
+    fn validate_experimental_retirement_target(
+        &self,
+        prior_epoch: u64,
+        prior_state: &ArityState,
+        next_state: &ArityState,
+        evidence: ExperimentalTreeCoverRetirementEvidence,
+    ) -> Result<(), LibraryError> {
+        let ArityLifecycle::Transitioning(transitioning) = prior_state.lifecycle() else {
+            return Err(LibraryError::custom(
+                "experimental retirement requires transitioning ArityState",
+            ));
+        };
+        if !matches!(next_state.lifecycle(), ArityLifecycle::Normal)
+            || next_state.active_arity() != 4
+            || next_state.candidate_arity() != 4
+            || next_state.policy() != prior_state.policy()
+            || next_state.evaluation() != prior_state.evaluation()
+            || prior_state
+                .tree_version()
+                .checked_add(1)
+                .is_none_or(|version| next_state.tree_version() != version)
+            || evidence.tree_version() != prior_state.tree_version()
+            || evidence.transition_epoch() != transitioning.transition_epoch()
+            || evidence.observation_epoch() != prior_epoch
+        {
+            return Err(LibraryError::custom(
+                "experimental retirement target is not bound to the accepted observation",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    fn experimental_treecover_retirement_evidence(
+        &self,
+    ) -> Result<ExperimentalTreeCoverRetirementEvidence, LibraryError> {
+        let extension = self
+            .extensions()
+            .unknown(TREECOVER_RETIREMENT_EVIDENCE_EXTENSION_TYPE)
+            .ok_or_else(|| {
+                LibraryError::custom("experimental group has no authenticated retirement evidence")
+            })?;
+        ExperimentalTreeCoverRetirementEvidence::from_extension_value(&extension.0)
+            .map_err(|_| LibraryError::custom("experimental retirement evidence is invalid"))
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    fn activate_experimental_retired_authority<Provider, Storage>(
+        &mut self,
+        provider: &Provider,
+        storage: &Storage,
+        state: &ArityState,
+        mapping_hash: [u8; 32],
+    ) -> Result<(), LibraryError>
+    where
+        Provider: OpenMlsProvider,
+        Storage: openmls_traits::storage::StorageProvider<
+            CURRENT_VERSION,
+            Error = Provider::StorageError,
+        >,
+    {
+        let root_public = self
+            .public_group
+            .experimental_root_parent_value()
+            .ok_or_else(|| LibraryError::custom("retirement Commit has no binary root value"))?;
+        let root_keypair = self
+            .read_epoch_keypairs(storage)
+            .map_err(|_| LibraryError::custom("retirement root key lookup failed"))?
+            .into_iter()
+            .find(|keypair| keypair.public_key() == &root_public)
+            .ok_or_else(|| {
+                LibraryError::custom("retirement Commit has no matching binary root key pair")
+            })?;
+        let serialized_context = self
+            .context()
+            .tls_serialize_detached()
+            .map_err(LibraryError::missing_bound_check)?;
+        self.group_epoch_secrets
+            .activate_experimental_retired_quaternary_epoch_secret(
+                provider.crypto(),
+                self.ciphersuite(),
+                &serialized_context,
+                self.epoch().as_u64(),
+                state,
+                mapping_hash,
+                root_keypair,
+            )
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    fn validate_experimental_retired_quaternary_state(&self) -> Result<(), LibraryError> {
+        let state = self.experimental_arity_state()?;
+        if !matches!(state.lifecycle(), ArityLifecycle::Normal)
+            || state.active_arity() != 4
+            || state.candidate_arity() != 4
+            || state.tree_version() < 2
+            || self
+                .group_epoch_secrets()
+                .experimental_transition_node_state()
+                .is_some()
+            || self.experimental_treecover_retirement_status().is_none()
+        {
+            return Err(LibraryError::custom(
+                "experimental retired quaternary state is invalid",
+            ));
+        }
+        let evidence = self.experimental_treecover_retirement_evidence()?;
+        let authority = self
+            .experimental_quaternary_epoch_secret_status()
+            .ok_or_else(|| {
+                LibraryError::custom("retired quaternary state has no epoch authority")
+            })?;
+        self.group_epoch_secrets()
+            .validate_experimental_quaternary_root_keypair()?;
+        if evidence.observation_epoch().checked_add(1) != Some(self.epoch().as_u64())
+            || evidence.tree_version().checked_add(1) != Some(state.tree_version())
+            || authority.epoch() != self.epoch().as_u64()
+            || authority.tree_version() != state.tree_version()
+        {
+            return Err(LibraryError::custom(
+                "retired quaternary authority is not bound to its Commit",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
     fn experimental_arity_state(&self) -> Result<ArityState, LibraryError> {
         let extension = self
             .extensions()
@@ -963,6 +1284,39 @@ impl MlsGroup {
             .map_err(|_| LibraryError::custom("experimental transition extension set is invalid"))
     }
 
+    #[cfg(feature = "experimental-hybrid")]
+    fn experimental_extensions_with_retirement(
+        &self,
+        state: &ArityState,
+        evidence: ExperimentalTreeCoverRetirementEvidence,
+    ) -> Result<crate::extensions::Extensions<GroupContext>, LibraryError> {
+        let mut extensions = self
+            .extensions()
+            .iter()
+            .filter(|extension| {
+                let extension_type = extension.extension_type();
+                extension_type
+                    != crate::experimental_hybrid::ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE.into()
+                    && extension_type != TREECOVER_RETIREMENT_EVIDENCE_EXTENSION_TYPE.into()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        extensions.push(crate::extensions::Extension::Unknown(
+            state.extension_type(),
+            crate::extensions::UnknownExtension(state.extension_value_bytes().map_err(|_| {
+                LibraryError::custom("experimental retirement state encoding failed")
+            })?),
+        ));
+        extensions.push(crate::extensions::Extension::Unknown(
+            TREECOVER_RETIREMENT_EVIDENCE_EXTENSION_TYPE,
+            crate::extensions::UnknownExtension(evidence.extension_value_bytes().map_err(
+                |_| LibraryError::custom("experimental retirement evidence encoding failed"),
+            )?),
+        ));
+        crate::extensions::Extensions::from_vec(extensions)
+            .map_err(|_| LibraryError::custom("experimental retirement extension set is invalid"))
+    }
+
     /// Helper function to read decryption keypairs.
     pub(super) fn read_decryption_keypairs(
         &self,
@@ -970,10 +1324,24 @@ impl MlsGroup {
         own_leaf_nodes: &[LeafNode],
     ) -> Result<(Vec<EncryptionKeyPair>, Vec<EncryptionKeyPair>), StageCommitError> {
         // All keys from the previous epoch are potential decryption keypairs.
-        let old_epoch_keypairs = self.read_epoch_keypairs(provider.storage()).map_err(|e| {
+        let mut old_epoch_keypairs = self.read_epoch_keypairs(provider.storage()).map_err(|e| {
             log::error!("Error reading epoch keypairs: {e:?}");
             StageCommitError::MissingDecryptionKey
         })?;
+        #[cfg(feature = "experimental-hybrid")]
+        if let Some(retained) = self
+            .group_epoch_secrets()
+            .experimental_transition_node_state()
+        {
+            for keypair in retained.local_old_keypairs() {
+                if !old_epoch_keypairs
+                    .iter()
+                    .any(|existing| existing.public_key() == keypair.public_key())
+                {
+                    old_epoch_keypairs.push(keypair);
+                }
+            }
+        }
 
         // If we are processing an update proposal that originally came from
         // us, the keypair corresponding to the leaf in the update is also a

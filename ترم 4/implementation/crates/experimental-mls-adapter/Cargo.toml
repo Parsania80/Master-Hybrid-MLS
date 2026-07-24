@@ -12,6 +12,8 @@ openmls-hybrid.workspace = true
 openmls_hybrid_basic_credential = { package = "openmls_basic_credential", path = "../openmls-hybrid/basic_credential" }
 openmls_hybrid_rust_crypto = { package = "openmls_rust_crypto", path = "../openmls-hybrid/openmls_rust_crypto" }
 simulation = { path = "../simulation" }
+rand.workspace = true
+rand_chacha.workspace = true
 thiserror.workspace = true
 tls_codec.workspace = true
 transition-policy = { path = "../transition-policy" }
@@ -21,7 +23,6 @@ transition-tree = { path = "../transition-tree" }
 hybrid-path-secret = { path = "../hybrid-path-secret" }
 openmls-hybrid = { workspace = true, features = ["experimental-test-utils"] }
 openmls_hybrid_rust_crypto = { package = "openmls_rust_crypto", path = "../openmls-hybrid/openmls_rust_crypto", features = ["transaction-test-utils"] }
-rand_chacha.workspace = true
 rand_core.workspace = true
 
 [lints]

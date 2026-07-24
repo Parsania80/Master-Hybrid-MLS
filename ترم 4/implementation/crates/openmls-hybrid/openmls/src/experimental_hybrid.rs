@@ -43,6 +43,16 @@ pub const ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE: u16 = 0xF001;
 /// Private-use KeyPackage extension carrying one mKyber recipient public key.
 pub const MKYBER_RECIPIENT_KEY_PACKAGE_EXTENSION_TYPE: u16 = 0xF002;
 
+/// Private-use GroupContext extension carrying the exact public observation
+/// that authorized one TreeCover retirement Commit.
+pub const TREECOVER_RETIREMENT_EVIDENCE_EXTENSION_TYPE: u16 = 0xF003;
+
+/// Supported canonical retirement-evidence version.
+pub const TREECOVER_RETIREMENT_EVIDENCE_VERSION: u16 = 1;
+
+/// Exact byte length of the fixed version-1 retirement evidence.
+pub const TREECOVER_RETIREMENT_EVIDENCE_BYTES: usize = 63;
+
 /// Supported canonical mKyber recipient-key extension value version.
 pub const MKYBER_RECIPIENT_KEY_MATERIAL_VERSION: u16 = 1;
 
@@ -73,6 +83,274 @@ pub enum ExperimentalMkyberError {
     /// A fixed-size public key could not be reconstructed.
     #[error("the mKyber recipient public key is invalid")]
     InvalidPublicKey,
+}
+
+/// Errors returned while validating authenticated TreeCover-retirement evidence.
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub enum ExperimentalTreeCoverRetirementError {
+    /// The fixed version-1 encoding has the wrong length.
+    #[error("the TreeCover retirement evidence has an invalid length")]
+    InvalidEncodingLength,
+    /// The evidence uses an unsupported version.
+    #[error("the TreeCover retirement evidence has an unsupported version")]
+    UnsupportedVersion,
+    /// Counts, fractions, epochs, or trigger bits are not canonical.
+    #[error("the TreeCover retirement evidence is invalid")]
+    InvalidEvidence,
+}
+
+/// Exact public endpoint-health observation authenticated by a retirement Commit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExperimentalTreeCoverRetirementEvidence {
+    tree_version: u32,
+    transition_epoch: u64,
+    observation_epoch: u64,
+    impactful_commit_count: u32,
+    c_leaf: u32,
+    c_new: u32,
+    c_old: u32,
+    c_real: u32,
+    c_ideal: u32,
+    h_new_numerator: u32,
+    h_new_denominator: u32,
+    h_old_numerator: u32,
+    h_old_denominator: u32,
+    trigger_mask: u8,
+}
+
+impl ExperimentalTreeCoverRetirementEvidence {
+    /// Constructs and validates one canonical strict-threshold observation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        tree_version: u32,
+        transition_epoch: u64,
+        observation_epoch: u64,
+        impactful_commit_count: u32,
+        c_leaf: u32,
+        c_new: u32,
+        c_old: u32,
+        c_real: u32,
+        c_ideal: u32,
+        h_new_numerator: u32,
+        h_new_denominator: u32,
+        h_old_numerator: u32,
+        h_old_denominator: u32,
+    ) -> Result<Self, ExperimentalTreeCoverRetirementError> {
+        let retire_new = u64::from(h_new_numerator) * 10 > u64::from(h_new_denominator) * 7;
+        let retire_old = u64::from(h_old_numerator) * 2 < u64::from(h_old_denominator);
+        let evidence = Self {
+            tree_version,
+            transition_epoch,
+            observation_epoch,
+            impactful_commit_count,
+            c_leaf,
+            c_new,
+            c_old,
+            c_real,
+            c_ideal,
+            h_new_numerator,
+            h_new_denominator,
+            h_old_numerator,
+            h_old_denominator,
+            trigger_mask: u8::from(retire_new) | (u8::from(retire_old) << 1),
+        };
+        evidence.validate()?;
+        Ok(evidence)
+    }
+
+    /// Parses the exact fixed-width extension value.
+    pub fn from_extension_value(
+        bytes: &[u8],
+    ) -> Result<Self, ExperimentalTreeCoverRetirementError> {
+        if bytes.len() != TREECOVER_RETIREMENT_EVIDENCE_BYTES {
+            return Err(ExperimentalTreeCoverRetirementError::InvalidEncodingLength);
+        }
+        let version = u16::from_be_bytes(
+            bytes[0..2]
+                .try_into()
+                .map_err(|_| ExperimentalTreeCoverRetirementError::InvalidEncodingLength)?,
+        );
+        if version != TREECOVER_RETIREMENT_EVIDENCE_VERSION {
+            return Err(ExperimentalTreeCoverRetirementError::UnsupportedVersion);
+        }
+        let mut offset = 2;
+        let mut take_u32 = || {
+            let value = bytes
+                .get(offset..offset + 4)
+                .and_then(|value| value.try_into().ok())
+                .map(u32::from_be_bytes)
+                .ok_or(ExperimentalTreeCoverRetirementError::InvalidEncodingLength)?;
+            offset += 4;
+            Ok(value)
+        };
+        let tree_version = take_u32()?;
+        let transition_epoch = u64::from_be_bytes(
+            bytes[offset..offset + 8]
+                .try_into()
+                .map_err(|_| ExperimentalTreeCoverRetirementError::InvalidEncodingLength)?,
+        );
+        offset += 8;
+        let observation_epoch = u64::from_be_bytes(
+            bytes[offset..offset + 8]
+                .try_into()
+                .map_err(|_| ExperimentalTreeCoverRetirementError::InvalidEncodingLength)?,
+        );
+        offset += 8;
+        let mut take_remaining_u32 = || {
+            let value = bytes
+                .get(offset..offset + 4)
+                .and_then(|value| value.try_into().ok())
+                .map(u32::from_be_bytes)
+                .ok_or(ExperimentalTreeCoverRetirementError::InvalidEncodingLength)?;
+            offset += 4;
+            Ok(value)
+        };
+        let evidence = Self {
+            tree_version,
+            transition_epoch,
+            observation_epoch,
+            impactful_commit_count: take_remaining_u32()?,
+            c_leaf: take_remaining_u32()?,
+            c_new: take_remaining_u32()?,
+            c_old: take_remaining_u32()?,
+            c_real: take_remaining_u32()?,
+            c_ideal: take_remaining_u32()?,
+            h_new_numerator: take_remaining_u32()?,
+            h_new_denominator: take_remaining_u32()?,
+            h_old_numerator: take_remaining_u32()?,
+            h_old_denominator: take_remaining_u32()?,
+            trigger_mask: *bytes
+                .get(offset)
+                .ok_or(ExperimentalTreeCoverRetirementError::InvalidEncodingLength)?,
+        };
+        evidence.validate()?;
+        Ok(evidence)
+    }
+
+    /// Returns the exact canonical extension value.
+    pub fn extension_value_bytes(self) -> Result<Vec<u8>, ExperimentalTreeCoverRetirementError> {
+        self.validate()?;
+        let mut bytes = Vec::with_capacity(TREECOVER_RETIREMENT_EVIDENCE_BYTES);
+        bytes.extend_from_slice(&TREECOVER_RETIREMENT_EVIDENCE_VERSION.to_be_bytes());
+        bytes.extend_from_slice(&self.tree_version.to_be_bytes());
+        bytes.extend_from_slice(&self.transition_epoch.to_be_bytes());
+        bytes.extend_from_slice(&self.observation_epoch.to_be_bytes());
+        for value in [
+            self.impactful_commit_count,
+            self.c_leaf,
+            self.c_new,
+            self.c_old,
+            self.c_real,
+            self.c_ideal,
+            self.h_new_numerator,
+            self.h_new_denominator,
+            self.h_old_numerator,
+            self.h_old_denominator,
+        ] {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+        bytes.push(self.trigger_mask);
+        debug_assert_eq!(bytes.len(), TREECOVER_RETIREMENT_EVIDENCE_BYTES);
+        Ok(bytes)
+    }
+
+    /// Returns the active tree version before retirement.
+    pub const fn tree_version(self) -> u32 {
+        self.tree_version
+    }
+
+    /// Returns the epoch that began the transition.
+    pub const fn transition_epoch(self) -> u64 {
+        self.transition_epoch
+    }
+
+    /// Returns the accepted Commit epoch whose availability authorized retirement.
+    pub const fn observation_epoch(self) -> u64 {
+        self.observation_epoch
+    }
+
+    /// Returns the number of impactful post-transition Commits.
+    pub const fn impactful_commit_count(self) -> u32 {
+        self.impactful_commit_count
+    }
+
+    /// Returns endpoint counts in `(leaf, new, old, real, ideal)` order.
+    pub const fn endpoint_counts(self) -> (u32, u32, u32, u32, u32) {
+        (
+            self.c_leaf,
+            self.c_new,
+            self.c_old,
+            self.c_real,
+            self.c_ideal,
+        )
+    }
+
+    /// Returns the reduced new-tree health fraction.
+    pub const fn h_new(self) -> (u32, u32) {
+        (self.h_new_numerator, self.h_new_denominator)
+    }
+
+    /// Returns the reduced old-TreeCover health fraction.
+    pub const fn h_old(self) -> (u32, u32) {
+        (self.h_old_numerator, self.h_old_denominator)
+    }
+
+    /// Returns whether strict new-tree health authorized retirement.
+    pub const fn retire_new(self) -> bool {
+        self.trigger_mask & 1 != 0
+    }
+
+    /// Returns whether strict old-TreeCover degradation authorized retirement.
+    pub const fn retire_old(self) -> bool {
+        self.trigger_mask & 2 != 0
+    }
+
+    fn validate(self) -> Result<(), ExperimentalTreeCoverRetirementError> {
+        let denominator = self
+            .c_leaf
+            .checked_sub(self.c_ideal)
+            .filter(|value| *value > 0)
+            .ok_or(ExperimentalTreeCoverRetirementError::InvalidEvidence)?;
+        let expected_new = self
+            .c_leaf
+            .checked_sub(self.c_new)
+            .ok_or(ExperimentalTreeCoverRetirementError::InvalidEvidence)?;
+        let expected_old = self
+            .c_leaf
+            .checked_sub(self.c_old)
+            .ok_or(ExperimentalTreeCoverRetirementError::InvalidEvidence)?;
+        let new_divisor = greatest_common_divisor(expected_new, denominator);
+        let old_divisor = greatest_common_divisor(expected_old, denominator);
+        let retire_new =
+            u64::from(self.h_new_numerator) * 10 > u64::from(self.h_new_denominator) * 7;
+        let retire_old = u64::from(self.h_old_numerator) * 2 < u64::from(self.h_old_denominator);
+        let expected_mask = u8::from(retire_new) | (u8::from(retire_old) << 1);
+        if self.tree_version == 0
+            || self.transition_epoch > self.observation_epoch
+            || self.impactful_commit_count == 0
+            || self.c_real > self.c_leaf
+            || self.h_new_denominator == 0
+            || self.h_old_denominator == 0
+            || self.h_new_numerator != expected_new / new_divisor
+            || self.h_new_denominator != denominator / new_divisor
+            || self.h_old_numerator != expected_old / old_divisor
+            || self.h_old_denominator != denominator / old_divisor
+            || expected_mask == 0
+            || self.trigger_mask != expected_mask
+        {
+            return Err(ExperimentalTreeCoverRetirementError::InvalidEvidence);
+        }
+        Ok(())
+    }
+}
+
+fn greatest_common_divisor(mut left: u32, mut right: u32) -> u32 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left.max(1)
 }
 
 /// Public tree-array node identifier for one experimental TreeKEM resolution key.
@@ -830,10 +1108,11 @@ impl MkyberRecipientKeyMaterial {
 }
 
 /// Returns the extension types every experimental mKyber recipient must advertise.
-pub const fn required_mkyber_recipient_capabilities() -> [ExtensionType; 2] {
+pub const fn required_mkyber_recipient_capabilities() -> [ExtensionType; 3] {
     [
         ExtensionType::Unknown(ADAPTIVE_HYBRID_TREE_STATE_EXTENSION_TYPE),
         ExtensionType::Unknown(MKYBER_RECIPIENT_KEY_PACKAGE_EXTENSION_TYPE),
+        ExtensionType::Unknown(TREECOVER_RETIREMENT_EVIDENCE_EXTENSION_TYPE),
     ]
 }
 

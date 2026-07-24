@@ -475,6 +475,16 @@ impl PublicGroup {
             .collect()
     }
 
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_root_parent_value(&self) -> Option<EncryptionKey> {
+        self.treesync()
+            .full_parents()
+            .max_by_key(|(index, _)| {
+                crate::binary_tree::array_representation::level(index.u32() * 2 + 1)
+            })
+            .map(|(_, node)| node.encryption_key().clone())
+    }
+
     fn interim_transcript_hash(&self) -> &[u8] {
         &self.interim_transcript_hash
     }
