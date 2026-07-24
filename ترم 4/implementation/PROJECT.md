@@ -218,4 +218,4 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 **Current:** Task 86 — operator acceptance of the real fork report on Linux.
 
-**Next:** Run mode 4 on Linux, inspect schema-5 CSV/Markdown provenance and retirement rows, and report the observed output.
+**Next:** Rerun mode 4 on Linux after the Task 86 retirement-evidence epoch fix, inspect schema-5 CSV/Markdown provenance and retirement rows, and report the observed output.

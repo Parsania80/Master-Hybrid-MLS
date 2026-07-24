@@ -123,7 +123,7 @@ pub enum DeliveryHealthError {
     #[error("delivery-health CSV serialization failed")]
     Csv(#[source] csv::Error),
     /// The authenticated real fork workload rejected or could not complete.
-    #[error("the real fork delivery-health workload failed")]
+    #[error("the real fork delivery-health workload failed: {0}")]
     RealFork(#[from] ExperimentalBinaryWorkloadError),
 }
 

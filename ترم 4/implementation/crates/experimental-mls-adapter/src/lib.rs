@@ -16,7 +16,7 @@ use std::{
 
 use adaptive_tree::{BinaryLeafMember, BinaryToQuaternaryLeafMapping, ShadowQuaternaryTree};
 use arity_state::{
-    hash_canonical_public_bytes, ArityPolicySnapshot, ArityState, MappingHash,
+    hash_canonical_public_bytes, ArityLifecycle, ArityPolicySnapshot, ArityState, MappingHash,
     TransitionEvaluationState, TreeCoverBinding,
 };
 use mkyber::{EducationalMkyber512Reference, MkyberDomain};
@@ -439,6 +439,14 @@ pub enum ExperimentalBinaryWorkloadError {
         /// Public, value-free lifecycle stage.
         stage: &'static str,
     },
+    /// A real delivery-health operation failed at a public lifecycle stage.
+    #[error("delivery-health operation {sequence} failed during {stage}")]
+    DeliveryHealthOperation {
+        /// One-based public Commit sequence.
+        sequence: u32,
+        /// Public, value-free lifecycle stage.
+        stage: &'static str,
+    },
     /// The bounded real delivery-health schedule did not reach strict retirement.
     #[error("the real delivery-health schedule reached its limit without retirement")]
     RetirementNotAuthorized,
@@ -825,6 +833,12 @@ pub fn execute_experimental_delivery_health_workload(
             .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
         if health.1.retire_new || health.1.retire_old {
             let prior_state = arity_state_from_group(&members[0].group)?;
+            let ArityLifecycle::Transitioning(transitioning) = prior_state.lifecycle() else {
+                return Err(ExperimentalBinaryWorkloadError::DeliveryHealthOperation {
+                    sequence,
+                    stage: "retirement-prior-state",
+                });
+            };
             let next_tree_version = prior_state
                 .tree_version()
                 .checked_add(1)
@@ -839,7 +853,7 @@ pub fn execute_experimental_delivery_health_workload(
             .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
             let evidence = ExperimentalTreeCoverRetirementEvidence::new(
                 prior_state.tree_version(),
-                1,
+                transitioning.transition_epoch(),
                 epoch,
                 impactful_commit_count,
                 health.1.c_leaf,
@@ -852,7 +866,12 @@ pub fn execute_experimental_delivery_health_workload(
                 health.1.h_old.numerator(),
                 health.1.h_old.denominator(),
             )
-            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+            .map_err(
+                |_| ExperimentalBinaryWorkloadError::DeliveryHealthOperation {
+                    sequence,
+                    stage: "retirement-evidence",
+                },
+            )?;
             let retire_position = members
                 .iter()
                 .position(|member| member.member_index == committer_member_index)
@@ -867,18 +886,45 @@ pub fn execute_experimental_delivery_health_workload(
                         next_state,
                         evidence,
                     )
-                    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+                    .map_err(
+                        |_| ExperimentalBinaryWorkloadError::DeliveryHealthOperation {
+                            sequence,
+                            stage: "retirement-commit-creation",
+                        },
+                    )?
             };
-            let retirement_wire = retirement_commit
-                .tls_serialize_detached()
-                .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
-            deliver_retirement_to_receivers(&mut members, retire_position, &retirement_wire)?;
-            merge_sender_retirement(&mut members[retire_position])?;
-            let retirement_epoch = converged_epoch(&members)?;
+            let retirement_wire = retirement_commit.tls_serialize_detached().map_err(|_| {
+                ExperimentalBinaryWorkloadError::DeliveryHealthOperation {
+                    sequence,
+                    stage: "retirement-serialization",
+                }
+            })?;
+            deliver_retirement_to_receivers(&mut members, retire_position, &retirement_wire)
+                .map_err(
+                    |_| ExperimentalBinaryWorkloadError::DeliveryHealthOperation {
+                        sequence,
+                        stage: "retirement-receiver-application",
+                    },
+                )?;
+            merge_sender_retirement(&mut members[retire_position]).map_err(|_| {
+                ExperimentalBinaryWorkloadError::DeliveryHealthOperation {
+                    sequence,
+                    stage: "retirement-sender-application",
+                }
+            })?;
+            let retirement_epoch = converged_epoch(&members).map_err(|_| {
+                ExperimentalBinaryWorkloadError::DeliveryHealthOperation {
+                    sequence,
+                    stage: "retirement-convergence",
+                }
+            })?;
             let status = members[0]
                 .group
                 .experimental_treecover_retirement_status()
-                .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+                .ok_or(ExperimentalBinaryWorkloadError::DeliveryHealthOperation {
+                    sequence,
+                    stage: "retirement-status",
+                })?;
             if members.iter().any(|member| {
                 member
                     .group
