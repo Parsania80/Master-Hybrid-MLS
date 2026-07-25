@@ -230,7 +230,7 @@ struct DeliveryHealthSummary {
     initial_member_count: u32,
     final_member_count: u32,
     random_seed: u64,
-    pre_transition_update_count: u32,
+    pre_transition_operation_count: u32,
     post_transition_commit_count: u32,
     add_commit_count: u32,
     update_commit_count: u32,
@@ -312,11 +312,11 @@ fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, Deliv
             h_new_decimal: None,
             h_old_exact: None,
             h_old_decimal: None,
-            old_arity_bytes_sent: Some(observation.old_arity_commit_bytes),
-            new_arity_bytes_sent: Some(observation.new_arity_candidate_bytes),
+            old_arity_bytes_sent: Some(observation.old_arity_modeled_bytes),
+            new_arity_bytes_sent: Some(observation.new_arity_modeled_bytes),
             saving_new_minus_old_bytes: Some(observation.saving_new_minus_old_bytes),
-            bytes_sent: Some(observation.old_arity_commit_bytes),
-            retirement_condition: "NewArityWins",
+            bytes_sent: Some(observation.emitted_commit_bytes),
+            retirement_condition: saving_decision(observation.saving_new_minus_old_bytes),
         });
     }
     let transition_health = execution.transition.health;
@@ -463,7 +463,7 @@ fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, Deliv
             initial_member_count: execution.initial_member_count,
             final_member_count: execution.final_member_count,
             random_seed: execution.random_seed,
-            pre_transition_update_count: execution.pre_transition_observations.len() as u32,
+            pre_transition_operation_count: execution.pre_transition_observations.len() as u32,
             post_transition_commit_count: execution.post_transition_observations.len() as u32,
             add_commit_count,
             update_commit_count,
@@ -703,7 +703,7 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             initial_member_count: config.initial_member_count,
             final_member_count: member_count(&members)?,
             random_seed: config.random_seed,
-            pre_transition_update_count: PRE_TRANSITION_UPDATE_COUNT,
+            pre_transition_operation_count: PRE_TRANSITION_UPDATE_COUNT,
             post_transition_commit_count,
             add_commit_count: 0,
             update_commit_count: update_count,
@@ -1144,6 +1144,16 @@ fn checked_next(value: u32) -> Result<u32, DeliveryHealthError> {
     value.checked_add(1).ok_or(DeliveryHealthError::Overflow)
 }
 
+const fn saving_decision(saving_new_minus_old_bytes: i64) -> &'static str {
+    if saving_new_minus_old_bytes < 0 {
+        "NewArityWins"
+    } else if saving_new_minus_old_bytes > 0 {
+        "OldArityWins"
+    } else {
+        "EqualModeledBytes"
+    }
+}
+
 struct PostTransitionAverages {
     c_new: String,
     c_old: String,
@@ -1278,10 +1288,10 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     .expect("string write");
 
     writeln!(document, "## Pre-transition byte comparison\n").expect("string write");
-    writeln!(document, "Negative saving means the target arity sends fewer modelled bytes. Binary Add/Update/Remove operations are sampled until the authenticated policy gate authorizes transition.\n").expect("string write");
+    writeln!(document, "The old/new comparison uses `Bhealthy(d,n) = [1504 + 80(d - 1)] * ceil(log_d(n))`. Negative saving means the target arity has the smaller healthy-path model. `Actual emitted Commit bytes` separately records the full serialized binary Add/Update/Remove Commit and does not enter this modeled comparison.\n").expect("string write");
     writeln!(
         document,
-        "| Commit | Operation | Committer node index | Active clients | Old arity bytes sent | New arity bytes sent | Saving (new - old) | Decision |\n|---:|---|---:|---:|---:|---:|---:|---|"
+        "| Commit | Operation | Committer node index | Active clients | Actual emitted Commit bytes | Modeled old-arity bytes | Modeled new-arity bytes | Saving (new - old) | Decision |\n|---:|---|---:|---:|---:|---:|---:|---:|---|"
     )
     .expect("string write");
     for event in result
@@ -1291,11 +1301,12 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     {
         writeln!(
             document,
-            "| {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             event.commit_sequence,
             event.operation,
             event.committer_target_node_index,
             event.active_member_count,
+            optional_u64(event.bytes_sent),
             optional_u64(event.old_arity_bytes_sent),
             optional_u64(event.new_arity_bytes_sent),
             optional_i64(event.saving_new_minus_old_bytes),
@@ -1325,7 +1336,7 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     writeln!(document, "## Post-transition commits\n").expect("string write");
     writeln!(
         document,
-        "| Committer node index | Operation type | C_new | C_old | C_real | h_newcost | h_oldcost | Bytes sent |\n|---:|---|---:|---:|---:|---:|---:|---:|"
+        "| Committer node index | Operation type | Usable new nodes | Usable old nodes | C_new endpoint cost | C_old endpoint cost | C_real endpoint cost | h_newcost | h_oldcost | Bytes sent |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|"
     )
     .expect("string write");
     for event in result
@@ -1335,9 +1346,11 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     {
         writeln!(
             document,
-            "| {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             event.committer_target_node_index,
             event.operation,
+            optional_u32(event.new_usable_internal_node_count),
+            optional_u32(event.old_usable_internal_node_count),
             optional_u32(event.c_new),
             optional_u32(event.c_old),
             optional_u32(event.c_real),
@@ -1369,6 +1382,8 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     writeln!(document, "\n## Counting rules\n").expect("string write");
     writeln!(document, "- `Committer node index` is the committer's target-tree leaf ordinal, not its member identifier.").expect("string write");
     writeln!(document, "- `C_leaf` is the current active-client count, matching the operator's worst-case convention.").expect("string write");
+    writeln!(document, "- `C_new` and `C_old` are committer-specific recipient-entry costs, not counts of healthy keys. Better coverage makes these costs decrease toward `C_ideal`; the corresponding health fractions increase. Costs can differ between rows because the random committer path changes.").expect("string write");
+    writeln!(document, "- `Usable new nodes` and `Usable old nodes` expose availability separately. Update does not invalidate old nodes. Remove invalidates the removed member's known old and stale-new paths before refreshing the removing committer's new path, so its net usable-new count is not guaranteed to increase.").expect("string write");
     writeln!(document, "- `C_new` evaluates every required target-tree sibling using only the new tree: one send for a usable new-tree node; otherwise one direct send to every active leaf beneath that required node. Old TreeCover values never contribute to `C_new` or `h_newcost`.").expect("string write");
     writeln!(document, "- `C_old` places the same committer in the old TreeCover and recursively selects safe usable old nodes. A missing required old node is split into safe child subtrees, so the count reflects TreeCover recipient entries rather than logical client leaves.").expect("string write");
     writeln!(document, "- `C_real` models actual delivery priority for each required target set: use one usable new-tree node; otherwise use the smallest usable old-TreeCover cover; otherwise send directly to uncovered active leaves. `C_real` does not enter either health formula.").expect("string write");

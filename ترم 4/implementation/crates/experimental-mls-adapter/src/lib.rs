@@ -299,10 +299,12 @@ pub struct ExperimentalPreTransitionHealthObservation {
     pub active_member_count: u32,
     /// Stable public workload member identifier.
     pub committer_member_index: u32,
-    /// Observed normal-binary Commit bytes.
-    pub old_arity_commit_bytes: u64,
-    /// Separate real matched quaternary probe bytes.
-    pub new_arity_candidate_bytes: u64,
+    /// Observed full serialized binary Add, Update, or Remove Commit bytes.
+    pub emitted_commit_bytes: u64,
+    /// Healthy-path byte model for the current binary arity.
+    pub old_arity_modeled_bytes: u64,
+    /// Healthy-path byte model for the candidate quaternary arity.
+    pub new_arity_modeled_bytes: u64,
     /// Signed `new - old` byte difference.
     pub saving_new_minus_old_bytes: i64,
 }
@@ -602,7 +604,7 @@ pub fn execute_experimental_delivery_health_workload(
     if maximum_post_transition_commits == 0 {
         return Err(ExperimentalBinaryWorkloadError::InvalidControls);
     }
-    let mut probe = measure_adaptive_probe(config)?;
+    let probe = measure_adaptive_probe(config)?;
     let preflight = TransitionPreflightMeasurement::from_serialized_outer_message(
         &probe.transition_wire,
         &[TransitionByteRange::new(
@@ -741,15 +743,12 @@ pub fn execute_experimental_delivery_health_workload(
         }
         let epoch_after = converged_epoch(&members)?;
         ensure_epoch_advance(epoch_before, epoch_after)?;
-        let current_bytes = u64::try_from(wire.len())
+        let emitted_commit_bytes = u64::try_from(wire.len())
             .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
         let active_member_count = u32::try_from(members.len())
             .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
-        let candidate_bytes = probe.quaternary_update_bytes_for_population(
-            config,
-            active_member_count,
-            selection.member_index,
-        )?;
+        let current_bytes = healthy_path_model_bytes(2, active_member_count)?;
+        let candidate_bytes = healthy_path_model_bytes(4, active_member_count)?;
         let saving = i64::try_from(candidate_bytes)
             .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?
             .checked_sub(
@@ -785,8 +784,9 @@ pub fn execute_experimental_delivery_health_workload(
             operation,
             active_member_count,
             committer_member_index: selection.member_index,
-            old_arity_commit_bytes: current_bytes,
-            new_arity_candidate_bytes: candidate_bytes,
+            emitted_commit_bytes,
+            old_arity_modeled_bytes: current_bytes,
+            new_arity_modeled_bytes: candidate_bytes,
             saving_new_minus_old_bytes: saving,
         });
         last_current_bytes = current_bytes;
@@ -1528,7 +1528,6 @@ fn execute_experimental_adaptive_workload_with_completion(
 struct AdaptiveProbe {
     transition_wire: Vec<u8>,
     quaternary_update_bytes_by_member: BTreeMap<u32, u64>,
-    quaternary_update_bytes_by_population: BTreeMap<(u32, u32), u64>,
 }
 
 impl AdaptiveProbe {
@@ -1557,36 +1556,6 @@ impl AdaptiveProbe {
             .insert(candidate_member_index, candidate_bytes);
         Ok(candidate_bytes)
     }
-
-    fn quaternary_update_bytes_for_population(
-        &mut self,
-        config: &BaselineWorkloadConfig,
-        active_member_count: u32,
-        candidate_member_index: u32,
-    ) -> Result<u64, ExperimentalBinaryWorkloadError> {
-        if active_member_count == config.initial_member_count {
-            return self.quaternary_update_bytes(config, candidate_member_index);
-        }
-        let surrogate_member_index = candidate_member_index % active_member_count;
-        if let Some(bytes) = self
-            .quaternary_update_bytes_by_population
-            .get(&(active_member_count, surrogate_member_index))
-        {
-            return Ok(*bytes);
-        }
-        let mut probe_config = config.clone();
-        probe_config.initial_member_count = active_member_count;
-        probe_config.maximum_member_count = active_member_count;
-        let (_, candidate_wire) =
-            measure_adaptive_probe_candidate(&probe_config, surrogate_member_index)?;
-        let candidate_bytes = u64::try_from(candidate_wire.len())
-            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
-        self.quaternary_update_bytes_by_population.insert(
-            (active_member_count, surrogate_member_index),
-            candidate_bytes,
-        );
-        Ok(candidate_bytes)
-    }
 }
 
 fn measure_adaptive_probe(
@@ -1607,7 +1576,6 @@ fn measure_adaptive_probe(
     Ok(AdaptiveProbe {
         transition_wire,
         quaternary_update_bytes_by_member,
-        quaternary_update_bytes_by_population: BTreeMap::new(),
     })
 }
 
@@ -1747,6 +1715,35 @@ fn validate_delivery_health_controls(
         return Err(ExperimentalBinaryWorkloadError::InvalidControls);
     }
     Ok(())
+}
+
+fn healthy_path_model_bytes(
+    arity: u8,
+    member_count: u32,
+) -> Result<u64, ExperimentalBinaryWorkloadError> {
+    if arity < 2 || member_count == 0 {
+        return Err(ExperimentalBinaryWorkloadError::InvalidControls);
+    }
+    let mut height = 0_u64;
+    let mut capacity = 1_u64;
+    while capacity < u64::from(member_count) {
+        capacity = capacity
+            .checked_mul(u64::from(arity))
+            .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+        height = height
+            .checked_add(1)
+            .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+    }
+    let per_level = 1_504_u64
+        .checked_add(
+            80_u64
+                .checked_mul(u64::from(arity - 1))
+                .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?,
+        )
+        .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+    per_level
+        .checked_mul(height)
+        .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)
 }
 
 fn create_initial_group(
@@ -2644,6 +2641,19 @@ mod tests {
     use transition_tree::{ActiveQuaternaryTree, DeliveryOnlyTreeCover};
 
     use super::{fork_ciphersuite_type_name, OPENMLS_HYBRID_UPSTREAM_REVISION};
+
+    #[test]
+    fn healthy_path_model_matches_reference_table() {
+        assert_eq!(super::healthy_path_model_bytes(2, 128).unwrap(), 11_088);
+        assert_eq!(super::healthy_path_model_bytes(4, 128).unwrap(), 6_976);
+        assert_eq!(super::healthy_path_model_bytes(8, 128).unwrap(), 6_192);
+        assert_eq!(super::healthy_path_model_bytes(2, 129).unwrap(), 12_672);
+        assert_eq!(super::healthy_path_model_bytes(4, 129).unwrap(), 6_976);
+        assert_eq!(super::healthy_path_model_bytes(8, 129).unwrap(), 6_192);
+        assert_eq!(super::healthy_path_model_bytes(2, 512).unwrap(), 14_256);
+        assert_eq!(super::healthy_path_model_bytes(4, 512).unwrap(), 8_720);
+        assert_eq!(super::healthy_path_model_bytes(8, 512).unwrap(), 6_192);
+    }
 
     #[test]
     fn reproducible_binary_workload_records_only_accepted_hybrid_commits() {
