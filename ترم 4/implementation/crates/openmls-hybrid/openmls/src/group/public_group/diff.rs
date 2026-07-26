@@ -2,9 +2,9 @@
 //!
 //! This module contains the [`PublicGroupDiff`] struct, as well as the
 //! [`StagedPublicGroupDiff`] and associated functions and types.
-#[cfg(feature = "experimental-hybrid")]
-use std::collections::BTreeMap;
 use std::collections::HashSet;
+#[cfg(feature = "experimental-hybrid")]
+use std::collections::{BTreeMap, BTreeSet};
 
 use openmls_traits::crypto::OpenMlsCrypto;
 use openmls_traits::types::Ciphersuite;
@@ -53,7 +53,9 @@ pub(crate) struct ExperimentalQuaternaryDeliveryPlan {
     pub(crate) parent_nodes: Vec<QuaternaryNode>,
     pub(crate) recipient_leaf_ordinal: u32,
     pub(crate) recipient_parent_node: Option<QuaternaryNode>,
-    pub(crate) recipient_targets: Vec<(u32, QuaternaryNode, EncryptionKey)>,
+    pub(crate) recipient_resolution_node: Option<QuaternaryNode>,
+    pub(crate) recipient_targets: Vec<(u32, QuaternaryNode, QuaternaryNode, EncryptionKey)>,
+    pub(crate) occupied_parent_node_count: usize,
 }
 
 pub(crate) struct PublicGroupDiff<'a> {
@@ -220,6 +222,11 @@ impl<'a> PublicGroupDiff<'a> {
                 .as_ref()
                 .and_then(|plan| plan.recipient_parent_node)
                 .map(|node| (node.depth, node.ordinal)),
+            #[cfg(feature = "experimental-hybrid")]
+            recipient_quaternary_resolution_node: expected_quaternary_delivery_plan
+                .as_ref()
+                .and_then(|plan| plan.recipient_resolution_node)
+                .map(|node| (node.depth, node.ordinal)),
             sender_leaf_index,
             exclusion_list,
             group_context: &self
@@ -337,6 +344,17 @@ impl<'a> PublicGroupDiff<'a> {
             .zip(&recipient_path)
             .position(|(sender_branch, recipient_branch)| sender_branch != recipient_branch)
             .and_then(|depth| parent_nodes.get(depth).copied());
+        let recipient_nodes = tree
+            .topology()
+            .nodes_for_member(recipient_member_id)
+            .map_err(|_| {
+                LibraryError::custom("experimental quaternary recipient path derivation failed")
+            })?;
+        let recipient_resolution_node = sender_path
+            .iter()
+            .zip(&recipient_path)
+            .position(|(sender_branch, recipient_branch)| sender_branch != recipient_branch)
+            .and_then(|depth| recipient_nodes.get(depth + 1).copied());
         let mut recipient_targets = member_ids
             .iter()
             .filter(|(binary_leaf_index, _)| **binary_leaf_index != sender_leaf_index.u32())
@@ -358,32 +376,77 @@ impl<'a> PublicGroupDiff<'a> {
                             "experimental quaternary recipient path derivation failed",
                         )
                     })?;
-                let parent = sender_path
+                let divergence_depth = sender_path
                     .iter()
                     .zip(path)
                     .position(|(sender_branch, recipient_branch)| {
                         sender_branch != &recipient_branch
                     })
-                    .and_then(|depth| parent_nodes.get(depth).copied())
                     .ok_or_else(|| {
                         LibraryError::custom(
                             "experimental quaternary recipient has no sibling-resolution parent",
                         )
                     })?;
+                let parent = parent_nodes.get(divergence_depth).copied().ok_or_else(|| {
+                    LibraryError::custom(
+                        "experimental quaternary recipient parent is outside sender path",
+                    )
+                })?;
+                let recipient_node = tree
+                    .topology()
+                    .nodes_for_member(member_id)
+                    .map_err(|_| {
+                        LibraryError::custom(
+                            "experimental quaternary recipient path derivation failed",
+                        )
+                    })?
+                    .get(divergence_depth + 1)
+                    .copied()
+                    .ok_or_else(|| {
+                        LibraryError::custom(
+                            "experimental quaternary recipient resolution is missing",
+                        )
+                    })?;
                 let key = leaf_keys.get(binary_leaf_index).cloned().ok_or_else(|| {
                     LibraryError::custom("experimental quaternary recipient has no MLS leaf key")
                 })?;
-                Ok((assignment.quaternary_leaf_ordinal, parent, key))
+                Ok((
+                    assignment.quaternary_leaf_ordinal,
+                    parent,
+                    recipient_node,
+                    key,
+                ))
             })
             .collect::<Result<Vec<_>, LibraryError>>()?;
         // The member index map is ordered by binary leaf, while the hybrid
         // codec requires canonical increasing quaternary recipient ordinals.
-        recipient_targets.sort_by_key(|(leaf_ordinal, _, _)| *leaf_ordinal);
+        recipient_targets.sort_by_key(|(leaf_ordinal, _, _, _)| *leaf_ordinal);
+        let occupied_parent_node_count = mapping
+            .assignments
+            .iter()
+            .map(|assignment| {
+                tree.topology()
+                    .nodes_for_member(&assignment.member_id)
+                    .map(|nodes| {
+                        nodes
+                            .into_iter()
+                            .take(usize::from(tree.topology().height()))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| LibraryError::custom("experimental occupied parent derivation failed"))?
+            .into_iter()
+            .flatten()
+            .map(|node| (node.depth, node.ordinal))
+            .collect::<BTreeSet<_>>()
+            .len();
         Ok(ExperimentalQuaternaryDeliveryPlan {
             parent_nodes,
             recipient_leaf_ordinal: recipient_assignment.quaternary_leaf_ordinal,
             recipient_parent_node,
+            recipient_resolution_node,
             recipient_targets,
+            occupied_parent_node_count,
         })
     }
 
@@ -401,6 +464,95 @@ impl<'a> PublicGroupDiff<'a> {
     ) -> Result<(), ApplyUpdatePathError> {
         self.diff
             .apply_received_update_path(crypto, ciphersuite, sender_leaf_index, update_path)
+    }
+
+    /// Advances the prospective GroupContext with the native quaternary tree
+    /// as its sole parent-tree authority.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn update_group_context_with_quaternary_authority(
+        &mut self,
+        crypto: &impl OpenMlsCrypto,
+        extensions: Option<Extensions<GroupContext>>,
+        mapping: &BinaryToQuaternaryLeafMapping,
+        retained_parent_nodes: &[(u8, u32, EncryptionKey)],
+        update_path: &UpdatePath,
+    ) -> Result<(), LibraryError> {
+        if !update_path.nodes().is_empty() {
+            return Err(LibraryError::custom(
+                "native quaternary authority cannot serialize binary UpdatePath nodes",
+            ));
+        }
+        let parent_paths = update_path.experimental_quaternary_parent_paths();
+        let tree_version = parent_paths
+            .first()
+            .map(|parent| parent.tree_version())
+            .ok_or_else(|| {
+                LibraryError::custom("native quaternary authority has no public parent path")
+            })?;
+        if parent_paths
+            .iter()
+            .any(|parent| parent.tree_version() != tree_version)
+        {
+            return Err(LibraryError::custom(
+                "native quaternary parent path mixes tree versions",
+            ));
+        }
+
+        let records = self.diff.full_leaf_member_records();
+        let active_member_ids = records
+            .iter()
+            .map(|(_, member_id, _)| member_id.as_slice())
+            .collect::<BTreeSet<_>>();
+        let tree = ActiveQuaternaryTree::from_mapping(tree_version, mapping.clone())
+            .map_err(|_| LibraryError::custom("native quaternary topology derivation failed"))?;
+        let mut parent_nodes = retained_parent_nodes.to_vec();
+        for assignment in &mapping.assignments {
+            if active_member_ids.contains(assignment.member_id.as_slice()) {
+                continue;
+            }
+            let removed_path = tree
+                .topology()
+                .nodes_for_member(&assignment.member_id)
+                .map_err(|_| {
+                    LibraryError::custom("removed member is absent from quaternary topology")
+                })?
+                .into_iter()
+                .take(usize::from(tree.topology().height()))
+                .map(|node| (node.depth, node.ordinal))
+                .collect::<BTreeSet<_>>();
+            parent_nodes.retain(|(depth, ordinal, _)| !removed_path.contains(&(*depth, *ordinal)));
+        }
+        for parent in parent_paths {
+            if let Some(node) = parent_nodes.iter_mut().find(|(depth, ordinal, _)| {
+                (*depth, *ordinal) == (parent.parent_depth(), parent.parent_ordinal())
+            }) {
+                node.2 = parent.public_key().clone();
+            } else {
+                parent_nodes.push((
+                    parent.parent_depth(),
+                    parent.parent_ordinal(),
+                    parent.public_key().clone(),
+                ));
+            }
+        }
+        let leaves = records
+            .into_iter()
+            .map(|(leaf_index, member_id, public_key)| (leaf_index.u32(), member_id, public_key))
+            .collect();
+        let tree_hash = crate::experimental_hybrid::quaternary_authority_tree_hash(
+            crypto,
+            self.group_context().ciphersuite(),
+            tree_version,
+            mapping,
+            leaves,
+            parent_nodes,
+        )?;
+        self.group_context.update_tree_hash(tree_hash);
+        self.group_context.increment_epoch();
+        if let Some(extensions) = extensions {
+            self.group_context.set_extensions(extensions);
+        }
+        Ok(())
     }
 
     /// Update the interim transcript hash of the diff and store the

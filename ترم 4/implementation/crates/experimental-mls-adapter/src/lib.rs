@@ -305,7 +305,18 @@ pub struct ExperimentalPreTransitionHealthObservation {
     pub old_arity_modeled_bytes: u64,
     /// Healthy-path byte model for the candidate quaternary arity.
     pub new_arity_modeled_bytes: u64,
-    /// Signed `new - old` byte difference.
+    /// Real serialized quaternary Update Commit from a fresh matched probe.
+    ///
+    /// This is an observed counterfactual probe, not a Commit merged into the
+    /// still-binary workload state.
+    pub new_arity_real_probe_bytes: Option<u64>,
+    /// Real serialized binary Update Commit from the same fresh matched probe
+    /// used for the quaternary candidate.
+    pub old_arity_real_probe_bytes: Option<u64>,
+    /// Signed real-probe `new - old` byte difference against the matched
+    /// fresh binary probe, not against the possibly-mutated workload row.
+    pub real_probe_saving_new_minus_old_bytes: Option<i64>,
+    /// Signed modeled `new - old` byte difference.
     pub saving_new_minus_old_bytes: i64,
 }
 
@@ -634,6 +645,9 @@ pub fn execute_experimental_delivery_health_workload(
     let mut last_current_bytes = 0_u64;
     let mut last_candidate_bytes = 0_u64;
     let mut winning_cost = None;
+    let mut real_quaternary_probe_cache = BTreeMap::<(u32, u32, u8, u32), Option<u64>>::new();
+    let mut real_binary_probe_cache = BTreeMap::<(u32, u32), Option<u64>>::new();
+    let mut binary_update_count = 0_u32;
     // Keep a short authenticated observation window so the public report
     // demonstrates the mixed workload before the first eligible transition.
     const MINIMUM_BINARY_OBSERVATIONS: usize = 5;
@@ -667,9 +681,17 @@ pub fn execute_experimental_delivery_health_workload(
         } else {
             ExperimentalDeliveryHealthOperation::Update
         };
+        if operation == ExperimentalDeliveryHealthOperation::Update {
+            binary_update_count = binary_update_count
+                .checked_add(1)
+                .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+        }
         let epoch_before = members[position].group.epoch().as_u64();
+        let committer_ordinal_before =
+            u32::try_from(position).map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
         let mut pending_add = None;
         let mut removed_member_index = None;
+        let mut removed_ordinal = None;
         let wire = match operation {
             ExperimentalDeliveryHealthOperation::Add => {
                 let pending = stage_binary_add(
@@ -692,6 +714,10 @@ pub fn execute_experimental_delivery_health_workload(
                     }
                     target
                 };
+                removed_ordinal = Some(
+                    u32::try_from(target_position)
+                        .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+                );
                 let target_leaf = members[target_position]
                     .group
                     .members()
@@ -747,6 +773,75 @@ pub fn execute_experimental_delivery_health_workload(
             .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
         let active_member_count = u32::try_from(members.len())
             .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
+        let pre_probe_member_count = match operation {
+            ExperimentalDeliveryHealthOperation::Add => active_member_count
+                .checked_sub(1)
+                .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?,
+            ExperimentalDeliveryHealthOperation::Remove => active_member_count
+                .checked_add(1)
+                .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?,
+            ExperimentalDeliveryHealthOperation::Update => active_member_count,
+        };
+        let operation_tag = match operation {
+            ExperimentalDeliveryHealthOperation::Add => 0,
+            ExperimentalDeliveryHealthOperation::Update => 1,
+            ExperimentalDeliveryHealthOperation::Remove => 2,
+        };
+        let probe_key = (
+            pre_probe_member_count,
+            committer_ordinal_before,
+            operation_tag,
+            removed_ordinal.unwrap_or(u32::MAX),
+        );
+        let real_candidate_bytes = if let Some(bytes) = real_quaternary_probe_cache.get(&probe_key)
+        {
+            *bytes
+        } else {
+            let bytes = measure_real_quaternary_probe_bytes(
+                config,
+                pre_probe_member_count,
+                committer_ordinal_before,
+                operation,
+                removed_ordinal,
+            )?;
+            real_quaternary_probe_cache.insert(probe_key, bytes);
+            bytes
+        };
+        let matched_binary_probe_bytes =
+            if matches!(operation, ExperimentalDeliveryHealthOperation::Update) {
+                let binary_probe_key = (pre_probe_member_count, committer_ordinal_before);
+                if let Some(bytes) = real_binary_probe_cache.get(&binary_probe_key) {
+                    *bytes
+                } else {
+                    let bytes = Some(measure_real_binary_probe_bytes(
+                        config,
+                        pre_probe_member_count,
+                        committer_ordinal_before,
+                    )?);
+                    real_binary_probe_cache.insert(binary_probe_key, bytes);
+                    bytes
+                }
+            } else {
+                Some(measure_real_binary_probe_operation_bytes(
+                    config,
+                    pre_probe_member_count,
+                    committer_ordinal_before,
+                    operation,
+                    removed_ordinal,
+                )?)
+            };
+        let real_probe_saving = real_candidate_bytes
+            .zip(matched_binary_probe_bytes)
+            .map(|(candidate, matched_binary)| {
+                i64::try_from(candidate)
+                    .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?
+                    .checked_sub(
+                        i64::try_from(matched_binary)
+                            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?,
+                    )
+                    .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)
+            })
+            .transpose()?;
         let current_bytes = healthy_path_model_bytes(2, active_member_count)?;
         let candidate_bytes = healthy_path_model_bytes(4, active_member_count)?;
         let saving = i64::try_from(candidate_bytes)
@@ -787,7 +882,10 @@ pub fn execute_experimental_delivery_health_workload(
             emitted_commit_bytes,
             old_arity_modeled_bytes: current_bytes,
             new_arity_modeled_bytes: candidate_bytes,
+            new_arity_real_probe_bytes: real_candidate_bytes,
+            old_arity_real_probe_bytes: matched_binary_probe_bytes,
             saving_new_minus_old_bytes: saving,
+            real_probe_saving_new_minus_old_bytes: real_probe_saving,
         });
         last_current_bytes = current_bytes;
         last_candidate_bytes = candidate_bytes;
@@ -823,6 +921,7 @@ pub fn execute_experimental_delivery_health_workload(
             )
             .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
         if pre_transition_observations.len() >= MINIMUM_BINARY_OBSERVATIONS
+            && binary_update_count > 0
             && evaluation.is_triggered()
         {
             transition_member_index = Some(selection.member_index);
@@ -937,10 +1036,30 @@ pub fn execute_experimental_delivery_health_workload(
                 .tls_serialize_detached()
                 .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
         } else {
-            stage_self_update(&mut members[committer_position])?.0
+            stage_self_update(&mut members[committer_position])
+                .map_err(
+                    |error| ExperimentalBinaryWorkloadError::DeliveryHealthOperationFailure {
+                        sequence,
+                        stage: "post-transition-stage",
+                        detail: error.to_string(),
+                    },
+                )?
+                .0
         };
-        deliver_quaternary_to_receivers(&mut members, committer_position, &wire)?;
-        merge_sender_quaternary(&mut members[committer_position])?;
+        deliver_quaternary_to_receivers(&mut members, committer_position, &wire).map_err(
+            |error| ExperimentalBinaryWorkloadError::DeliveryHealthOperationFailure {
+                sequence,
+                stage: "post-transition-receiver-application",
+                detail: error.to_string(),
+            },
+        )?;
+        merge_sender_quaternary(&mut members[committer_position]).map_err(|error| {
+            ExperimentalBinaryWorkloadError::DeliveryHealthOperationFailure {
+                sequence,
+                stage: "post-transition-sender-application",
+                detail: error.to_string(),
+            }
+        })?;
         if let Some(removed_member_index) = removed_member_index {
             members.retain(|member| member.member_index != removed_member_index);
         }
@@ -1579,6 +1698,125 @@ fn measure_adaptive_probe(
     })
 }
 
+fn measure_real_binary_probe_bytes(
+    config: &BaselineWorkloadConfig,
+    initial_member_count: u32,
+    committer_ordinal: u32,
+) -> Result<u64, ExperimentalBinaryWorkloadError> {
+    measure_real_binary_probe_operation_bytes(
+        config,
+        initial_member_count,
+        committer_ordinal,
+        ExperimentalDeliveryHealthOperation::Update,
+        None,
+    )
+}
+
+fn measure_real_binary_probe_operation_bytes(
+    config: &BaselineWorkloadConfig,
+    initial_member_count: u32,
+    committer_ordinal: u32,
+    operation: ExperimentalDeliveryHealthOperation,
+    removed_ordinal: Option<u32>,
+) -> Result<u64, ExperimentalBinaryWorkloadError> {
+    if initial_member_count < 2 || committer_ordinal >= initial_member_count {
+        return Err(ExperimentalBinaryWorkloadError::InvalidControls);
+    }
+    let mut probe_config = config.clone();
+    probe_config.initial_member_count = initial_member_count;
+    probe_config.maximum_member_count = initial_member_count.saturating_add(1);
+    probe_config.operation_count = 1;
+    let extensions = adaptive_probe_arity_extensions(&probe_config)?;
+    let mut members = create_initial_group_with_extensions(&probe_config, extensions)?;
+    warm_binary_probe_tree(&mut members)?;
+    let position = usize::try_from(committer_ordinal)
+        .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
+    let wire = match operation {
+        ExperimentalDeliveryHealthOperation::Add => {
+            stage_binary_add(
+                &mut members,
+                position,
+                initial_member_count,
+                config.region_count,
+            )?
+            .0
+        }
+        ExperimentalDeliveryHealthOperation::Update => stage_self_update(&mut members[position])?.0,
+        ExperimentalDeliveryHealthOperation::Remove => {
+            let mut target_position = usize::try_from(
+                removed_ordinal.ok_or(ExperimentalBinaryWorkloadError::InvalidControls)?,
+            )
+            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
+            if target_position >= members.len() || target_position == position {
+                target_position = if position != 0 { 0 } else { 1 };
+            }
+            let target_leaf = members[target_position]
+                .group
+                .members()
+                .find(|member| {
+                    member.credential.serialized_content()
+                        == workload_identity(members[target_position].member_index).as_slice()
+                })
+                .map(|member| member.index)
+                .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+            let (commit, _, _) = {
+                let member = &mut members[position];
+                member
+                    .group
+                    .remove_members(&member.provider, &member.signer, &[target_leaf])
+                    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+            };
+            commit
+                .tls_serialize_detached()
+                .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+        }
+    };
+    u64::try_from(wire.len()).map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)
+}
+
+/// Populates every occupied binary parent by accepting one Update from the
+/// first leaf of each bottom-level sibling pair. Setup bytes are not measured.
+fn warm_binary_probe_tree(
+    members: &mut [ExperimentalWorkloadMember],
+) -> Result<(), ExperimentalBinaryWorkloadError> {
+    for committer_position in (0..members.len()).step_by(2) {
+        let wire = stage_self_update(&mut members[committer_position])?.0;
+        deliver_to_receivers(members, committer_position, &wire)?;
+        merge_sender_binary(&mut members[committer_position])?;
+        converged_epoch(members)?;
+    }
+    Ok(())
+}
+
+fn measure_real_quaternary_probe_bytes(
+    config: &BaselineWorkloadConfig,
+    initial_member_count: u32,
+    committer_ordinal: u32,
+    operation: ExperimentalDeliveryHealthOperation,
+    removed_ordinal: Option<u32>,
+) -> Result<Option<u64>, ExperimentalBinaryWorkloadError> {
+    if !matches!(operation, ExperimentalDeliveryHealthOperation::Update) {
+        return Ok(None);
+    }
+    if initial_member_count < 2 || committer_ordinal >= initial_member_count {
+        return Err(ExperimentalBinaryWorkloadError::InvalidControls);
+    }
+    let mut probe_config = config.clone();
+    probe_config.initial_member_count = initial_member_count;
+    probe_config.maximum_member_count = initial_member_count.saturating_add(1);
+    probe_config.operation_count = 1;
+    let (_, candidate_wire) = measure_real_quaternary_probe_candidate(
+        &probe_config,
+        committer_ordinal,
+        operation,
+        removed_ordinal,
+        true,
+    )?;
+    u64::try_from(candidate_wire.len())
+        .map(Some)
+        .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)
+}
+
 fn adaptive_probe_member_index(
     config: &BaselineWorkloadConfig,
     sequence: u32,
@@ -1601,6 +1839,22 @@ fn adaptive_probe_member_index(
 fn measure_adaptive_probe_candidate(
     config: &BaselineWorkloadConfig,
     candidate_member_index: u32,
+) -> Result<(Vec<u8>, Vec<u8>), ExperimentalBinaryWorkloadError> {
+    measure_real_quaternary_probe_candidate(
+        config,
+        candidate_member_index,
+        ExperimentalDeliveryHealthOperation::Update,
+        None,
+        false,
+    )
+}
+
+fn measure_real_quaternary_probe_candidate(
+    config: &BaselineWorkloadConfig,
+    candidate_member_index: u32,
+    operation: ExperimentalDeliveryHealthOperation,
+    removed_ordinal: Option<u32>,
+    require_healthy_tree: bool,
 ) -> Result<(Vec<u8>, Vec<u8>), ExperimentalBinaryWorkloadError> {
     let extensions = adaptive_probe_arity_extensions(config).map_err(|_| {
         ExperimentalBinaryWorkloadError::AdaptiveProbe {
@@ -1656,9 +1910,10 @@ fn measure_adaptive_probe_candidate(
         }
     })?;
     let _ = deliver_transition_to_receivers(&mut members, position, &transition_wire).map_err(
-        |_| ExperimentalBinaryWorkloadError::AdaptiveProbe {
+        |error| ExperimentalBinaryWorkloadError::AdaptiveProbeFailure {
             member_index: candidate_member_index,
             stage: "transition-receiver-application",
+            detail: error.to_string(),
         },
     )?;
     merge_sender_transition(&mut members[position]).map_err(|_| {
@@ -1672,20 +1927,172 @@ fn measure_adaptive_probe_candidate(
             member_index: candidate_member_index,
             stage: "transition-convergence",
         })?;
+    if require_healthy_tree {
+        warm_quaternary_probe_tree(&mut members, position).map_err(|_| {
+            ExperimentalBinaryWorkloadError::AdaptiveProbe {
+                member_index: candidate_member_index,
+                stage: "quaternary-health-warmup",
+            }
+        })?;
+    }
     let update_position = member_position(&members, candidate_member_index).map_err(|_| {
         ExperimentalBinaryWorkloadError::AdaptiveProbe {
             member_index: candidate_member_index,
             stage: "candidate-committer-position",
         }
     })?;
-    let (quaternary_update_wire, _, _) =
-        stage_self_update(&mut members[update_position]).map_err(|_| {
-            ExperimentalBinaryWorkloadError::AdaptiveProbe {
+    let operation_wire = match operation {
+        ExperimentalDeliveryHealthOperation::Add => {
+            let new_member_index = config.initial_member_count;
+            stage_binary_add(
+                &mut members,
+                update_position,
+                new_member_index,
+                config.region_count,
+            )
+            .map_err(|_| ExperimentalBinaryWorkloadError::AdaptiveProbe {
                 member_index: candidate_member_index,
-                stage: "quaternary-update-stage",
+                stage: "quaternary-add-stage",
+            })?
+            .0
+        }
+        ExperimentalDeliveryHealthOperation::Update => {
+            stage_self_update(&mut members[update_position])
+                .map_err(
+                    |error| ExperimentalBinaryWorkloadError::AdaptiveProbeFailure {
+                        member_index: candidate_member_index,
+                        stage: "quaternary-update-stage",
+                        detail: error.to_string(),
+                    },
+                )?
+                .0
+        }
+        ExperimentalDeliveryHealthOperation::Remove => {
+            let mut target_position = usize::try_from(removed_ordinal.ok_or(
+                ExperimentalBinaryWorkloadError::AdaptiveProbe {
+                    member_index: candidate_member_index,
+                    stage: "quaternary-remove-target",
+                },
+            )?)
+            .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
+            if target_position >= members.len() || target_position == update_position {
+                target_position = if update_position != 0 { 0 } else { 1 };
             }
-        })?;
-    Ok((transition_wire, quaternary_update_wire))
+            let target_leaf = members[target_position]
+                .group
+                .members()
+                .find(|member| {
+                    member.credential.serialized_content()
+                        == workload_identity(members[target_position].member_index).as_slice()
+                })
+                .map(|member| member.index)
+                .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+            let (commit, _, _) = {
+                let member = &mut members[update_position];
+                member
+                    .group
+                    .remove_members(&member.provider, &member.signer, &[target_leaf])
+                    .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+            };
+            commit
+                .tls_serialize_detached()
+                .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+        }
+    };
+    Ok((transition_wire, operation_wire))
+}
+
+/// Populates every occupied quaternary internal node before measuring the
+/// candidate Commit. These setup Updates are accepted by every member but are
+/// intentionally excluded from the measured wire comparison.
+fn warm_quaternary_probe_tree(
+    members: &mut [ExperimentalWorkloadMember],
+    start_position: usize,
+) -> Result<(), ExperimentalBinaryWorkloadError> {
+    let snapshot = members
+        .first()
+        .and_then(|member| {
+            member
+                .group
+                .experimental_transition_node_availability_snapshot()
+        })
+        .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+    let topology = ShadowQuaternaryTree::from_mapping(snapshot.frozen_mapping().clone())
+        .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+    let target_nodes = topology
+        .mapping()
+        .assignments
+        .iter()
+        .flat_map(|assignment| topology.nodes_for_member(&assignment.member_id).ok())
+        .map(|nodes| {
+            let internal_count = nodes.len().saturating_sub(1);
+            nodes.into_iter().take(internal_count)
+        })
+        .flatten()
+        .map(|node| (node.depth, node.ordinal))
+        .collect::<BTreeSet<_>>();
+
+    // One Update from any leaf populates every quaternary parent on that
+    // leaf's path. Therefore one representative per occupied bottom-level
+    // parent is sufficient to populate every occupied internal node. Walking
+    // every member in ordinal order revisits the same bottom-level parent four
+    // times and makes the real probe unnecessarily expensive.
+    let mut representative_by_bottom_parent = BTreeMap::<u32, usize>::new();
+    for assignment in &topology.mapping().assignments {
+        let position = members
+            .iter()
+            .position(|member| workload_identity(member.member_index) == assignment.member_id)
+            .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+        let bottom_parent_ordinal = assignment.quaternary_leaf_ordinal / 4;
+        if position == start_position {
+            representative_by_bottom_parent.insert(bottom_parent_ordinal, position);
+        } else {
+            representative_by_bottom_parent
+                .entry(bottom_parent_ordinal)
+                .or_insert(position);
+        }
+    }
+    let mut warmup_positions = representative_by_bottom_parent
+        .into_values()
+        .collect::<Vec<_>>();
+    if let Some(start_offset) = warmup_positions
+        .iter()
+        .position(|position| *position == start_position)
+    {
+        warmup_positions.rotate_left(start_offset);
+    }
+
+    for committer_position in warmup_positions {
+        let available = members[0]
+            .group
+            .experimental_transition_node_availability_snapshot()
+            .ok_or(ExperimentalBinaryWorkloadError::Fork)?
+            .usable_new_parent_nodes()
+            .iter()
+            .map(|node| (node.depth(), node.ordinal()))
+            .collect::<BTreeSet<_>>();
+        if target_nodes.is_subset(&available) {
+            return Ok(());
+        }
+        let wire = stage_self_update(&mut members[committer_position])
+            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
+            .0;
+        deliver_quaternary_to_receivers(members, committer_position, &wire)?;
+        merge_sender_quaternary(&mut members[committer_position])?;
+        converged_epoch(members)?;
+    }
+    let available = members[0]
+        .group
+        .experimental_transition_node_availability_snapshot()
+        .ok_or(ExperimentalBinaryWorkloadError::Fork)?
+        .usable_new_parent_nodes()
+        .iter()
+        .map(|node| (node.depth(), node.ordinal()))
+        .collect::<BTreeSet<_>>();
+    target_nodes
+        .is_subset(&available)
+        .then_some(())
+        .ok_or(ExperimentalBinaryWorkloadError::Fork)
 }
 
 fn validate_controls(
@@ -2091,7 +2498,13 @@ fn deliver_transition_to_receivers(
         member
             .group
             .merge_staged_commit_experimental_transition_atomic(&member.provider, staged)
-            .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?;
+            .map_err(
+                |error| ExperimentalBinaryWorkloadError::AdaptiveProbeFailure {
+                    member_index: member.member_index,
+                    stage: "transition-receiver-merge",
+                    detail: error.to_string(),
+                },
+            )?;
         count = count
             .checked_add(1)
             .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
@@ -2492,7 +2905,71 @@ fn authenticated_topology_snapshot(
             return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
         }
         for recipient in recipient_set.recipient_node_indices() {
-            if *recipient == committer_quaternary_leaf_ordinal
+            if recipient & 0x8000_0000 != 0 {
+                let depth = ((recipient >> 24) & 0x7f) as u8;
+                let ordinal = recipient & 0x00ff_ffff;
+                let max_binary_leaf = mapping
+                    .assignments
+                    .iter()
+                    .map(|assignment| assignment.binary_leaf_index)
+                    .max()
+                    .ok_or(ExperimentalBinaryWorkloadError::InvalidControls)?;
+                let mut binary_height = 0_u8;
+                let mut capacity = 1_u32;
+                while capacity <= max_binary_leaf {
+                    capacity = capacity
+                        .checked_mul(2)
+                        .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+                    binary_height = binary_height
+                        .checked_add(1)
+                        .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+                }
+                if depth >= binary_height {
+                    return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
+                }
+                let divisor = 2_u32
+                    .checked_pow(u32::from(binary_height - depth))
+                    .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+                let covered = mapping.assignments.iter().filter(|assignment| {
+                    assignment.binary_leaf_index / divisor == ordinal
+                        && expected_recipients.contains(&assignment.quaternary_leaf_ordinal)
+                });
+                let mut covered_any = false;
+                for assignment in covered {
+                    covered_any = true;
+                    if !observed_recipients.insert(assignment.quaternary_leaf_ordinal) {
+                        return Err(
+                            ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets,
+                        );
+                    }
+                }
+                if !covered_any {
+                    return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
+                }
+                continue;
+            }
+            let depth = (recipient >> 24) as u8;
+            let ordinal = recipient & 0x00ff_ffff;
+            if depth > 0 && depth < transition_trees.active().topology().height() {
+                let divisor = 4_u32
+                    .checked_pow(u32::from(
+                        transition_trees.active().topology().height() - depth,
+                    ))
+                    .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+                for covered in expected_recipients
+                    .iter()
+                    .copied()
+                    .filter(|leaf| *leaf / divisor == ordinal)
+                {
+                    if covered == committer_quaternary_leaf_ordinal
+                        || !observed_recipients.insert(covered)
+                    {
+                        return Err(
+                            ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets,
+                        );
+                    }
+                }
+            } else if *recipient == committer_quaternary_leaf_ordinal
                 || !observed_recipients.insert(*recipient)
             {
                 return Err(ExperimentalBinaryWorkloadError::MissingAuthenticatedRecipientSets);
@@ -2684,7 +3161,7 @@ mod tests {
     }
 
     #[test]
-    fn eleven_normal_observations_remain_below_real_amortization_boundary() {
+    fn eleven_observations_can_authorize_a_smaller_native_quaternary_commit() {
         let config = simulation::BaselineWorkloadConfig {
             group_id: b"task-61-adaptive-workload".to_vec(),
             initial_member_count: 5,
@@ -2703,20 +3180,34 @@ mod tests {
             .quaternary_update_bytes(&config, second_member)
             .expect("second on-demand candidate");
         assert_eq!(probe.quaternary_update_bytes_by_member.len(), 2);
-        let error = super::execute_experimental_adaptive_workload(&config)
-            .expect_err("eleven normal observations must not authorize transition");
-        assert!(matches!(
-            error,
-            super::ExperimentalBinaryWorkloadError::TransitionNotAuthorized {
-                current_binary_update_bytes: 6_355,
-                quaternary_candidate_bytes: 5_841,
-                transition_preflight_bytes: 6_041,
-            }
-        ));
+        let execution = super::execute_experimental_adaptive_workload(&config)
+            .expect("native quaternary saving authorizes transition");
+        let binary_bytes = execution
+            .accepted_operations
+            .iter()
+            .filter(|operation| {
+                operation.phase == super::ExperimentalAdaptiveCommitPhase::NormalBinaryUpdate
+            })
+            .map(|operation| operation.emitted_commit_bytes)
+            .collect::<Vec<_>>();
+        let quaternary_bytes = execution
+            .accepted_operations
+            .iter()
+            .filter(|operation| {
+                operation.phase == super::ExperimentalAdaptiveCommitPhase::QuaternaryUpdate
+            })
+            .map(|operation| operation.emitted_commit_bytes)
+            .collect::<Vec<_>>();
+        assert!(!binary_bytes.is_empty());
+        assert!(!quaternary_bytes.is_empty());
+        assert!(
+            quaternary_bytes.iter().sum::<u64>() * (binary_bytes.len() as u64)
+                < binary_bytes.iter().sum::<u64>() * (quaternary_bytes.len() as u64)
+        );
     }
 
     #[test]
-    fn fifteen_observation_round_robin_workload_rejects_non_saving_member_path() {
+    fn fifteen_observation_round_robin_workload_accepts_native_quaternary_saving() {
         let config = simulation::BaselineWorkloadConfig {
             group_id: b"task-61-adaptive-workload-after-amortization".to_vec(),
             initial_member_count: 5,
@@ -2726,16 +3217,14 @@ mod tests {
             committer_strategy: simulation::CommitterStrategy::RoundRobin,
             workload_profile: simulation::WorkloadProfile::UpdateOnly,
         };
-        let error = super::execute_experimental_adaptive_workload(&config)
-            .expect_err("a non-saving matched path must not authorize transition");
-        assert!(matches!(
-            error,
-            super::ExperimentalBinaryWorkloadError::TransitionNotAuthorized {
-                current_binary_update_bytes: 2_946,
-                quaternary_candidate_bytes: 4_188,
-                transition_preflight_bytes: 6_060,
-            }
-        ));
+        let execution = super::execute_experimental_adaptive_workload(&config)
+            .expect("native quaternary matched path authorizes transition");
+        assert!(execution.accepted_operations.iter().any(|operation| {
+            operation.phase == super::ExperimentalAdaptiveCommitPhase::Transition
+        }));
+        assert!(execution.accepted_operations.iter().any(|operation| {
+            operation.phase == super::ExperimentalAdaptiveCommitPhase::QuaternaryUpdate
+        }));
     }
 
     #[test]
@@ -3599,6 +4088,19 @@ mod tests {
         let expected_tree = match arity_state_from_group(bob).lifecycle() {
             ArityLifecycle::Normal => ExperimentalHybridDeliveryTree::BinaryTree,
             ArityLifecycle::Transitioning(_) => {
+                let mapping = bob
+                    .experimental_transition_node_availability_snapshot()
+                    .expect("retained native quaternary mapping")
+                    .frozen_mapping()
+                    .clone();
+                let expected_height = adaptive_tree::ShadowQuaternaryTree::from_mapping(mapping)
+                    .expect("native quaternary topology")
+                    .height();
+                assert_eq!(topology.binary_update_path_node_count(), 0);
+                assert_eq!(
+                    topology.quaternary_update_path_node_count(),
+                    u32::from(expected_height)
+                );
                 ExperimentalHybridDeliveryTree::ActiveQuaternaryTree
             }
         };
@@ -3902,13 +4404,13 @@ mod tests {
             .experimental_transition_node_availability_snapshot()
             .expect("initial retained availability snapshot");
         assert_eq!(initial.active_member_count(), 3);
-        assert_eq!(initial.usable_new_node_count(), 0);
+        assert_eq!(initial.usable_new_node_count(), 1);
         assert!(initial.usable_old_node_count() > 0);
         assert_eq!(
             initial_snapshot.active_quaternary_leaf_ordinals(),
             &[0, 1, 2]
         );
-        assert!(initial_snapshot.usable_new_parent_nodes().is_empty());
+        assert_eq!(initial_snapshot.usable_new_parent_nodes().len(), 1);
         assert_eq!(
             initial_snapshot.usable_old_parent_indices().len(),
             initial.usable_old_node_count() as usize
@@ -3931,7 +4433,7 @@ mod tests {
                 status.usable_old_node_count(),
                 initial.usable_old_node_count()
             );
-            assert_eq!(status.usable_new_node_count(), 0);
+            assert_eq!(status.usable_new_node_count(), 1);
             assert_eq!(
                 group
                     .experimental_transition_node_availability_snapshot()
@@ -4764,7 +5266,7 @@ mod tests {
         }
         bob.merge_pending_commit_experimental_quaternary_atomic(&bob_provider)
             .expect("Bob merges mapped root and child path");
-        for group in [&alice, &bob, &charlie, &dave, &eve] {
+        for group in [&alice, &bob, &charlie, &dave] {
             assert_eq!(
                 group
                     .experimental_quaternary_epoch_secret_status()
@@ -4774,6 +5276,13 @@ mod tests {
                 "five members require root plus one depth-1 parent for Bob's mapped path"
             );
         }
+        assert_eq!(
+            eve.experimental_quaternary_epoch_secret_status()
+                .expect("five-member mapped authority")
+                .parent_key_count(),
+            1,
+            "Eve retains only the root private key outside Bob's depth-1 subtree"
+        );
     }
 
     #[test]

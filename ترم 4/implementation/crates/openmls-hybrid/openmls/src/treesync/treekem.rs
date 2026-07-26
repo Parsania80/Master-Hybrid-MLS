@@ -137,11 +137,12 @@ impl TreeSyncDiff<'_> {
             && params.expected_quaternary_parent_nodes.is_some()
             && params.recipient_quaternary_leaf_ordinal.is_some()
             && params.recipient_quaternary_parent_node.is_some()
-            && !params.update_path.is_empty()
-            && params.update_path.iter().all(|node| {
-                node.encrypted_path_secrets.is_empty()
-                    && node.experimental_hybrid_delivery().is_none()
-            });
+            && !params.experimental_quaternary_parent_paths.is_empty()
+            && (params.update_path.is_empty()
+                || params.update_path.iter().all(|node| {
+                    node.encrypted_path_secrets.is_empty()
+                        && node.experimental_hybrid_delivery().is_none()
+                }));
 
         #[cfg(feature = "experimental-hybrid")]
         if compact_quaternary_carrier {
@@ -158,7 +159,187 @@ impl TreeSyncDiff<'_> {
             let recipient_leaf_ordinal = params
                 .recipient_quaternary_leaf_ordinal
                 .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
-            if expected_nodes.is_empty() || params.experimental_quaternary_parent_paths.len() != 1 {
+            if expected_nodes.is_empty() {
+                return Err(ApplyUpdatePathError::UnableToDecrypt);
+            }
+            if params.experimental_quaternary_parent_paths.len() == expected_nodes.len() {
+                let recipient_parent_node = params
+                    .recipient_quaternary_parent_node
+                    .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+                let recipient_resolution_node = params
+                    .recipient_quaternary_resolution_node
+                    .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+                let divergence = expected_nodes
+                    .iter()
+                    .position(|position| *position == recipient_parent_node)
+                    .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+                let parent_path = params
+                    .experimental_quaternary_parent_paths
+                    .get(divergence)
+                    .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+                parent_path
+                    .validate_version()
+                    .map_err(ApplyUpdatePathError::LibraryError)?;
+                if parent_path.tree_version() != expected_tree_version
+                    || (parent_path.parent_depth(), parent_path.parent_ordinal())
+                        != recipient_parent_node
+                {
+                    return Err(ApplyUpdatePathError::UnableToDecrypt);
+                }
+                let parent_mkyber_key = parent_path
+                    .public_key()
+                    .experimental_mkyber_key()
+                    .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+                let context = quaternary_hybrid_context(
+                    crypto,
+                    ciphersuite,
+                    params.group_context,
+                    expected_tree_version,
+                    parent_path.parent_depth(),
+                    parent_path.parent_ordinal(),
+                    parent_mkyber_key.domain(),
+                )
+                .map_err(ApplyUpdatePathError::LibraryError)?;
+                let delivery = ExperimentalHybridPathDelivery::from_canonical_bytes(
+                    crate::experimental_hybrid::quaternary_parent_node_index(
+                        parent_path.parent_depth(),
+                        parent_path.parent_ordinal(),
+                    )
+                    .map_err(ApplyUpdatePathError::LibraryError)?,
+                    parent_path.delivery().to_vec(),
+                )
+                .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+                let ciphertext =
+                    hybrid_path_secret::HybridPathCiphertext::from_commit_authenticated_bytes(
+                        delivery.canonical_bytes(),
+                    )
+                    .map_err(|_| ApplyUpdatePathError::UnableToDecrypt)?;
+                let node_recipient_index =
+                    if recipient_resolution_node.0 == expected_nodes.len() as u8 {
+                        recipient_resolution_node.1
+                    } else {
+                        crate::experimental_hybrid::quaternary_parent_node_index(
+                            recipient_resolution_node.0,
+                            recipient_resolution_node.1,
+                        )
+                        .map_err(ApplyUpdatePathError::LibraryError)?
+                    };
+                // The sender can address this receiver through either its
+                // retained quaternary resolution node or its direct leaf
+                // fallback. Trying every recipient index in the ciphertext
+                // here makes native quaternary delivery quadratic in the
+                // group size and attempts unrelated private keys against
+                // unrelated recipient records.
+                let mut recipient_indexes = if node_recipient_index == recipient_leaf_ordinal {
+                    vec![recipient_leaf_ordinal]
+                } else {
+                    vec![node_recipient_index, recipient_leaf_ordinal]
+                };
+                // Old binary TreeCover fallback recipients use the high bit
+                // and carry their binary depth/ordinal below it. Only these
+                // compact fallback entries are additionally considered; the
+                // receiver never scans unrelated leaf or quaternary records.
+                recipient_indexes.extend(
+                    ciphertext
+                        .recipients()
+                        .iter()
+                        .map(|record| record.recipient_node_index().as_u32())
+                        .filter(|recipient_index| recipient_index & 0x8000_0000 != 0),
+                );
+                recipient_indexes.sort_unstable();
+                recipient_indexes.dedup();
+                let opened_secret = recipient_indexes
+                    .into_iter()
+                    .find_map(|recipient_index| {
+                        owned_keys.iter().find_map(|keypair| {
+                            let mkyber_private =
+                                keypair.experimental_mkyber_private_key().ok().flatten()?;
+                            let classical_private = ClassicalHpkePrivateKey::from_bytes(
+                                keypair.private_key().classical_private_key(),
+                            )
+                            .ok()?;
+                            open_hybrid_path_level_with_provider(
+                                &ForkClassicalHpkeProvider::default(),
+                                &EducationalMkyber512Reference,
+                                &context,
+                                &ciphertext,
+                                &HybridPathRecipientPrivate::new(
+                                    RecipientNodeIndex::new(recipient_index),
+                                    mkyber_private,
+                                    classical_private,
+                                ),
+                            )
+                            .ok()
+                        })
+                    })
+                    .ok_or(ApplyUpdatePathError::UnableToDecrypt)?;
+                let mut current_secret =
+                    PathSecret::from(Secret::from_slice(opened_secret.as_bytes()));
+                let mut quaternary_keypairs = Vec::with_capacity(divergence + 1);
+                for index in (0..=divergence).rev() {
+                    let (depth, ordinal) = expected_nodes[index];
+                    let keypair = current_secret
+                        .derive_experimental_quaternary_parent_keypair(
+                            crypto,
+                            ciphersuite,
+                            parent_mkyber_key.domain(),
+                            expected_tree_version,
+                            depth,
+                            ordinal,
+                        )
+                        .map_err(ApplyUpdatePathError::LibraryError)?;
+                    let expected_public = params
+                        .experimental_quaternary_parent_paths
+                        .get(index)
+                        .ok_or(ApplyUpdatePathError::UnableToDecrypt)?
+                        .public_key();
+                    if keypair.public_key() != expected_public {
+                        return Err(ApplyUpdatePathError::PathMismatch);
+                    }
+                    quaternary_keypairs.push(keypair);
+                    if index != 0 {
+                        current_secret = current_secret
+                            .derive_path_secret(crypto, ciphersuite)
+                            .map_err(ApplyUpdatePathError::LibraryError)?;
+                    }
+                }
+                quaternary_keypairs.reverse();
+                let root_secret = current_secret;
+                if params.update_path.is_empty() {
+                    let commit_secret: CommitSecret = root_secret
+                        .derive_path_secret(crypto, ciphersuite)
+                        .map_err(ApplyUpdatePathError::LibraryError)?
+                        .into();
+                    return Ok((Vec::new(), commit_secret, quaternary_keypairs));
+                }
+                let root_index = self
+                    .filtered_direct_path(params.sender_leaf_index)
+                    .last()
+                    .copied()
+                    .ok_or(ApplyUpdatePathError::PathLengthMismatch)?;
+                let (derived_path, _, keypairs, commit_secret) = ParentNode::derive_path(
+                    crypto,
+                    ciphersuite,
+                    root_secret,
+                    vec![root_index],
+                    params
+                        .sender_leaf_encryption_key
+                        .experimental_mkyber_key()
+                        .map(|key| key.domain()),
+                )?;
+                let (_, derived_root) = derived_path
+                    .last()
+                    .ok_or(ApplyUpdatePathError::PathLengthMismatch)?;
+                let compact_root = params
+                    .update_path
+                    .last()
+                    .ok_or(ApplyUpdatePathError::PathLengthMismatch)?;
+                if compact_root.encryption_key() != derived_root.encryption_key() {
+                    return Err(ApplyUpdatePathError::PathMismatch);
+                }
+                return Ok((keypairs, commit_secret, quaternary_keypairs));
+            }
+            if params.experimental_quaternary_parent_paths.len() != 1 {
                 return Err(ApplyUpdatePathError::UnableToDecrypt);
             }
             let root_delivery = &params.experimental_quaternary_parent_paths[0];
@@ -262,6 +443,13 @@ impl TreeSyncDiff<'_> {
                     return Err(ApplyUpdatePathError::PathMismatch);
                 }
                 quaternary_keypairs.push(keypair);
+            }
+            if params.update_path.is_empty() {
+                let commit_secret: CommitSecret = root_secret
+                    .derive_path_secret(crypto, ciphersuite)
+                    .map_err(ApplyUpdatePathError::LibraryError)?
+                    .into();
+                return Ok((Vec::new(), commit_secret, quaternary_keypairs));
             }
             let root_index = self
                 .filtered_direct_path(params.sender_leaf_index)
@@ -667,6 +855,9 @@ pub(crate) struct DecryptPathParams<'a> {
     /// The one sender-path parent whose sibling resolution contains this receiver.
     #[cfg(feature = "experimental-hybrid")]
     pub(crate) recipient_quaternary_parent_node: Option<(u8, u32)>,
+    /// The co-path resolution node whose prior-epoch key this receiver owns.
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) recipient_quaternary_resolution_node: Option<(u8, u32)>,
     pub(crate) sender_leaf_index: LeafNodeIndex,
     pub(crate) exclusion_list: &'a HashSet<&'a LeafNodeIndex>,
     pub(crate) group_context: &'a [u8],

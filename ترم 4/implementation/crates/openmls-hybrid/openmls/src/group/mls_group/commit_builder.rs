@@ -4,7 +4,7 @@
 use std::{borrow::BorrowMut, marker::PhantomData};
 
 #[cfg(feature = "experimental-hybrid")]
-use arity_state::{ArityLifecycle, ArityState};
+use arity_state::{hash_canonical_public_bytes, ArityLifecycle, ArityState};
 use openmls_traits::{
     crypto::OpenMlsCrypto, random::OpenMlsRand, signatures::Signer, storage::StorageProvider as _,
 };
@@ -609,6 +609,18 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
             .group_epoch_secrets()
             .experimental_transition_mapping()
             .cloned();
+        #[cfg(feature = "experimental-hybrid")]
+        let retained_quaternary_public_nodes = group
+            .group_epoch_secrets()
+            .experimental_transition_node_state()
+            .map(|state| state.new_public_nodes())
+            .unwrap_or_default();
+        #[cfg(feature = "experimental-hybrid")]
+        let retained_old_treecover_public_nodes = group
+            .group_epoch_secrets()
+            .experimental_transition_node_state()
+            .map(|state| state.usable_old_public_nodes())
+            .unwrap_or_default();
 
         // Make a copy of the public group to apply proposals safely
         let mut diff = group.public_group.empty_diff();
@@ -665,6 +677,10 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
                         apply_proposals_values.extensions.clone(),
                         #[cfg(feature = "experimental-hybrid")]
                         frozen_transition_mapping.as_ref(),
+                        #[cfg(feature = "experimental-hybrid")]
+                        &retained_quaternary_public_nodes,
+                        #[cfg(feature = "experimental-hybrid")]
+                        &retained_old_treecover_public_nodes,
                     )?
                 } else {
                     diff.compute_path(
@@ -678,6 +694,10 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
                         apply_proposals_values.extensions.clone(),
                         #[cfg(feature = "experimental-hybrid")]
                         frozen_transition_mapping.as_ref(),
+                        #[cfg(feature = "experimental-hybrid")]
+                        &retained_quaternary_public_nodes,
+                        #[cfg(feature = "experimental-hybrid")]
+                        &retained_old_treecover_public_nodes,
                     )?
                 }
             } else {
@@ -957,7 +977,49 @@ impl<'a, G: BorrowMut<MlsGroup>> CommitBuilder<'a, LoadedPsks, G> {
                         .experimental_quaternary_parent_keypairs
                         .drain(..)
                         .collect::<Vec<_>>(),
+                    path_computation_result
+                        .experimental_quaternary_parent_public_nodes
+                        .drain(..)
+                        .collect::<Vec<_>>(),
                 )?;
+            } else if diff
+                .group_context()
+                .extensions()
+                .unknown(crate::experimental_hybrid::TREECOVER_RETIREMENT_EVIDENCE_EXTENSION_TYPE)
+                .is_some()
+            {
+                let root_keypair = path_computation_result
+                    .experimental_quaternary_parent_keypairs
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| {
+                        LibraryError::custom("native quaternary retirement has no root key pair")
+                    })?;
+                let mapping = group
+                    .group_epoch_secrets()
+                    .experimental_transition_mapping()
+                    .ok_or_else(|| {
+                        LibraryError::custom("native quaternary retirement has no frozen mapping")
+                    })?;
+                let mapping_hash = hash_canonical_public_bytes(
+                    &mapping
+                        .canonical_bytes()
+                        .map_err(|_| LibraryError::custom("retirement mapping is invalid"))?,
+                );
+                let serialized_context = diff
+                    .group_context()
+                    .tls_serialize_detached()
+                    .map_err(LibraryError::missing_bound_check)?;
+                provisional_group_epoch_secrets
+                    .activate_experimental_retired_quaternary_epoch_secret(
+                        crypto,
+                        ciphersuite,
+                        &serialized_context,
+                        diff.group_context().epoch().as_u64(),
+                        &arity_state,
+                        mapping_hash,
+                        root_keypair,
+                    )?;
             }
         }
 

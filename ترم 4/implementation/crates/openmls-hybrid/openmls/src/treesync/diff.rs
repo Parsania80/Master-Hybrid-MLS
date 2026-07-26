@@ -403,6 +403,50 @@ impl TreeSyncDiff<'_> {
         Ok((update_path_nodes, keypairs, commit_secret))
     }
 
+    /// Replaces only the sender leaf for a native quaternary UpdatePath.
+    ///
+    /// Binary parent nodes are deliberately blanked instead of being
+    /// regenerated.  They are no longer protocol authority once the
+    /// quaternary transition is active; retained old-tree keys live in the
+    /// transition delivery envelope.
+    #[cfg(feature = "experimental-hybrid")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn apply_own_quaternary_update_leaf(
+        &mut self,
+        rand: &impl OpenMlsRand,
+        crypto: &impl OpenMlsCrypto,
+        signer: &impl Signer,
+        ciphersuite: Ciphersuite,
+        commit_type: &CommitType,
+        group_id: GroupId,
+        leaf_index: LeafNodeIndex,
+        leaf_node_params: UpdateLeafNodeParams,
+        quaternary_parent_hash: &[u8],
+    ) -> Result<EncryptionKeyPair, TreeSyncAddLeaf> {
+        if let CommitType::External(_) = commit_type {
+            let leaf_node = LeafNode::new_placeholder();
+            self.add_leaf(leaf_node)?;
+        }
+        let domain = self
+            .leaf(leaf_index)
+            .and_then(|leaf| leaf.encryption_key().experimental_mkyber_key())
+            .map(|key| key.domain());
+        let (leaf_node, leaf_keypair) = LeafNode::new_with_parent_hash(
+            rand,
+            crypto,
+            ciphersuite,
+            quaternary_parent_hash,
+            leaf_node_params,
+            group_id,
+            leaf_index,
+            signer,
+            domain,
+        )
+        .map_err(TreeSyncAddLeaf::LibraryError)?;
+        self.update_leaf(leaf_node, leaf_index);
+        Ok(leaf_keypair)
+    }
+
     /// Set the given path as the direct path of the `sender_leaf_index` and
     /// replace the [`LeafNode`] in the corresponding leaf with the given one.
     ///
@@ -416,6 +460,44 @@ impl TreeSyncDiff<'_> {
         update_path: &UpdatePath,
     ) -> Result<(), ApplyUpdatePathError> {
         let path = update_path.nodes();
+
+        #[cfg(feature = "experimental-hybrid")]
+        if path.is_empty()
+            && !update_path
+                .experimental_quaternary_parent_paths()
+                .is_empty()
+        {
+            let parent_hash = crate::experimental_hybrid::quaternary_path_parent_hash(
+                crypto,
+                ciphersuite,
+                update_path.experimental_quaternary_parent_paths(),
+            )
+            .map_err(ApplyUpdatePathError::LibraryError)?;
+            let leaf_node_parent_hash = update_path
+                .leaf_node()
+                .parent_hash()
+                .ok_or(ApplyUpdatePathError::MissingParentHash)?;
+            if leaf_node_parent_hash != parent_hash {
+                return Err(ApplyUpdatePathError::PathMismatch);
+            }
+            if self.diff.leaf(sender_leaf_index).node().is_none()
+                || sender_leaf_index.u32() >= self.leaf_count()
+            {
+                let new_leaf_index = self.add_leaf(update_path.leaf_node().clone()).map_err(
+                    |error| match error {
+                        TreeSyncAddLeaf::LibraryError(error) => {
+                            ApplyUpdatePathError::LibraryError(error)
+                        }
+                        TreeSyncAddLeaf::TreeFull => ApplyUpdatePathError::TreeFull,
+                    },
+                )?;
+                if sender_leaf_index != new_leaf_index {
+                    return Err(ApplyUpdatePathError::InconsistentSenderIndex);
+                }
+            }
+            self.update_leaf(update_path.leaf_node().clone(), sender_leaf_index);
+            return Ok(());
+        }
 
         // If the committer is a `NewMemberCommit`, we have to add the
         // leaf to the tree before we can apply an update path. This is

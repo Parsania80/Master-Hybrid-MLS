@@ -27,7 +27,7 @@ use experimental_mls_adapter::{
 };
 
 /// Version of the public delivery-health simulation schema.
-pub const DELIVERY_HEALTH_SCHEMA_VERSION: u16 = 5;
+pub const DELIVERY_HEALTH_SCHEMA_VERSION: u16 = 6;
 /// One-row summary CSV.
 pub const DELIVERY_HEALTH_SUMMARY_FILE_NAME: &str = "summary.csv";
 /// Ordered simulated Commit trace.
@@ -214,9 +214,9 @@ struct DeliveryHealthEvent {
     h_new_decimal: Option<String>,
     h_old_exact: Option<String>,
     h_old_decimal: Option<String>,
-    old_arity_bytes_sent: Option<u64>,
-    new_arity_bytes_sent: Option<u64>,
-    saving_new_minus_old_bytes: Option<i64>,
+    real_new_arity_probe_bytes: Option<u64>,
+    real_old_arity_probe_bytes: Option<u64>,
+    real_probe_saving_new_minus_old_bytes: Option<i64>,
     bytes_sent: Option<u64>,
     retirement_condition: &'static str,
 }
@@ -236,7 +236,6 @@ struct DeliveryHealthSummary {
     update_commit_count: u32,
     remove_commit_count: u32,
     transition_commit_sequence: u32,
-    modeled_transition_delivery_bytes: u64,
     full_transition_commit_bytes_state: &'static str,
     retirement_condition_met: bool,
     retirement_after_impactful_commit: Option<u32>,
@@ -312,11 +311,15 @@ fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, Deliv
             h_new_decimal: None,
             h_old_exact: None,
             h_old_decimal: None,
-            old_arity_bytes_sent: Some(observation.old_arity_modeled_bytes),
-            new_arity_bytes_sent: Some(observation.new_arity_modeled_bytes),
-            saving_new_minus_old_bytes: Some(observation.saving_new_minus_old_bytes),
+            real_new_arity_probe_bytes: observation.new_arity_real_probe_bytes,
+            real_old_arity_probe_bytes: observation.old_arity_real_probe_bytes,
+            real_probe_saving_new_minus_old_bytes: observation
+                .real_probe_saving_new_minus_old_bytes,
             bytes_sent: Some(observation.emitted_commit_bytes),
-            retirement_condition: saving_decision(observation.saving_new_minus_old_bytes),
+            retirement_condition: observation
+                .real_probe_saving_new_minus_old_bytes
+                .map(real_probe_decision)
+                .unwrap_or("Unavailable"),
         });
     }
     let transition_health = execution.transition.health;
@@ -341,9 +344,9 @@ fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, Deliv
         h_new_decimal: Some(fraction_decimal(transition_health.h_new)),
         h_old_exact: Some(fraction_text(transition_health.h_old)),
         h_old_decimal: Some(fraction_decimal(transition_health.h_old)),
-        old_arity_bytes_sent: None,
-        new_arity_bytes_sent: None,
-        saving_new_minus_old_bytes: None,
+        real_new_arity_probe_bytes: None,
+        real_old_arity_probe_bytes: None,
+        real_probe_saving_new_minus_old_bytes: None,
         bytes_sent: Some(execution.transition.emitted_commit_bytes),
         retirement_condition: "NotEvaluatedAtTransition",
     });
@@ -375,9 +378,9 @@ fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, Deliv
             h_new_decimal: Some(fraction_decimal(health.h_new)),
             h_old_exact: Some(fraction_text(health.h_old)),
             h_old_decimal: Some(fraction_decimal(health.h_old)),
-            old_arity_bytes_sent: None,
-            new_arity_bytes_sent: None,
-            saving_new_minus_old_bytes: None,
+            real_new_arity_probe_bytes: None,
+            real_old_arity_probe_bytes: None,
+            real_probe_saving_new_minus_old_bytes: None,
             bytes_sent: Some(observation.emitted_commit_bytes),
             retirement_condition: retirement_trigger_text_flags(
                 health.retire_new,
@@ -422,9 +425,9 @@ fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, Deliv
         h_new_decimal: Some(fraction_decimal(retirement_health.h_new)),
         h_old_exact: Some(fraction_text(retirement_health.h_old)),
         h_old_decimal: Some(fraction_decimal(retirement_health.h_old)),
-        old_arity_bytes_sent: None,
-        new_arity_bytes_sent: None,
-        saving_new_minus_old_bytes: None,
+        real_new_arity_probe_bytes: None,
+        real_old_arity_probe_bytes: None,
+        real_probe_saving_new_minus_old_bytes: None,
         bytes_sent: Some(retirement.emitted_commit_bytes),
         retirement_condition: "AuthenticatedRetirementCommitAccepted",
     });
@@ -469,7 +472,6 @@ fn simulate_real(config: DeliveryHealthConfig) -> Result<SimulationResult, Deliv
             update_commit_count,
             remove_commit_count,
             transition_commit_sequence: execution.transition.sequence,
-            modeled_transition_delivery_bytes: execution.transition.emitted_commit_bytes,
             full_transition_commit_bytes_state: "ObservedRealForkCommitBytes",
             retirement_condition_met: true,
             retirement_after_impactful_commit: Some(retirement.evidence.impactful_commit_count()),
@@ -587,9 +589,9 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             h_new_decimal: None,
             h_old_exact: None,
             h_old_decimal: None,
-            old_arity_bytes_sent: Some(old_arity_bytes),
-            new_arity_bytes_sent: Some(new_arity_bytes),
-            saving_new_minus_old_bytes: Some(saving),
+            real_new_arity_probe_bytes: None,
+            real_old_arity_probe_bytes: None,
+            real_probe_saving_new_minus_old_bytes: None,
             bytes_sent: Some(old_arity_bytes),
             retirement_condition: "NewArityWins",
         });
@@ -709,7 +711,6 @@ fn simulate(config: DeliveryHealthConfig) -> Result<SimulationResult, DeliveryHe
             update_commit_count: update_count,
             remove_commit_count: remove_count,
             transition_commit_sequence: transition_sequence,
-            modeled_transition_delivery_bytes: transition_delivery_bytes,
             full_transition_commit_bytes_state: "UnavailableSimulationHasNoFullMlsCommit",
             retirement_condition_met: retirement_after.is_some(),
             retirement_after_impactful_commit: retirement_after,
@@ -1111,9 +1112,9 @@ fn measured_event(
         h_new_decimal: Some(counts.h_new.decimal()),
         h_old_exact: Some(counts.h_old.text()),
         h_old_decimal: Some(counts.h_old.decimal()),
-        old_arity_bytes_sent: None,
-        new_arity_bytes_sent: None,
-        saving_new_minus_old_bytes: None,
+        real_new_arity_probe_bytes: None,
+        real_old_arity_probe_bytes: None,
+        real_probe_saving_new_minus_old_bytes: None,
         bytes_sent: Some(bytes_sent),
         retirement_condition: facts.retirement_condition,
     })
@@ -1144,13 +1145,13 @@ fn checked_next(value: u32) -> Result<u32, DeliveryHealthError> {
     value.checked_add(1).ok_or(DeliveryHealthError::Overflow)
 }
 
-const fn saving_decision(saving_new_minus_old_bytes: i64) -> &'static str {
+const fn real_probe_decision(saving_new_minus_old_bytes: i64) -> &'static str {
     if saving_new_minus_old_bytes < 0 {
         "NewArityWins"
     } else if saving_new_minus_old_bytes > 0 {
         "OldArityWins"
     } else {
-        "EqualModeledBytes"
+        "EqualRealBytes"
     }
 }
 
@@ -1288,10 +1289,10 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     .expect("string write");
 
     writeln!(document, "## Pre-transition byte comparison\n").expect("string write");
-    writeln!(document, "The old/new comparison uses `Bhealthy(d,n) = [1504 + 80(d - 1)] * ceil(log_d(n))`. Negative saving means the target arity has the smaller healthy-path model. `Actual emitted Commit bytes` separately records the full serialized binary Add/Update/Remove Commit and does not enter this modeled comparison.\n").expect("string write");
+    writeln!(document, "The byte comparison uses observed complete serialized Commit wires. `Actual emitted binary Commit bytes` records the live binary Add/Update/Remove Commit. For each row, `Matched fresh binary probe Commit bytes` records a fresh binary Commit with the same active-member count, committer ordinal, operation, and removal target where applicable. `Real quaternary probe Commit bytes` is the authenticated fresh quaternary probe; Add/Remove counterfactual probes remain unavailable. `Real saving` is quaternary minus matched fresh binary, so a negative value means the quaternary Commit is smaller. Before measured Updates, both fresh probes populate their occupied internal nodes; warm-up bytes are excluded. After transition the quaternary tree is authoritative: its CommitSecret and GroupContext tree hash are derived from the quaternary root, the ordinary binary UpdatePath-node vector is empty, and the wire carries exactly `ceil(log4(active clients))` quaternary parent records (four at 128 clients). Retained binary TreeCover values are delivery fallback only and are erased by authenticated retirement. The probes are observed wire data, but they are not merged into the live binary workload state.\n").expect("string write");
     writeln!(
         document,
-        "| Commit | Operation | Committer node index | Active clients | Actual emitted Commit bytes | Modeled old-arity bytes | Modeled new-arity bytes | Saving (new - old) | Decision |\n|---:|---|---:|---:|---:|---:|---:|---:|---|"
+        "| Commit | Operation | Committer node index | Active clients | Actual emitted binary Commit bytes | Real quaternary probe Commit bytes | Matched fresh binary probe Commit bytes | Real saving | Real decision |\n|---:|---|---:|---:|---:|---:|---:|---:|---|"
     )
     .expect("string write");
     for event in result
@@ -1307,9 +1308,9 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
             event.committer_target_node_index,
             event.active_member_count,
             optional_u64(event.bytes_sent),
-            optional_u64(event.old_arity_bytes_sent),
-            optional_u64(event.new_arity_bytes_sent),
-            optional_i64(event.saving_new_minus_old_bytes),
+            optional_u64(event.real_new_arity_probe_bytes),
+            optional_u64(event.real_old_arity_probe_bytes),
+            optional_i64(event.real_probe_saving_new_minus_old_bytes),
             event.retirement_condition,
         )
         .expect("string write");
@@ -1323,11 +1324,10 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     writeln!(document, "\n## Transition cost\n").expect("string write");
     writeln!(
         document,
-        "| Transition Commit | Committer node index | C_real delivery targets | Modelled transition delivery bytes | Full MLS transition Commit bytes |\n|---:|---:|---:|---:|---|\n| {} | {} | {} | {} | {} |\n",
+        "| Transition Commit | Committer node index | C_real delivery targets | Full MLS transition Commit bytes |\n|---:|---:|---:|---|\n| {} | {} | {} | {} |\n",
         summary.transition_commit_sequence,
         transition.committer_target_node_index,
         optional_u32(transition.c_real),
-        summary.modeled_transition_delivery_bytes,
         summary.full_transition_commit_bytes_state,
     )
     .expect("string write");
@@ -1390,7 +1390,6 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     writeln!(document, "- `C_ideal` counts the non-empty target-tree sibling nodes when every required internal value is usable.").expect("string write");
     writeln!(document, "- The new tree starts with no usable internal values. An `update` populates the target-tree internal nodes on its committer path. A `remove` invalidates old and new direct-path ancestors known by the removed member, removes that client, then refreshes the removing committer's new-tree path.").expect("string write");
     writeln!(document, "- Operation labels are `add`, `remove`, or `update`; binary operations are randomized across all three, while the post-transition frozen mapping safely permits only `remove` and `update`. A removal never selects its committer as the target.").expect("string write");
-    writeln!(document, "- Modelled delivery bytes use `744 × C_real + 132 × active clients`. They model the real delivery-target priority but are not emitted full MLS Commit bytes.").expect("string write");
     writeln!(document, "\n## Boundary\n").expect("string write");
     writeln!(document, "These rows are real experimental-fork observations. Each accepted Commit was authenticated, atomically merged, and followed by a ciphertext-free retained-availability snapshot. The final row is a signed authenticated retirement Commit; its transaction deletes the retained TreeCover key envelope and exposes only redacted deletion counts. This remains thesis-local experimental software, not an interoperability or production-security claim.").expect("string write");
 
@@ -1635,22 +1634,11 @@ mod tests {
         assert!(report.contains(
             "| Average C_new | Average C_old | Average C_real | Average h_newcost | Average h_oldcost | Average bytes sent |"
         ));
-        assert!(report.contains("Saving (new - old)"));
+        assert!(!report.contains("Modeled saving"));
+        assert!(report.contains("Real quaternary probe Commit bytes"));
+        assert!(report.contains("Matched fresh binary probe Commit bytes"));
         assert!(report.contains("h_newcost > 0.7"));
         assert!(report.contains("1/117 (0.008547)"));
         assert!(report.contains("10/13 (0.769231)"));
-        assert_eq!(
-            result.summary.modeled_transition_delivery_bytes,
-            modeled_delivery_bytes(
-                result
-                    .events
-                    .iter()
-                    .find(|event| event.phase == "transition")
-                    .and_then(|event| event.c_real)
-                    .expect("transition C_real"),
-                128
-            )
-            .expect("transition bytes")
-        );
     }
 }

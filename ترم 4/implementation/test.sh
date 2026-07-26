@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run one real, professor-facing 128-member three-mode protocol demonstration.
+# Run one real, professor-facing protocol demonstration.
 
 set -Eeuo pipefail
 
@@ -49,12 +49,12 @@ esac
 if [[ "$generate_delivery_health" == true ]]; then
     initial_arity=2
     target_arity=4
-    printf 'Initial MLS client number [64..128]: '
+    printf 'Initial MLS client number [64..256]: '
     IFS= read -r initial_members || fail 'could not read initial MLS client number'
     [[ "$initial_members" =~ ^[0-9]+$ ]] \
         || fail 'initial MLS client number must be an integer'
-    (( 10#$initial_members >= 64 && 10#$initial_members <= 128 )) \
-        || fail 'initial MLS client number must be between 64 and 128'
+    (( 10#$initial_members >= 64 && 10#$initial_members <= 256 )) \
+        || fail 'initial MLS client number must be between 64 and 256'
 fi
 
 default_run_name="professor-demo-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -136,7 +136,8 @@ if [[ "$generate_delivery_health" == true ]]; then
         "$initial_arity" "$target_arity" "$initial_members"
     printf 'Public random seed: 42; post-transition Commit limit: 128\n'
     printf 'Operations: random Add/Update/Remove before transition, then Update/Remove until retirement\n\n'
-    printf 'Minimum trace: 5 binary observations before transition; 5 post-transition Commits before retirement\n\n'
+    printf 'Minimum trace: 5 binary observations including an Update probe before transition; 5 post-transition Commits before retirement\n\n'
+    printf 'Healthy comparison setup: populate both binary and quaternary internal nodes; setup Commit bytes are excluded\n\n'
     run_step 'Run authenticated fork workload' env CARGO_BUILD_JOBS=1 CARGO_TERM_COLOR=never \
         nice -n 10 ionice -c 3 cargo run --quiet -p report --bin simulate_delivery_health \
         --release --locked --offline -- \

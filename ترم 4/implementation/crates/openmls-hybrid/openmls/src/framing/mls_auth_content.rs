@@ -118,6 +118,18 @@ impl AuthenticatedContent {
                     })?;
             metrics.record_delivery(ciphertext.recipients().len())?;
         }
+        for parent_path in path.experimental_quaternary_parent_paths() {
+            if parent_path.delivery().is_empty() {
+                continue;
+            }
+            parent_path.validate_version()?;
+            let ciphertext =
+                hybrid_path_secret::HybridPathCiphertext::from_commit_authenticated_bytes(
+                    parent_path.delivery(),
+                )
+                .map_err(|_| LibraryError::custom("invalid emitted quaternary hybrid delivery"))?;
+            metrics.record_delivery(ciphertext.recipients().len())?;
+        }
         Ok(metrics)
     }
 
@@ -159,6 +171,9 @@ impl AuthenticatedContent {
             ));
         }
         for parent_path in path.experimental_quaternary_parent_paths() {
+            if parent_path.delivery().is_empty() {
+                continue;
+            }
             parent_path.validate_version()?;
             let ciphertext =
                 hybrid_path_secret::HybridPathCiphertext::from_commit_authenticated_bytes(
@@ -178,7 +193,13 @@ impl AuthenticatedContent {
                 })?,
             ));
         }
-        Ok(ExperimentalHybridCommitTopology::new(recipient_sets))
+        Ok(ExperimentalHybridCommitTopology::new(
+            recipient_sets,
+            u32::try_from(path.nodes().len())
+                .map_err(|_| LibraryError::custom("binary path-node count overflowed"))?,
+            u32::try_from(path.experimental_quaternary_parent_paths().len())
+                .map_err(|_| LibraryError::custom("quaternary path-node count overflowed"))?,
+        ))
     }
 
     /// Convenience function for creating a [`VerifiableAuthenticatedContent`].

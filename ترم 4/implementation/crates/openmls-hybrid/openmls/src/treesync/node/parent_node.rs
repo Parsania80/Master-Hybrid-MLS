@@ -84,6 +84,18 @@ pub(crate) struct ExperimentalQuaternaryParentPosition {
 }
 
 impl PlainUpdatePathNode {
+    /// Builds one native quaternary path node from its coordinate-derived
+    /// public key and path secret.  Unlike the historical compact carrier,
+    /// this node is never converted into a binary [`UpdatePathNode`].
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn native_quaternary(public_key: EncryptionKey, path_secret: PathSecret) -> Self {
+        Self {
+            node_index: 0,
+            public_key,
+            path_secret,
+        }
+    }
+
     /// Emits an authenticated public-only binary node for the compact
     /// experimental quaternary carrier. Its path secret is replaced by the
     /// signed quaternary-root delivery.
@@ -94,46 +106,6 @@ impl PlainUpdatePathNode {
             encrypted_path_secrets: Vec::new(),
             experimental_hybrid_delivery: None,
         }
-    }
-
-    /// Derives a deterministic quaternary parent pair from the binary root
-    /// path secret without adding a second ciphertext delivery.
-    #[cfg(feature = "experimental-hybrid")]
-    pub(crate) fn derive_compact_quaternary_parent_keypair(
-        &self,
-        crypto: &impl OpenMlsCrypto,
-        ciphersuite: Ciphersuite,
-        position: ExperimentalQuaternaryParentPosition,
-    ) -> Result<EncryptionKeyPair, LibraryError> {
-        if position.depth == 0 && position.ordinal == 0 {
-            return self
-                .path_secret
-                .derive_experimental_quaternary_parent_keypair(
-                    crypto,
-                    ciphersuite,
-                    position.domain,
-                    position.tree_version,
-                    position.depth,
-                    position.ordinal,
-                );
-        }
-        self.path_secret
-            .derive_experimental_quaternary_parent_secret(
-                crypto,
-                ciphersuite,
-                position.domain,
-                position.tree_version,
-                position.depth,
-                position.ordinal,
-            )?
-            .derive_experimental_quaternary_parent_keypair(
-                crypto,
-                ciphersuite,
-                position.domain,
-                position.tree_version,
-                position.depth,
-                position.ordinal,
-            )
     }
 
     /// Encrypt this node and return the resulting [`UpdatePathNode`].
@@ -235,40 +207,23 @@ impl PlainUpdatePathNode {
             })
     }
 
-    /// Encrypts one authenticated experimental quaternary parent secret
-    /// to every non-committer MLS leaf. The payload is intentionally a
-    /// feature-gated UpdatePath field, so the enclosing Commit signature
-    /// authenticates both the public parent key and recipient ciphertext.
+    /// Encrypts a quaternary parent secret that was selected by the caller's
+    /// TreeKEM path derivation. This is used for node-scoped co-path delivery.
     #[cfg(feature = "experimental-hybrid")]
-    pub(crate) fn encrypt_experimental_quaternary_parent(
+    pub(crate) fn encrypt_experimental_quaternary_parent_from_secret(
         &self,
         crypto: &impl OpenMlsCrypto,
         ciphersuite: Ciphersuite,
         recipient_leaf_keys: &[(u32, EncryptionKey)],
         group_context: &[u8],
         position: ExperimentalQuaternaryParentPosition,
+        parent_secret_source: &PathSecret,
     ) -> Result<(ExperimentalQuaternaryParentPath, EncryptionKeyPair), LibraryError> {
         if recipient_leaf_keys.is_empty() {
             return Err(LibraryError::custom(
                 "experimental quaternary parent has no recipient leaves",
             ));
         }
-        let parent_path_secret = if position.depth == 0 && position.ordinal == 0 {
-            None
-        } else {
-            Some(
-                self.path_secret
-                    .derive_experimental_quaternary_parent_secret(
-                        crypto,
-                        ciphersuite,
-                        position.domain,
-                        position.tree_version,
-                        position.depth,
-                        position.ordinal,
-                    )?,
-            )
-        };
-        let parent_secret_source = parent_path_secret.as_ref().unwrap_or(&self.path_secret);
         let parent_keypair = parent_secret_source.derive_experimental_quaternary_parent_keypair(
             crypto,
             ciphersuite,
@@ -343,7 +298,7 @@ impl PlainUpdatePathNode {
     }
 
     /// Return a reference to the `path_secret` of this node.
-    pub(in crate::treesync) fn path_secret(&self) -> &PathSecret {
+    pub(crate) fn path_secret(&self) -> &PathSecret {
         &self.path_secret
     }
 

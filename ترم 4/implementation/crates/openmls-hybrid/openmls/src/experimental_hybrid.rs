@@ -18,6 +18,7 @@ use mkyber::{
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
+use tls_codec::Serialize as TlsSerializeTrait;
 use tls_codec::{TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize};
 use zeroize::Zeroize;
 
@@ -29,8 +30,12 @@ use crate::{
     },
     group::GroupContext,
     key_packages::KeyPackage,
-    treesync::node::leaf_node::Capabilities,
+    treesync::{
+        node::{encryption_keys::EncryptionKey, leaf_node::Capabilities},
+        treekem::ExperimentalQuaternaryParentPath,
+    },
 };
+use adaptive_tree::BinaryToQuaternaryLeafMapping;
 use tls_codec::Deserialize as TlsDeserializeTrait;
 
 /// Private-use GroupContext extension carrying authenticated adaptive-tree state.
@@ -52,6 +57,94 @@ pub const TREECOVER_RETIREMENT_EVIDENCE_VERSION: u16 = 1;
 
 /// Exact byte length of the fixed version-1 retirement evidence.
 pub const TREECOVER_RETIREMENT_EVIDENCE_BYTES: usize = 63;
+
+/// Computes the parent hash signed by a native-quaternary Commit leaf.
+///
+/// The input is the complete root-to-leaf quaternary public path.  No binary
+/// TreeKEM parent is included in this binding.
+pub(crate) fn quaternary_path_parent_hash(
+    crypto: &impl OpenMlsCrypto,
+    ciphersuite: Ciphersuite,
+    parent_paths: &[ExperimentalQuaternaryParentPath],
+) -> Result<Vec<u8>, LibraryError> {
+    if parent_paths.is_empty() {
+        return Err(LibraryError::custom(
+            "native quaternary path must contain a parent",
+        ));
+    }
+    let mut input = b"OpenMLS native quaternary parent hash v1".to_vec();
+    input.extend_from_slice(&(parent_paths.len() as u32).to_be_bytes());
+    for parent in parent_paths {
+        input.extend_from_slice(&parent.tree_version().to_be_bytes());
+        input.push(parent.parent_depth());
+        input.extend_from_slice(&parent.parent_ordinal().to_be_bytes());
+        let public_key = parent
+            .public_key()
+            .tls_serialize_detached()
+            .map_err(LibraryError::missing_bound_check)?;
+        input.extend_from_slice(&(public_key.len() as u32).to_be_bytes());
+        input.extend_from_slice(&public_key);
+    }
+    crypto
+        .hash(ciphersuite.hash_algorithm(), &input)
+        .map(|hash| hash.as_slice().to_vec())
+        .map_err(LibraryError::unexpected_crypto_error)
+}
+
+/// Computes the authoritative native-quaternary tree hash for the prospective
+/// epoch.  It binds the frozen leaf mapping, every occupied MLS leaf, and the
+/// complete retained quaternary public-node set after path replacement.
+pub(crate) fn quaternary_authority_tree_hash(
+    crypto: &impl OpenMlsCrypto,
+    ciphersuite: Ciphersuite,
+    tree_version: u32,
+    mapping: &BinaryToQuaternaryLeafMapping,
+    mut leaves: Vec<(u32, Vec<u8>, EncryptionKey)>,
+    mut parent_nodes: Vec<(u8, u32, EncryptionKey)>,
+) -> Result<Vec<u8>, LibraryError> {
+    let mapping_bytes = mapping
+        .canonical_bytes()
+        .map_err(|_| LibraryError::custom("native quaternary mapping encoding failed"))?;
+    leaves.sort_by_key(|(leaf_index, _, _)| *leaf_index);
+    parent_nodes.sort_by_key(|(depth, ordinal, _)| (*depth, *ordinal));
+    if parent_nodes
+        .windows(2)
+        .any(|nodes| (nodes[0].0, nodes[0].1) == (nodes[1].0, nodes[1].1))
+    {
+        return Err(LibraryError::custom(
+            "native quaternary authority contains duplicate parent coordinates",
+        ));
+    }
+    let mut input = b"OpenMLS native quaternary tree hash v1".to_vec();
+    input.extend_from_slice(&tree_version.to_be_bytes());
+    input.extend_from_slice(&(mapping_bytes.len() as u32).to_be_bytes());
+    input.extend_from_slice(&mapping_bytes);
+    input.extend_from_slice(&(leaves.len() as u32).to_be_bytes());
+    for (leaf_index, member_id, public_key) in leaves {
+        input.extend_from_slice(&leaf_index.to_be_bytes());
+        input.extend_from_slice(&(member_id.len() as u32).to_be_bytes());
+        input.extend_from_slice(&member_id);
+        let public_key = public_key
+            .tls_serialize_detached()
+            .map_err(LibraryError::missing_bound_check)?;
+        input.extend_from_slice(&(public_key.len() as u32).to_be_bytes());
+        input.extend_from_slice(&public_key);
+    }
+    input.extend_from_slice(&(parent_nodes.len() as u32).to_be_bytes());
+    for (depth, ordinal, public_key) in parent_nodes {
+        input.push(depth);
+        input.extend_from_slice(&ordinal.to_be_bytes());
+        let public_key = public_key
+            .tls_serialize_detached()
+            .map_err(LibraryError::missing_bound_check)?;
+        input.extend_from_slice(&(public_key.len() as u32).to_be_bytes());
+        input.extend_from_slice(&public_key);
+    }
+    crypto
+        .hash(ciphersuite.hash_algorithm(), &input)
+        .map(|hash| hash.as_slice().to_vec())
+        .map_err(LibraryError::unexpected_crypto_error)
+}
 
 /// Supported canonical mKyber recipient-key extension value version.
 pub const MKYBER_RECIPIENT_KEY_MATERIAL_VERSION: u16 = 1;
@@ -748,16 +841,37 @@ impl ExperimentalHybridRecipientSet {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ExperimentalHybridCommitTopology {
     recipient_sets: Vec<ExperimentalHybridRecipientSet>,
+    binary_update_path_node_count: u32,
+    quaternary_update_path_node_count: u32,
 }
 
 impl ExperimentalHybridCommitTopology {
-    pub(crate) fn new(recipient_sets: Vec<ExperimentalHybridRecipientSet>) -> Self {
-        Self { recipient_sets }
+    pub(crate) fn new(
+        recipient_sets: Vec<ExperimentalHybridRecipientSet>,
+        binary_update_path_node_count: u32,
+        quaternary_update_path_node_count: u32,
+    ) -> Self {
+        Self {
+            recipient_sets,
+            binary_update_path_node_count,
+            quaternary_update_path_node_count,
+        }
     }
 
     /// Returns each path-level recipient set in authenticated wire order.
     pub fn recipient_sets(&self) -> &[ExperimentalHybridRecipientSet] {
         &self.recipient_sets
+    }
+
+    /// Returns the number of ordinary binary nodes serialized in UpdatePath.
+    pub const fn binary_update_path_node_count(&self) -> u32 {
+        self.binary_update_path_node_count
+    }
+
+    /// Returns the number of native quaternary parent records serialized in
+    /// UpdatePath, including public nodes that need no ciphertext recipients.
+    pub const fn quaternary_update_path_node_count(&self) -> u32 {
+        self.quaternary_update_path_node_count
     }
 }
 

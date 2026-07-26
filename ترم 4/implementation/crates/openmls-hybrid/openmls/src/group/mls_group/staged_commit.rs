@@ -37,7 +37,7 @@ use crate::{
     treesync::node::encryption_keys::EncryptionKeyPair,
 };
 #[cfg(feature = "experimental-hybrid")]
-use arity_state::{ArityLifecycle, ArityState};
+use arity_state::{hash_canonical_public_bytes, ArityLifecycle, ArityState};
 
 #[cfg(feature = "extensions-draft-08")]
 use super::proposal_store::{QueuedAppDataUpdateProposal, QueuedAppEphemeralProposal};
@@ -205,7 +205,7 @@ impl MlsGroup {
     pub(crate) fn stage_commit_with_app_data_updates(
         &self,
         mls_content: &AuthenticatedContent,
-        old_epoch_keypairs: Vec<EncryptionKeyPair>,
+        mut old_epoch_keypairs: Vec<EncryptionKeyPair>,
         leaf_node_keypairs: Vec<EncryptionKeyPair>,
         app_data_dict_updates: Option<AppDataUpdates>,
         provider: &impl OpenMlsProvider,
@@ -253,7 +253,7 @@ impl MlsGroup {
         proposal_queue: ProposalQueue,
         sender_index: LeafNodeIndex,
         mls_content: &AuthenticatedContent,
-        old_epoch_keypairs: Vec<EncryptionKeyPair>,
+        mut old_epoch_keypairs: Vec<EncryptionKeyPair>,
         leaf_node_keypairs: Vec<EncryptionKeyPair>,
         provider: &impl OpenMlsProvider,
     ) -> Result<StagedCommit, StageCommitError> {
@@ -261,6 +261,24 @@ impl MlsGroup {
         // Determine if Commit has a path
         #[cfg(feature = "experimental-hybrid")]
         let mut experimental_quaternary_parent_keypairs = Vec::new();
+        #[cfg(feature = "experimental-hybrid")]
+        if let Some(retained) = self
+            .group_epoch_secrets()
+            .experimental_transition_node_state()
+        {
+            for keypair in retained
+                .local_new_keypairs()
+                .into_iter()
+                .chain(retained.local_old_keypairs())
+            {
+                if !old_epoch_keypairs
+                    .iter()
+                    .any(|existing| existing.public_key() == keypair.public_key())
+                {
+                    old_epoch_keypairs.push(keypair);
+                }
+            }
+        }
         #[cfg(feature = "experimental-hybrid")]
         let retirement_path_uses_prior_context = {
             let prior_transitioning = self
@@ -293,6 +311,9 @@ impl MlsGroup {
         };
         let (commit_secret, new_keypairs, new_leaf_keypair_option, update_path_leaf_node) =
             if let Some(path) = commit.path.clone() {
+                #[cfg(feature = "experimental-hybrid")]
+                let native_quaternary_path = path.nodes().is_empty()
+                    && !path.experimental_quaternary_parent_paths().is_empty();
                 // Update the public group
                 // ValSem202: Path must be the right length
                 diff.apply_received_update_path(
@@ -304,10 +325,28 @@ impl MlsGroup {
 
                 #[cfg(feature = "experimental-hybrid")]
                 if !retirement_path_uses_prior_context {
-                    diff.update_group_context(
-                        provider.crypto(),
-                        apply_proposals_values.extensions.clone(),
-                    )?;
+                    if native_quaternary_path {
+                        let retained = self
+                            .group_epoch_secrets()
+                            .experimental_transition_node_state()
+                            .ok_or_else(|| {
+                                LibraryError::custom(
+                                    "native quaternary Commit lacks retained transition state",
+                                )
+                            })?;
+                        diff.update_group_context_with_quaternary_authority(
+                            provider.crypto(),
+                            apply_proposals_values.extensions.clone(),
+                            retained.mapping(),
+                            &retained.new_public_nodes(),
+                            &path,
+                        )?;
+                    } else {
+                        diff.update_group_context(
+                            provider.crypto(),
+                            apply_proposals_values.extensions.clone(),
+                        )?;
+                    }
                 }
                 #[cfg(not(feature = "experimental-hybrid"))]
                 diff.update_group_context(
@@ -349,10 +388,28 @@ impl MlsGroup {
                 )?;
                 #[cfg(feature = "experimental-hybrid")]
                 if retirement_path_uses_prior_context {
-                    diff.update_group_context(
-                        provider.crypto(),
-                        apply_proposals_values.extensions.clone(),
-                    )?;
+                    if native_quaternary_path {
+                        let retained = self
+                            .group_epoch_secrets()
+                            .experimental_transition_node_state()
+                            .ok_or_else(|| {
+                                LibraryError::custom(
+                                    "native quaternary retirement lacks retained transition state",
+                                )
+                            })?;
+                        diff.update_group_context_with_quaternary_authority(
+                            provider.crypto(),
+                            apply_proposals_values.extensions.clone(),
+                            retained.mapping(),
+                            &retained.new_public_nodes(),
+                            &path,
+                        )?;
+                    } else {
+                        diff.update_group_context(
+                            provider.crypto(),
+                            apply_proposals_values.extensions.clone(),
+                        )?;
+                    }
                 }
                 #[cfg(feature = "experimental-hybrid")]
                 {
@@ -464,6 +521,58 @@ impl MlsGroup {
                     diff.group_context().epoch().as_u64(),
                     &arity_state,
                     experimental_quaternary_parent_keypairs,
+                    commit
+                        .path
+                        .as_ref()
+                        .map(|path| {
+                            path.experimental_quaternary_parent_paths()
+                                .iter()
+                                .map(|parent| {
+                                    (
+                                        parent.parent_depth(),
+                                        parent.parent_ordinal(),
+                                        parent.public_key().clone(),
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                )?;
+            } else if diff
+                .group_context()
+                .extensions()
+                .unknown(crate::experimental_hybrid::TREECOVER_RETIREMENT_EVIDENCE_EXTENSION_TYPE)
+                .is_some()
+            {
+                let root_keypair = experimental_quaternary_parent_keypairs
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| {
+                        LibraryError::custom("native quaternary retirement has no root key pair")
+                    })?;
+                let mapping = self
+                    .group_epoch_secrets()
+                    .experimental_transition_mapping()
+                    .ok_or_else(|| {
+                        LibraryError::custom("native quaternary retirement has no frozen mapping")
+                    })?;
+                let mapping_hash = hash_canonical_public_bytes(
+                    &mapping
+                        .canonical_bytes()
+                        .map_err(|_| LibraryError::custom("retirement mapping is invalid"))?,
+                );
+                let serialized_context = diff
+                    .group_context()
+                    .tls_serialize_detached()
+                    .map_err(LibraryError::missing_bound_check)?;
+                provisional_group_secrets.activate_experimental_retired_quaternary_epoch_secret(
+                    provider.crypto(),
+                    self.ciphersuite(),
+                    &serialized_context,
+                    diff.group_context().epoch().as_u64(),
+                    &arity_state,
+                    mapping_hash,
+                    root_keypair,
                 )?;
             }
         }

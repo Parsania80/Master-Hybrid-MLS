@@ -471,6 +471,18 @@ impl MlsGroup {
         Provider::Storage: TransactionalStorageProvider<CURRENT_VERSION>,
     {
         let prior_epoch = self.epoch().as_u64();
+        let local_member_id = self
+            .own_leaf_node()
+            .map(|leaf| leaf.credential().serialized_content().to_vec())
+            .ok_or_else(|| LibraryError::custom("experimental local member leaf is missing"))?;
+        let committer_member_id = staged_commit
+            .update_path_leaf_node()
+            .map(|leaf| leaf.credential().serialized_content().to_vec())
+            .ok_or_else(|| {
+                LibraryError::custom(
+                    "experimental transition commit requires an authenticated UpdatePath",
+                )
+            })?;
         let prior_state = self.experimental_arity_state()?;
         let prior_mapping = self.experimental_transition_mapping()?;
         self.validate_experimental_binary_arity_state()?;
@@ -495,12 +507,28 @@ impl MlsGroup {
             &prior_mapping,
             &next_state,
         )?;
-        let retained_state = ExperimentalTransitionNodeState::new(
+        let mut retained_state = ExperimentalTransitionNodeState::new(
             &next_state,
             prior_mapping,
             old_tree_size,
             old_public_nodes,
             old_keypairs,
+        )?;
+        let current_member_ids = candidate
+            .members()
+            .map(|member| member.credential.serialized_content().to_vec())
+            .collect();
+        retained_state.reconcile_after_commit(
+            &next_state,
+            current_member_ids,
+            &local_member_id,
+            &committer_member_id,
+            candidate
+                .group_epoch_secrets()
+                .experimental_quaternary_parent_public_nodes()?,
+            candidate
+                .group_epoch_secrets()
+                .experimental_quaternary_parent_keypairs()?,
         )?;
         candidate
             .group_epoch_secrets
@@ -527,6 +555,20 @@ impl MlsGroup {
         Provider::Storage: TransactionalStorageProvider<CURRENT_VERSION>,
     {
         let prior_epoch = self.epoch().as_u64();
+        let local_member_id = self
+            .credential()
+            .map_err(MlsGroupStateError::from)?
+            .serialized_content()
+            .to_vec();
+        let committer_member_id = self
+            .pending_commit()
+            .and_then(StagedCommit::update_path_leaf_node)
+            .map(|leaf| leaf.credential().serialized_content().to_vec())
+            .ok_or_else(|| {
+                MlsGroupStateError::LibraryError(LibraryError::custom(
+                    "experimental transition pending commit requires an authenticated UpdatePath",
+                ))
+            })?;
         let prior_state = self
             .experimental_arity_state()
             .map_err(MlsGroupStateError::from)?;
@@ -566,7 +608,7 @@ impl MlsGroup {
                 &next_state,
             )
             .map_err(MlsGroupStateError::from)?;
-        let retained_state = ExperimentalTransitionNodeState::new(
+        let mut retained_state = ExperimentalTransitionNodeState::new(
             &next_state,
             prior_mapping,
             old_tree_size,
@@ -574,6 +616,26 @@ impl MlsGroup {
             old_keypairs,
         )
         .map_err(MlsGroupStateError::from)?;
+        let current_member_ids = candidate
+            .members()
+            .map(|member| member.credential.serialized_content().to_vec())
+            .collect();
+        retained_state
+            .reconcile_after_commit(
+                &next_state,
+                current_member_ids,
+                &local_member_id,
+                &committer_member_id,
+                candidate
+                    .group_epoch_secrets()
+                    .experimental_quaternary_parent_public_nodes()
+                    .map_err(MlsGroupStateError::from)?,
+                candidate
+                    .group_epoch_secrets()
+                    .experimental_quaternary_parent_keypairs()
+                    .map_err(MlsGroupStateError::from)?,
+            )
+            .map_err(MlsGroupStateError::from)?;
         candidate
             .group_epoch_secrets
             .install_experimental_transition_node_state(retained_state);
@@ -828,6 +890,10 @@ impl MlsGroup {
         Provider::Storage: TransactionalStorageProvider<CURRENT_VERSION>,
     {
         self.validate_experimental_quaternary_epoch_authority()?;
+        let local_member_id = self
+            .own_leaf_node()
+            .map(|leaf| leaf.credential().serialized_content().to_vec())
+            .ok_or_else(|| LibraryError::custom("experimental local member leaf is missing"))?;
         let self_removed = staged_commit.self_removed();
         let committer_member_id = staged_commit
             .update_path_leaf_node()
@@ -868,10 +934,15 @@ impl MlsGroup {
         let parent_keypairs = candidate
             .group_epoch_secrets()
             .experimental_quaternary_parent_keypairs()?;
+        let parent_public_nodes = candidate
+            .group_epoch_secrets()
+            .experimental_quaternary_parent_public_nodes()?;
         retained_state.reconcile_after_commit(
             &next_state,
             current_member_ids,
+            &local_member_id,
             &committer_member_id,
+            parent_public_nodes,
             parent_keypairs,
         )?;
         candidate
@@ -901,6 +972,11 @@ impl MlsGroup {
     {
         self.validate_experimental_quaternary_epoch_authority()
             .map_err(MlsGroupStateError::from)?;
+        let local_member_id = self
+            .credential()
+            .map_err(MlsGroupStateError::from)?
+            .serialized_content()
+            .to_vec();
         let committer_member_id = self
             .pending_commit()
             .and_then(StagedCommit::update_path_leaf_node)
@@ -945,11 +1021,17 @@ impl MlsGroup {
             .group_epoch_secrets()
             .experimental_quaternary_parent_keypairs()
             .map_err(MlsGroupStateError::from)?;
+        let parent_public_nodes = candidate
+            .group_epoch_secrets()
+            .experimental_quaternary_parent_public_nodes()
+            .map_err(MlsGroupStateError::from)?;
         retained_state
             .reconcile_after_commit(
                 &next_state,
                 current_member_ids,
+                &local_member_id,
                 &committer_member_id,
+                parent_public_nodes,
                 parent_keypairs,
             )
             .map_err(MlsGroupStateError::from)?;
@@ -1104,6 +1186,18 @@ impl MlsGroup {
             Error = Provider::StorageError,
         >,
     {
+        if self
+            .experimental_quaternary_epoch_secret_status()
+            .is_some_and(|status| {
+                status.epoch() == self.epoch().as_u64()
+                    && status.tree_version() == state.tree_version()
+                    && status.mapping_hash() == &mapping_hash
+            })
+        {
+            self.group_epoch_secrets()
+                .validate_experimental_quaternary_root_keypair()?;
+            return Ok(());
+        }
         let root_public = self
             .public_group
             .experimental_root_parent_value()

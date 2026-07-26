@@ -40,6 +40,8 @@ if errorlevel 1 (
     set "RUSTUP_HOME=E:\rustup-gnu"
     set "CARGO_TARGET_DIR=E:\cargo-target\master-hybrid-mls"
     set "CARGO_TOOLCHAIN_ARG=+1.93.1-x86_64-pc-windows-gnu"
+    set "GNU_TOOLCHAIN_ROOT=E:\rustup-gnu\toolchains\1.93.1-x86_64-pc-windows-gnu"
+    set "PATH=%GNU_TOOLCHAIN_ROOT%\lib\rustlib\x86_64-pc-windows-gnu\bin\self-contained;%PATH%"
     set "WINDOWS_RUST_MODE=GNU/MinGW from E:"
 )
 
@@ -58,11 +60,11 @@ exit /b 2
 :delivery_health
 set "INITIAL_ARITY=2"
 set "TARGET_ARITY=4"
-set /p "INITIAL_MEMBERS=Initial MLS client number [64..128]: "
+set /p "INITIAL_MEMBERS=Initial MLS client number [64..256]: "
 set "INITIAL_MEMBERS_ENV=%INITIAL_MEMBERS%"
-powershell.exe -NoProfile -Command "$value = $env:INITIAL_MEMBERS_ENV; if ($value -notmatch '^[0-9]+$' -or [int]$value -lt 64 -or [int]$value -gt 128) { exit 1 }"
+powershell.exe -NoProfile -Command "$value = $env:INITIAL_MEMBERS_ENV; if ($value -notmatch '^[0-9]+$' -or [int]$value -lt 64 -or [int]$value -gt 256) { exit 1 }"
 if errorlevel 1 (
-    echo test.bat: initial MLS client number must be an integer between 64 and 128. 1>&2
+    echo test.bat: initial MLS client number must be an integer between 64 and 256. 1>&2
     exit /b 2
 )
 
@@ -96,7 +98,8 @@ echo Report: %REPORT_DIR%\
 echo Arity: %INITIAL_ARITY% -^> %TARGET_ARITY%; initial clients: %INITIAL_MEMBERS%
 echo Public random seed: 42; post-transition Commit limit: 128
 echo Operations: random Add/Update/Remove before transition, then Update/Remove until retirement
-echo Minimum trace: 5 binary observations before transition; 5 post-transition Commits before retirement
+echo Minimum trace: 5 binary observations including an Update probe before transition; 5 post-transition Commits before retirement
+echo Healthy comparison setup: populate both binary and quaternary internal nodes; setup Commit bytes are excluded
 set /p "CONFIRM=Proceed? [y/N]: "
 if /I not "%CONFIRM%"=="y" if /I not "%CONFIRM%"=="yes" (
     echo Cancelled. No protocol command was run.

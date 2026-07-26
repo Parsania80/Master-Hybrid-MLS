@@ -1343,6 +1343,7 @@ impl GroupEpochSecrets {
         epoch: u64,
         state: &arity_state::ArityState,
         mut parent_keypairs: Vec<EncryptionKeyPair>,
+        mut parent_public_nodes: Vec<(u8, u32, EncryptionKey)>,
     ) -> Result<(), LibraryError> {
         state
             .validate()
@@ -1365,6 +1366,17 @@ impl GroupEpochSecrets {
         let root_keypair = parent_keypairs.first().ok_or_else(|| {
             LibraryError::custom("experimental quaternary authority requires parent key pairs")
         })?;
+        parent_public_nodes.sort_by_key(|(depth, ordinal, _)| (*depth, *ordinal));
+        if parent_public_nodes
+            .first()
+            .is_none_or(|(depth, ordinal, public_key)| {
+                (*depth, *ordinal) != (0, 0) || public_key != root_keypair.public_key()
+            })
+        {
+            return Err(LibraryError::custom(
+                "experimental quaternary public path lacks the matched root",
+            ));
+        }
         let public_mkyber_key = root_keypair
             .public_key()
             .experimental_mkyber_key()
@@ -1412,6 +1424,7 @@ impl GroupEpochSecrets {
             root_keypair: Some(parent_keypairs.remove(0)),
             root_public_key_hash,
             additional_parent_keypairs: parent_keypairs,
+            parent_public_nodes,
         });
         Ok(())
     }
@@ -1487,6 +1500,7 @@ impl GroupEpochSecrets {
             root_keypair: Some(root_keypair),
             root_public_key_hash,
             additional_parent_keypairs: Vec::new(),
+            parent_public_nodes: Vec::new(),
         });
         Ok(())
     }
@@ -1518,6 +1532,18 @@ impl GroupEpochSecrets {
         Ok(std::iter::once(root.clone())
             .chain(authority.additional_parent_keypairs.iter().cloned())
             .collect())
+    }
+
+    #[cfg(feature = "experimental-hybrid")]
+    pub(crate) fn experimental_quaternary_parent_public_nodes(
+        &self,
+    ) -> Result<Vec<(u8, u32, EncryptionKey)>, LibraryError> {
+        self.experimental_quaternary_epoch_secret
+            .as_ref()
+            .map(|authority| authority.parent_public_nodes.clone())
+            .ok_or_else(|| {
+                LibraryError::custom("experimental group has no quaternary epoch authority")
+            })
     }
 
     #[cfg(feature = "experimental-hybrid")]
@@ -1699,6 +1725,8 @@ struct ExperimentalQuaternaryEpochSecret {
     root_public_key_hash: [u8; 32],
     #[serde(default)]
     additional_parent_keypairs: Vec<EncryptionKeyPair>,
+    #[serde(default)]
+    parent_public_nodes: Vec<(u8, u32, EncryptionKey)>,
 }
 
 #[cfg(feature = "experimental-hybrid")]
@@ -1921,7 +1949,8 @@ struct RetainedOldNodeValue {
 struct RetainedNewNodeValue {
     depth: u8,
     ordinal: u32,
-    keypair: EncryptionKeyPair,
+    public_key: EncryptionKey,
+    local_keypair: Option<EncryptionKeyPair>,
 }
 
 #[cfg(feature = "experimental-hybrid")]
@@ -1935,6 +1964,28 @@ impl ExperimentalTransitionNodeState {
             .iter()
             .filter(|node| node.usable)
             .filter_map(|node| node.local_keypair.clone())
+            .collect()
+    }
+
+    pub(crate) fn local_new_keypairs(&self) -> Vec<EncryptionKeyPair> {
+        self.new_nodes
+            .iter()
+            .filter_map(|node| node.local_keypair.clone())
+            .collect()
+    }
+
+    pub(crate) fn new_public_nodes(&self) -> Vec<(u8, u32, EncryptionKey)> {
+        self.new_nodes
+            .iter()
+            .map(|node| (node.depth, node.ordinal, node.public_key.clone()))
+            .collect()
+    }
+
+    pub(crate) fn usable_old_public_nodes(&self) -> Vec<(u32, EncryptionKey)> {
+        self.old_nodes
+            .iter()
+            .filter(|node| node.usable)
+            .map(|node| (node.node_index, node.public_key.clone()))
             .collect()
     }
 
@@ -2120,11 +2171,24 @@ impl ExperimentalTransitionNodeState {
                 "retained old transition key pair does not match its public value",
             ));
         }
+        if self.new_nodes.iter().any(|node| {
+            node.local_keypair
+                .as_ref()
+                .is_some_and(|keypair| keypair.public_key() != &node.public_key)
+        }) {
+            return Err(LibraryError::custom(
+                "retained new transition key pair does not match its public value",
+            ));
+        }
         for keypair in self
             .old_nodes
             .iter()
             .filter_map(|node| node.local_keypair.as_ref())
-            .chain(self.new_nodes.iter().map(|node| &node.keypair))
+            .chain(
+                self.new_nodes
+                    .iter()
+                    .filter_map(|node| node.local_keypair.as_ref()),
+            )
         {
             let public = keypair
                 .public_key()
@@ -2153,7 +2217,9 @@ impl ExperimentalTransitionNodeState {
         &mut self,
         state: &ArityState,
         mut current_member_ids: Vec<Vec<u8>>,
+        local_member_id: &[u8],
         committer_member_id: &[u8],
+        parent_public_nodes: Vec<(u8, u32, EncryptionKey)>,
         parent_keypairs: Vec<EncryptionKeyPair>,
     ) -> Result<(), LibraryError> {
         current_member_ids.sort();
@@ -2225,23 +2291,49 @@ impl ExperimentalTransitionNodeState {
             .into_iter()
             .take(usize::from(tree.topology().height()))
             .collect::<Vec<_>>();
-        if positions.len() != parent_keypairs.len() {
+        if parent_public_nodes.is_empty()
+            || parent_public_nodes.iter().any(|(depth, ordinal, _)| {
+                !positions
+                    .iter()
+                    .any(|position| (position.depth, position.ordinal) == (*depth, *ordinal))
+            })
+        {
             return Err(LibraryError::custom(
-                "quaternary parent key count does not match committer path",
+                "quaternary public parent path does not match committer path",
             ));
         }
-        for (position, keypair) in positions.into_iter().zip(parent_keypairs) {
+        let local_positions = tree
+            .topology()
+            .nodes_for_member(local_member_id)
+            .map_err(|_| LibraryError::custom("local member is absent from frozen mapping"))?
+            .into_iter()
+            .take(usize::from(tree.topology().height()))
+            .map(|node| (node.depth, node.ordinal))
+            .collect::<Vec<_>>();
+        for (position, (_, _, public_key)) in positions.into_iter().zip(parent_public_nodes) {
+            let is_local = local_positions.contains(&(position.depth, position.ordinal));
+            let local_keypair = parent_keypairs
+                .iter()
+                .find(|keypair| keypair.public_key() == &public_key)
+                .cloned();
+            if is_local && local_keypair.is_none() {
+                return Err(LibraryError::custom(
+                    "quaternary local direct-path key is missing",
+                ));
+            }
             if let Some(node) = self
                 .new_nodes
                 .iter_mut()
                 .find(|node| node.depth == position.depth && node.ordinal == position.ordinal)
             {
-                node.keypair = keypair;
+                node.public_key = public_key;
+                node.local_keypair = local_keypair;
             } else {
                 self.new_nodes.push(RetainedNewNodeValue {
                     depth: position.depth,
                     ordinal: position.ordinal,
-                    keypair,
+                    public_key,
+                    local_keypair,
                 });
             }
         }
