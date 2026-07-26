@@ -218,4 +218,4 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 **Current:** Task 86 — operator acceptance of the real fork report on Linux and Windows GNU/MinGW.
 
-**Next:** Rerun mode 4 on Linux with the latest native-quaternary and TreeCover-fallback fixes, inspect schema-6 CSV/Markdown provenance and retirement rows, and compare them with the successful Windows GNU/MinGW 128-client run `native-q-authority-128-v3`.
+**Next:** Rerun mode 4 on Linux with the latest native-quaternary and probe-completeness fixes, inspect schema-6 CSV/Markdown provenance and retirement rows, and compare them with the successful Windows GNU/MinGW 128-client run `native-q-authority-128-v4`.

@@ -1289,10 +1289,10 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     .expect("string write");
 
     writeln!(document, "## Pre-transition byte comparison\n").expect("string write");
-    writeln!(document, "The byte comparison uses observed complete serialized Commit wires. `Actual emitted binary Commit bytes` records the live binary Add/Update/Remove Commit. For each row, `Matched fresh binary probe Commit bytes` records a fresh binary Commit with the same active-member count, committer ordinal, operation, and removal target where applicable. `Real quaternary probe Commit bytes` is the authenticated fresh quaternary probe; Add/Remove counterfactual probes remain unavailable. `Real saving` is quaternary minus matched fresh binary, so a negative value means the quaternary Commit is smaller. Before measured Updates, both fresh probes populate their occupied internal nodes; warm-up bytes are excluded. After transition the quaternary tree is authoritative: its CommitSecret and GroupContext tree hash are derived from the quaternary root, the ordinary binary UpdatePath-node vector is empty, and the wire carries exactly `ceil(log4(active clients))` quaternary parent records (four at 128 clients). Retained binary TreeCover values are delivery fallback only and are erased by authenticated retirement. The probes are observed wire data, but they are not merged into the live binary workload state.\n").expect("string write");
+    writeln!(document, "The byte comparison uses observed complete serialized Commit wires. `Real quaternary probe Commit bytes` is populated for every Add, Update, and Remove row with an authenticated fresh q wire. Add uses a real q Update on the resulting post-add population because the frozen post-transition mapping rejects Add/remapping; Update and Remove use their matched operation. `Matched fresh binary probe Commit bytes` records a fresh binary Commit with the same active-member count, committer ordinal, operation, and removal target where applicable. `Real saving` is quaternary minus matched fresh binary, so a negative value means the quaternary Commit is smaller. Both probes populate their occupied internal nodes before measurement; warm-up bytes are excluded. After transition the quaternary tree is authoritative: its CommitSecret and GroupContext tree hash are derived from the quaternary root, the ordinary binary UpdatePath-node vector is empty, and the wire carries exactly `ceil(log4(active clients))` quaternary parent records (four at 128 clients). Retained binary TreeCover values are delivery fallback only and are erased by authenticated retirement. The probes are observed wire data, but they are not merged into the live workload state.\n").expect("string write");
     writeln!(
         document,
-        "| Commit | Operation | Committer node index | Active clients | Actual emitted binary Commit bytes | Real quaternary probe Commit bytes | Matched fresh binary probe Commit bytes | Real saving | Real decision |\n|---:|---|---:|---:|---:|---:|---:|---:|---|"
+        "| Commit | Operation | Committer node index | Active clients | Real quaternary probe Commit bytes | Matched fresh binary probe Commit bytes | Real saving | Real decision |\n|---:|---|---:|---:|---:|---:|---:|---|"
     )
     .expect("string write");
     for event in result
@@ -1302,12 +1302,11 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     {
         writeln!(
             document,
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} |",
             event.commit_sequence,
             event.operation,
             event.committer_target_node_index,
             event.active_member_count,
-            optional_u64(event.bytes_sent),
             optional_u64(event.real_new_arity_probe_bytes),
             optional_u64(event.real_old_arity_probe_bytes),
             optional_i64(event.real_probe_saving_new_minus_old_bytes),
@@ -1637,6 +1636,10 @@ mod tests {
         assert!(!report.contains("Modeled saving"));
         assert!(report.contains("Real quaternary probe Commit bytes"));
         assert!(report.contains("Matched fresh binary probe Commit bytes"));
+        assert!(!report.contains("Actual emitted binary Commit bytes"));
+        assert!(report.contains(
+            "| Commit | Operation | Committer node index | Active clients | Real quaternary probe Commit bytes | Matched fresh binary probe Commit bytes | Real saving | Real decision |"
+        ));
         assert!(report.contains("h_newcost > 0.7"));
         assert!(report.contains("1/117 (0.008547)"));
         assert!(report.contains("10/13 (0.769231)"));

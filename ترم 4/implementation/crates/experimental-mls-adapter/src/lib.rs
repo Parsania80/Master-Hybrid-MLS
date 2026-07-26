@@ -1795,20 +1795,29 @@ fn measure_real_quaternary_probe_bytes(
     operation: ExperimentalDeliveryHealthOperation,
     removed_ordinal: Option<u32>,
 ) -> Result<Option<u64>, ExperimentalBinaryWorkloadError> {
-    if !matches!(operation, ExperimentalDeliveryHealthOperation::Update) {
-        return Ok(None);
-    }
     if initial_member_count < 2 || committer_ordinal >= initial_member_count {
         return Err(ExperimentalBinaryWorkloadError::InvalidControls);
     }
     let mut probe_config = config.clone();
-    probe_config.initial_member_count = initial_member_count;
+    // The native q lifecycle currently rejects post-transition Add/remapping.
+    // For an Add observation, measure a real q Update on the resulting
+    // post-add population so the probe column remains an observed complete q
+    // wire. Remove and Update use their matched authenticated operation.
+    let probe_operation = if operation == ExperimentalDeliveryHealthOperation::Add {
+        probe_config.initial_member_count = initial_member_count
+            .checked_add(1)
+            .ok_or(ExperimentalBinaryWorkloadError::CountOverflow)?;
+        ExperimentalDeliveryHealthOperation::Update
+    } else {
+        probe_config.initial_member_count = initial_member_count;
+        operation
+    };
     probe_config.maximum_member_count = initial_member_count.saturating_add(1);
     probe_config.operation_count = 1;
     let (_, candidate_wire) = measure_real_quaternary_probe_candidate(
         &probe_config,
         committer_ordinal,
-        operation,
+        probe_operation,
         removed_ordinal,
         true,
     )?;
