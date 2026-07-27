@@ -35,7 +35,7 @@ pub struct RustCrypto {
 
 // For testing we want to clone.
 // But really we just create a new Rng.
-#[cfg(feature = "test-utils")]
+#[cfg(any(feature = "probe-clone", feature = "test-utils"))]
 impl Clone for RustCrypto {
     fn clone(&self) -> Self {
         Self::default()

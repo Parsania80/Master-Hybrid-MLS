@@ -30,7 +30,7 @@ pub struct MemoryStorage {
 }
 
 // For testing we want to clone.
-#[cfg(feature = "test-utils")]
+#[cfg(any(feature = "probe-clone", feature = "test-utils"))]
 impl Clone for MemoryStorage {
     fn clone(&self) -> Self {
         let values = self.values.read().unwrap();

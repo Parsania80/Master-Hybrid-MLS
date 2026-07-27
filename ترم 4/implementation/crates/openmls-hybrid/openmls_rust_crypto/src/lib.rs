@@ -12,7 +12,7 @@ pub use provider::*;
 mod hmac;
 
 #[derive(Default, Debug)]
-#[cfg_attr(feature = "test-utils", derive(Clone))]
+#[cfg_attr(any(feature = "probe-clone", feature = "test-utils"), derive(Clone))]
 pub struct OpenMlsRustCrypto {
     crypto: RustCrypto,
     key_store: MemoryStorage,

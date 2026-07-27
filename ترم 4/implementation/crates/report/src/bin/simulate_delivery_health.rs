@@ -43,6 +43,14 @@ fn main() -> ExitCode {
             println!("Summary CSV: {}", paths.summary_csv.display());
             println!("Event CSV: {}", paths.events_csv.display());
             println!("Markdown: {}", paths.report_markdown.display());
+            println!(
+                "Delivery-cost chart: {}",
+                paths.delivery_cost_chart.display()
+            );
+            println!(
+                "Delivery-health chart: {}",
+                paths.delivery_health_chart.display()
+            );
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -142,7 +150,7 @@ fn print_usage() {
          [--seed <PUBLIC_SEED>] [--maximum-commits <N>] \
          --output output/<run> --report report/<run>\n\
          \n\
-         Initial members must exceed the initial arity and be at most 4096. This counts delivery endpoints and modelled canonical delivery bytes in a public node-value simulation. It does not execute live post-transition MLS Remove or key erasure."
+         Initial members must exceed the initial arity and be at most 4096. The supported 2-to-4 path executes authenticated real-fork operations, records complete serialized Commit bytes, and writes post-transition delivery-cost and health charts."
     );
 }
 

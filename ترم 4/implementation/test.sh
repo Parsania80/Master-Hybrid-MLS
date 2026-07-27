@@ -131,6 +131,8 @@ if [[ "$generate_delivery_health" == true ]]; then
     health_summary_csv="$output_dir/summary.csv"
     health_events_csv="$output_dir/events.csv"
     health_markdown="$report_dir/report.md"
+    health_cost_chart="$report_dir/delivery_costs.svg"
+    health_fraction_chart="$report_dir/delivery_health.svg"
     printf '\n=== Real Fork Delivery-Health Report ===\n'
     printf 'Arity: %s -> %s; initial clients: %s\n' \
         "$initial_arity" "$target_arity" "$initial_members"
@@ -138,8 +140,8 @@ if [[ "$generate_delivery_health" == true ]]; then
     printf 'Operations: random Add/Update/Remove before transition, then Update/Remove until retirement\n\n'
     printf 'Minimum trace: 5 binary observations including an Update probe before transition; 5 post-transition Commits before retirement\n\n'
     printf 'Healthy comparison setup: populate both binary and quaternary internal nodes; setup Commit bytes are excluded\n\n'
-    run_step 'Run authenticated fork workload' env CARGO_BUILD_JOBS=1 CARGO_TERM_COLOR=never \
-        nice -n 10 ionice -c 3 cargo run --quiet -p report --bin simulate_delivery_health \
+    run_step 'Run authenticated fork workload' env CARGO_TERM_COLOR=never \
+        cargo run --quiet -p report --bin simulate_delivery_health \
         --release --locked --offline -- \
         --initial-arity "$initial_arity" \
         --target-arity "$target_arity" \
@@ -151,10 +153,14 @@ if [[ "$generate_delivery_health" == true ]]; then
     [[ -s "$health_summary_csv" ]] || fail "summary CSV was not created: $health_summary_csv"
     [[ -s "$health_events_csv" ]] || fail "event CSV was not created: $health_events_csv"
     [[ -s "$health_markdown" ]] || fail "Markdown report was not created: $health_markdown"
+    [[ -s "$health_cost_chart" ]] || fail "delivery-cost chart was not created: $health_cost_chart"
+    [[ -s "$health_fraction_chart" ]] || fail "delivery-health chart was not created: $health_fraction_chart"
     printf '\nGenerated:\n'
     printf '  Summary: %s\n' "$health_summary_csv"
     printf '  Events:  %s\n' "$health_events_csv"
     printf '  Report:  %s\n' "$health_markdown"
+    printf '  Costs:   %s\n' "$health_cost_chart"
+    printf '  Health:  %s\n' "$health_fraction_chart"
     printf '\nScope: real authenticated fork Commit observations and atomic TreeCover retirement.\n'
     printf 'The report remains thesis-local experimental software; no production or interoperability claim is made.\n'
     exit 0

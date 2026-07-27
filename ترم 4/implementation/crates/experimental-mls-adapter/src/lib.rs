@@ -29,8 +29,9 @@ use openmls_hybrid::{
     prelude::{
         BasicCredential, Ciphersuite, CredentialWithKey, Extension, ExtensionType, Extensions,
         GroupContext, GroupId, KeyPackage, LeafNodeParameters, MlsGroup, MlsGroupCreateConfig,
-        MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn, ProcessedMessageContent,
-        RequiredCapabilitiesExtension, StagedCommit, StagedWelcome, UnknownExtension,
+        MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn, OpenMlsProvider,
+        ProcessedMessageContent, RequiredCapabilitiesExtension, StagedCommit, StagedWelcome,
+        UnknownExtension,
     },
 };
 use openmls_hybrid_basic_credential::SignatureKeyPair;
@@ -501,6 +502,28 @@ struct ExperimentalWorkloadMember {
     group: MlsGroup,
 }
 
+impl Clone for ExperimentalWorkloadMember {
+    fn clone(&self) -> Self {
+        let provider = self.provider.clone();
+        let group = MlsGroup::load(provider.storage(), self.group.group_id())
+            .expect("healthy probe template storage must remain readable")
+            .expect("healthy probe template group must remain persisted");
+        Self {
+            member_index: self.member_index,
+            leaf_region: self.leaf_region,
+            provider,
+            signer: self.signer.clone(),
+            group,
+        }
+    }
+}
+
+#[derive(Default)]
+struct HealthyProbeTemplateCache {
+    binary_members_by_count: BTreeMap<u32, Vec<ExperimentalWorkloadMember>>,
+    quaternary_members_by_count: BTreeMap<u32, Vec<ExperimentalWorkloadMember>>,
+}
+
 struct AcceptedRecordInput {
     sequence: u32,
     epoch_before: u64,
@@ -647,6 +670,7 @@ pub fn execute_experimental_delivery_health_workload(
     let mut winning_cost = None;
     let mut real_quaternary_probe_cache = BTreeMap::<(u32, u32, u8, u32), Option<u64>>::new();
     let mut real_binary_probe_cache = BTreeMap::<(u32, u32), Option<u64>>::new();
+    let mut healthy_probe_templates = HealthyProbeTemplateCache::default();
     let mut binary_update_count = 0_u32;
     // Keep a short authenticated observation window so the public report
     // demonstrates the mixed workload before the first eligible transition.
@@ -803,6 +827,7 @@ pub fn execute_experimental_delivery_health_workload(
                 committer_ordinal_before,
                 operation,
                 removed_ordinal,
+                &mut healthy_probe_templates,
             )?;
             real_quaternary_probe_cache.insert(probe_key, bytes);
             bytes
@@ -817,6 +842,7 @@ pub fn execute_experimental_delivery_health_workload(
                         config,
                         pre_probe_member_count,
                         committer_ordinal_before,
+                        &mut healthy_probe_templates,
                     )?);
                     real_binary_probe_cache.insert(binary_probe_key, bytes);
                     bytes
@@ -828,6 +854,7 @@ pub fn execute_experimental_delivery_health_workload(
                     committer_ordinal_before,
                     operation,
                     removed_ordinal,
+                    &mut healthy_probe_templates,
                 )?)
             };
         let real_probe_saving = real_candidate_bytes
@@ -1702,6 +1729,7 @@ fn measure_real_binary_probe_bytes(
     config: &BaselineWorkloadConfig,
     initial_member_count: u32,
     committer_ordinal: u32,
+    templates: &mut HealthyProbeTemplateCache,
 ) -> Result<u64, ExperimentalBinaryWorkloadError> {
     measure_real_binary_probe_operation_bytes(
         config,
@@ -1709,6 +1737,7 @@ fn measure_real_binary_probe_bytes(
         committer_ordinal,
         ExperimentalDeliveryHealthOperation::Update,
         None,
+        templates,
     )
 }
 
@@ -1718,17 +1747,29 @@ fn measure_real_binary_probe_operation_bytes(
     committer_ordinal: u32,
     operation: ExperimentalDeliveryHealthOperation,
     removed_ordinal: Option<u32>,
+    templates: &mut HealthyProbeTemplateCache,
 ) -> Result<u64, ExperimentalBinaryWorkloadError> {
     if initial_member_count < 2 || committer_ordinal >= initial_member_count {
         return Err(ExperimentalBinaryWorkloadError::InvalidControls);
     }
-    let mut probe_config = config.clone();
-    probe_config.initial_member_count = initial_member_count;
-    probe_config.maximum_member_count = initial_member_count.saturating_add(1);
-    probe_config.operation_count = 1;
-    let extensions = adaptive_probe_arity_extensions(&probe_config)?;
-    let mut members = create_initial_group_with_extensions(&probe_config, extensions)?;
-    warm_binary_probe_tree(&mut members)?;
+    if let std::collections::btree_map::Entry::Vacant(entry) = templates
+        .binary_members_by_count
+        .entry(initial_member_count)
+    {
+        let mut probe_config = config.clone();
+        probe_config.initial_member_count = initial_member_count;
+        probe_config.maximum_member_count = initial_member_count.saturating_add(1);
+        probe_config.operation_count = 1;
+        let extensions = adaptive_probe_arity_extensions(&probe_config)?;
+        let mut members = create_initial_group_with_extensions(&probe_config, extensions)?;
+        warm_binary_probe_tree(&mut members)?;
+        entry.insert(members);
+    }
+    let mut members = templates
+        .binary_members_by_count
+        .get(&initial_member_count)
+        .cloned()
+        .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
     let position = usize::try_from(committer_ordinal)
         .map_err(|_| ExperimentalBinaryWorkloadError::CountOverflow)?;
     let wire = match operation {
@@ -1794,6 +1835,7 @@ fn measure_real_quaternary_probe_bytes(
     committer_ordinal: u32,
     operation: ExperimentalDeliveryHealthOperation,
     removed_ordinal: Option<u32>,
+    templates: &mut HealthyProbeTemplateCache,
 ) -> Result<Option<u64>, ExperimentalBinaryWorkloadError> {
     if initial_member_count < 2 || committer_ordinal >= initial_member_count {
         return Err(ExperimentalBinaryWorkloadError::InvalidControls);
@@ -1814,12 +1856,32 @@ fn measure_real_quaternary_probe_bytes(
     };
     probe_config.maximum_member_count = initial_member_count.saturating_add(1);
     probe_config.operation_count = 1;
-    let (_, candidate_wire) = measure_real_quaternary_probe_candidate(
+    let probe_member_count = probe_config.initial_member_count;
+    if let std::collections::btree_map::Entry::Vacant(entry) = templates
+        .quaternary_members_by_count
+        .entry(probe_member_count)
+    {
+        let (mut members, _, transition_position) =
+            transitioned_quaternary_probe_members(&probe_config, committer_ordinal)?;
+        warm_quaternary_probe_tree(&mut members, transition_position).map_err(|_| {
+            ExperimentalBinaryWorkloadError::AdaptiveProbe {
+                member_index: committer_ordinal,
+                stage: "quaternary-health-warmup",
+            }
+        })?;
+        entry.insert(members);
+    }
+    let mut members = templates
+        .quaternary_members_by_count
+        .get(&probe_member_count)
+        .cloned()
+        .ok_or(ExperimentalBinaryWorkloadError::Fork)?;
+    let candidate_wire = stage_quaternary_probe_operation(
         &probe_config,
+        &mut members,
         committer_ordinal,
         probe_operation,
         removed_ordinal,
-        true,
     )?;
     u64::try_from(candidate_wire.len())
         .map(Some)
@@ -1865,6 +1927,30 @@ fn measure_real_quaternary_probe_candidate(
     removed_ordinal: Option<u32>,
     require_healthy_tree: bool,
 ) -> Result<(Vec<u8>, Vec<u8>), ExperimentalBinaryWorkloadError> {
+    let (mut members, transition_wire, transition_position) =
+        transitioned_quaternary_probe_members(config, candidate_member_index)?;
+    if require_healthy_tree {
+        warm_quaternary_probe_tree(&mut members, transition_position).map_err(|_| {
+            ExperimentalBinaryWorkloadError::AdaptiveProbe {
+                member_index: candidate_member_index,
+                stage: "quaternary-health-warmup",
+            }
+        })?;
+    }
+    let operation_wire = stage_quaternary_probe_operation(
+        config,
+        &mut members,
+        candidate_member_index,
+        operation,
+        removed_ordinal,
+    )?;
+    Ok((transition_wire, operation_wire))
+}
+
+fn transitioned_quaternary_probe_members(
+    config: &BaselineWorkloadConfig,
+    candidate_member_index: u32,
+) -> Result<(Vec<ExperimentalWorkloadMember>, Vec<u8>, usize), ExperimentalBinaryWorkloadError> {
     let extensions = adaptive_probe_arity_extensions(config).map_err(|_| {
         ExperimentalBinaryWorkloadError::AdaptiveProbe {
             member_index: candidate_member_index,
@@ -1936,15 +2022,17 @@ fn measure_real_quaternary_probe_candidate(
             member_index: candidate_member_index,
             stage: "transition-convergence",
         })?;
-    if require_healthy_tree {
-        warm_quaternary_probe_tree(&mut members, position).map_err(|_| {
-            ExperimentalBinaryWorkloadError::AdaptiveProbe {
-                member_index: candidate_member_index,
-                stage: "quaternary-health-warmup",
-            }
-        })?;
-    }
-    let update_position = member_position(&members, candidate_member_index).map_err(|_| {
+    Ok((members, transition_wire, position))
+}
+
+fn stage_quaternary_probe_operation(
+    config: &BaselineWorkloadConfig,
+    members: &mut [ExperimentalWorkloadMember],
+    candidate_member_index: u32,
+    operation: ExperimentalDeliveryHealthOperation,
+    removed_ordinal: Option<u32>,
+) -> Result<Vec<u8>, ExperimentalBinaryWorkloadError> {
+    let update_position = member_position(members, candidate_member_index).map_err(|_| {
         ExperimentalBinaryWorkloadError::AdaptiveProbe {
             member_index: candidate_member_index,
             stage: "candidate-committer-position",
@@ -1954,7 +2042,7 @@ fn measure_real_quaternary_probe_candidate(
         ExperimentalDeliveryHealthOperation::Add => {
             let new_member_index = config.initial_member_count;
             stage_binary_add(
-                &mut members,
+                members,
                 update_position,
                 new_member_index,
                 config.region_count,
@@ -2008,7 +2096,7 @@ fn measure_real_quaternary_probe_candidate(
                 .map_err(|_| ExperimentalBinaryWorkloadError::Fork)?
         }
     };
-    Ok((transition_wire, operation_wire))
+    Ok(operation_wire)
 }
 
 /// Populates every occupied quaternary internal node before measuring the
@@ -2033,11 +2121,10 @@ fn warm_quaternary_probe_tree(
         .assignments
         .iter()
         .flat_map(|assignment| topology.nodes_for_member(&assignment.member_id).ok())
-        .map(|nodes| {
+        .flat_map(|nodes| {
             let internal_count = nodes.len().saturating_sub(1);
             nodes.into_iter().take(internal_count)
         })
-        .flatten()
         .map(|node| (node.depth, node.ordinal))
         .collect::<BTreeSet<_>>();
 

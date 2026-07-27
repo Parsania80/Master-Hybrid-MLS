@@ -216,6 +216,6 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 ---
 
-**Current:** Task 86 — operator acceptance of the real fork report on Linux and Windows GNU/MinGW.
+**Current:** Task 86 — operator acceptance of the optimized real fork report on Linux and Windows GNU/MinGW.
 
-**Next:** Rerun mode 4 on Linux with the latest native-quaternary and probe-completeness fixes, inspect schema-6 CSV/Markdown provenance and retirement rows, and compare them with the successful Windows GNU/MinGW 128-client run `native-q-authority-128-v4`.
+**Next:** Rerun mode 4 on Linux with a fresh label, inspect schema-6 CSV/Markdown provenance, transition bytes, retirement rows, and both SVG charts, and compare them with the successful Windows GNU/MinGW artifact `task86-fast-charts-128-v1` (488.098 seconds).

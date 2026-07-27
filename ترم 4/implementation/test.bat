@@ -109,7 +109,7 @@ if /I not "%CONFIRM%"=="y" if /I not "%CONFIRM%"=="yes" (
 echo.
 echo === Real Fork Delivery-Health Report ===
 echo Running authenticated fork workload...
-set "CARGO_BUILD_JOBS=1"
+set "CARGO_BUILD_JOBS="
 set "CARGO_TERM_COLOR=never"
 cargo %CARGO_TOOLCHAIN_ARG% run --quiet -p report --bin simulate_delivery_health --release --locked --offline -- ^
     --initial-arity %INITIAL_ARITY% ^
@@ -136,12 +136,22 @@ if not exist "%REPORT_DIR%\report.md" (
     echo test.bat: report.md was not created. 1>&2
     exit /b 1
 )
+if not exist "%REPORT_DIR%\delivery_costs.svg" (
+    echo test.bat: delivery_costs.svg was not created. 1>&2
+    exit /b 1
+)
+if not exist "%REPORT_DIR%\delivery_health.svg" (
+    echo test.bat: delivery_health.svg was not created. 1>&2
+    exit /b 1
+)
 
 echo.
 echo Generated:
 echo   Summary: %OUTPUT_DIR%\summary.csv
 echo   Events:  %OUTPUT_DIR%\events.csv
 echo   Report:  %REPORT_DIR%\report.md
+echo   Costs:   %REPORT_DIR%\delivery_costs.svg
+echo   Health:  %REPORT_DIR%\delivery_health.svg
 echo.
 echo Scope: real authenticated fork Commit observations and atomic TreeCover retirement.
 echo The report remains thesis-local experimental software; no production or interoperability claim is made.

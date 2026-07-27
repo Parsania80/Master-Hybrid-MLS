@@ -34,6 +34,10 @@ pub const DELIVERY_HEALTH_SUMMARY_FILE_NAME: &str = "summary.csv";
 pub const DELIVERY_HEALTH_EVENTS_FILE_NAME: &str = "events.csv";
 /// Clean human-readable report requested by the operator.
 pub const DELIVERY_HEALTH_REPORT_FILE_NAME: &str = "report.md";
+/// Post-transition endpoint-cost chart.
+pub const DELIVERY_HEALTH_COST_CHART_FILE_NAME: &str = "delivery_costs.svg";
+/// Post-transition health-fraction chart.
+pub const DELIVERY_HEALTH_FRACTION_CHART_FILE_NAME: &str = "delivery_health.svg";
 
 const PRE_TRANSITION_UPDATE_COUNT: u32 = 2;
 const THETA_NEW_NUMERATOR: i64 = 7;
@@ -87,6 +91,10 @@ pub struct DeliveryHealthArtifactPaths {
     pub events_csv: PathBuf,
     /// Clean Markdown report.
     pub report_markdown: PathBuf,
+    /// Styled post-transition C_new/C_old chart.
+    pub delivery_cost_chart: PathBuf,
+    /// Styled post-transition h_newcost/h_oldcost chart.
+    pub delivery_health_chart: PathBuf,
 }
 
 /// Failures from configuration, checked tree arithmetic, or artifact output.
@@ -526,11 +534,15 @@ pub fn generate_delivery_health_report(
         summary_csv: output_directory.join(DELIVERY_HEALTH_SUMMARY_FILE_NAME),
         events_csv: output_directory.join(DELIVERY_HEALTH_EVENTS_FILE_NAME),
         report_markdown: report_directory.join(DELIVERY_HEALTH_REPORT_FILE_NAME),
+        delivery_cost_chart: report_directory.join(DELIVERY_HEALTH_COST_CHART_FILE_NAME),
+        delivery_health_chart: report_directory.join(DELIVERY_HEALTH_FRACTION_CHART_FILE_NAME),
     };
     for path in [
         &paths.summary_csv,
         &paths.events_csv,
         &paths.report_markdown,
+        &paths.delivery_cost_chart,
+        &paths.delivery_health_chart,
     ] {
         if path.exists() {
             return Err(DeliveryHealthError::Artifact(
@@ -546,6 +558,14 @@ pub fn generate_delivery_health_report(
         .map_err(|error| DeliveryHealthError::Artifact(ReportArtifactError::Write(error)))?;
     write_new(&paths.summary_csv, &summary_csv(&result.summary)?)?;
     write_new(&paths.events_csv, &events_csv(&result.events)?)?;
+    write_new(
+        &paths.delivery_cost_chart,
+        delivery_cost_chart_svg(&result.events).as_bytes(),
+    )?;
+    write_new(
+        &paths.delivery_health_chart,
+        delivery_health_chart_svg(&result.events).as_bytes(),
+    )?;
     write_new(&paths.report_markdown, markdown(config, &result).as_bytes())?;
     Ok(paths)
 }
@@ -1274,13 +1294,326 @@ fn events_csv(events: &[DeliveryHealthEvent]) -> Result<Vec<u8>, DeliveryHealthE
         .map_err(|error| DeliveryHealthError::Csv(error.into_error().into()))
 }
 
+struct ChartSeries {
+    label: &'static str,
+    color: &'static str,
+    values: Vec<f64>,
+}
+
+struct ChartThreshold {
+    label: &'static str,
+    color: &'static str,
+    value: f64,
+}
+
+fn delivery_cost_chart_svg(events: &[DeliveryHealthEvent]) -> String {
+    let events = events
+        .iter()
+        .filter(|event| event.phase == "post-transition")
+        .collect::<Vec<_>>();
+    let labels = events
+        .iter()
+        .map(|event| event.commit_sequence)
+        .collect::<Vec<_>>();
+    let c_new = events
+        .iter()
+        .map(|event| f64::from(event.c_new.expect("post-transition C_new")))
+        .collect::<Vec<_>>();
+    let c_old = events
+        .iter()
+        .map(|event| f64::from(event.c_old.expect("post-transition C_old")))
+        .collect::<Vec<_>>();
+    let maximum = c_new.iter().chain(&c_old).copied().fold(1.0_f64, f64::max) * 1.12;
+    line_chart_svg(
+        "Post-transition delivery endpoint costs",
+        "Endpoint cost",
+        &labels,
+        &[
+            ChartSeries {
+                label: "C_new",
+                color: "#22d3ee",
+                values: c_new,
+            },
+            ChartSeries {
+                label: "C_old",
+                color: "#a78bfa",
+                values: c_old,
+            },
+        ],
+        maximum,
+        &[],
+    )
+}
+
+fn delivery_health_chart_svg(events: &[DeliveryHealthEvent]) -> String {
+    let events = events
+        .iter()
+        .filter(|event| event.phase == "post-transition")
+        .collect::<Vec<_>>();
+    let labels = events
+        .iter()
+        .map(|event| event.commit_sequence)
+        .collect::<Vec<_>>();
+    let h_new = events
+        .iter()
+        .map(|event| {
+            event
+                .h_new_decimal
+                .as_deref()
+                .expect("post-transition h_newcost")
+                .parse::<f64>()
+                .expect("validated h_newcost decimal")
+        })
+        .collect::<Vec<_>>();
+    let h_old = events
+        .iter()
+        .map(|event| {
+            event
+                .h_old_decimal
+                .as_deref()
+                .expect("post-transition h_oldcost")
+                .parse::<f64>()
+                .expect("validated h_oldcost decimal")
+        })
+        .collect::<Vec<_>>();
+    line_chart_svg(
+        "Post-transition delivery health",
+        "Health fraction",
+        &labels,
+        &[
+            ChartSeries {
+                label: "h_newcost",
+                color: "#34d399",
+                values: h_new,
+            },
+            ChartSeries {
+                label: "h_oldcost",
+                color: "#fb923c",
+                values: h_old,
+            },
+        ],
+        1.0,
+        &[
+            ChartThreshold {
+                label: "new threshold 0.70",
+                color: "#6ee7b7",
+                value: 0.7,
+            },
+            ChartThreshold {
+                label: "old threshold 0.50",
+                color: "#fdba74",
+                value: 0.5,
+            },
+        ],
+    )
+}
+
+fn line_chart_svg(
+    title: &str,
+    y_axis_label: &str,
+    x_labels: &[u32],
+    series: &[ChartSeries],
+    y_maximum: f64,
+    thresholds: &[ChartThreshold],
+) -> String {
+    const WIDTH: f64 = 1120.0;
+    const HEIGHT: f64 = 640.0;
+    const LEFT: f64 = 104.0;
+    const TOP: f64 = 112.0;
+    const PLOT_WIDTH: f64 = 936.0;
+    const PLOT_HEIGHT: f64 = 420.0;
+    let y_maximum = y_maximum.max(1.0);
+    let x_position = |index: usize| {
+        if x_labels.len() <= 1 {
+            LEFT + PLOT_WIDTH / 2.0
+        } else {
+            LEFT + PLOT_WIDTH * index as f64 / (x_labels.len() - 1) as f64
+        }
+    };
+    let y_position = |value: f64| TOP + PLOT_HEIGHT * (1.0 - (value / y_maximum).clamp(0.0, 1.0));
+
+    let mut svg = String::new();
+    writeln!(
+        svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH:.0}" height="{HEIGHT:.0}" viewBox="0 0 {WIDTH:.0} {HEIGHT:.0}" role="img" aria-label="{title}">"#
+    )
+    .expect("string write");
+    svg.push_str(
+        r##"<defs>
+  <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#071426"/>
+    <stop offset="55%" stop-color="#0f1f38"/>
+    <stop offset="100%" stop-color="#172554"/>
+  </linearGradient>
+  <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0%" stop-color="#17233b" stop-opacity="0.98"/>
+    <stop offset="100%" stop-color="#0b1528" stop-opacity="0.98"/>
+  </linearGradient>
+  <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+    <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#020617" flood-opacity="0.55"/>
+  </filter>
+  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="3" result="blur"/>
+    <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <style>
+    .title{font:700 26px Inter,Segoe UI,sans-serif;fill:#f8fafc}
+    .axis-label{font:600 13px Inter,Segoe UI,sans-serif;fill:#cbd5e1;letter-spacing:.04em}
+    .tick{font:12px Inter,Segoe UI,sans-serif;fill:#94a3b8}
+    .legend{font:600 13px Inter,Segoe UI,sans-serif;fill:#e2e8f0}
+    .grid{stroke:#64748b;stroke-width:1;stroke-opacity:.22}
+    .axis{stroke:#94a3b8;stroke-width:1.2;stroke-opacity:.65}
+  </style>
+</defs>
+"##,
+    );
+    writeln!(
+        svg,
+        r#"<rect width="{WIDTH:.0}" height="{HEIGHT:.0}" rx="28" fill="url(#background)"/>"#
+    )
+    .expect("string write");
+    writeln!(
+        svg,
+        r##"<rect x="42" y="42" width="1036" height="556" rx="24" fill="url(#panel)" stroke="#334155" stroke-width="1" filter="url(#shadow)"/>"##
+    )
+    .expect("string write");
+    writeln!(svg, r#"<text x="78" y="84" class="title">{title}</text>"#).expect("string write");
+
+    for tick in 0..=5 {
+        let ratio = tick as f64 / 5.0;
+        let y = TOP + PLOT_HEIGHT * (1.0 - ratio);
+        writeln!(
+            svg,
+            r#"<line x1="{LEFT:.2}" y1="{y:.2}" x2="{:.2}" y2="{y:.2}" class="grid"/>"#,
+            LEFT + PLOT_WIDTH
+        )
+        .expect("string write");
+        writeln!(
+            svg,
+            r#"<text x="{:.2}" y="{:.2}" text-anchor="end" class="tick">{:.2}</text>"#,
+            LEFT - 14.0,
+            y + 4.0,
+            y_maximum * ratio
+        )
+        .expect("string write");
+    }
+    writeln!(
+        svg,
+        r#"<line x1="{LEFT:.2}" y1="{TOP:.2}" x2="{LEFT:.2}" y2="{:.2}" class="axis"/>"#,
+        TOP + PLOT_HEIGHT
+    )
+    .expect("string write");
+    writeln!(
+        svg,
+        r#"<line x1="{LEFT:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" class="axis"/>"#,
+        TOP + PLOT_HEIGHT,
+        LEFT + PLOT_WIDTH,
+        TOP + PLOT_HEIGHT
+    )
+    .expect("string write");
+    writeln!(
+        svg,
+        r#"<text x="24" y="{:.2}" transform="rotate(-90 24 {:.2})" text-anchor="middle" class="axis-label">{y_axis_label}</text>"#,
+        TOP + PLOT_HEIGHT / 2.0,
+        TOP + PLOT_HEIGHT / 2.0
+    )
+    .expect("string write");
+    writeln!(
+        svg,
+        r#"<text x="{:.2}" y="586" text-anchor="middle" class="axis-label">Commit sequence</text>"#,
+        LEFT + PLOT_WIDTH / 2.0
+    )
+    .expect("string write");
+
+    for (index, label) in x_labels.iter().enumerate() {
+        let x = x_position(index);
+        writeln!(
+            svg,
+            r##"<line x1="{x:.2}" y1="{:.2}" x2="{x:.2}" y2="{:.2}" stroke="#94a3b8" stroke-opacity=".35"/>"##,
+            TOP + PLOT_HEIGHT,
+            TOP + PLOT_HEIGHT + 7.0
+        )
+        .expect("string write");
+        writeln!(
+            svg,
+            r#"<text x="{x:.2}" y="{:.2}" text-anchor="middle" class="tick">{label}</text>"#,
+            TOP + PLOT_HEIGHT + 26.0
+        )
+        .expect("string write");
+    }
+
+    for threshold in thresholds {
+        let y = y_position(threshold.value);
+        writeln!(
+            svg,
+            r#"<line x1="{LEFT:.2}" y1="{y:.2}" x2="{:.2}" y2="{y:.2}" stroke="{}" stroke-width="1.5" stroke-dasharray="7 7" stroke-opacity=".72"/>"#,
+            LEFT + PLOT_WIDTH,
+            threshold.color
+        )
+        .expect("string write");
+        writeln!(
+            svg,
+            r#"<text x="{:.2}" y="{:.2}" text-anchor="end" class="tick" fill="{}">{}</text>"#,
+            LEFT + PLOT_WIDTH - 8.0,
+            y - 7.0,
+            threshold.color,
+            threshold.label
+        )
+        .expect("string write");
+    }
+
+    for chart_series in series {
+        let points = chart_series
+            .values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| format!("{:.2},{:.2}", x_position(index), y_position(*value)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        writeln!(
+            svg,
+            r#"<polyline points="{points}" fill="none" stroke="{}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>"#,
+            chart_series.color
+        )
+        .expect("string write");
+        for (index, value) in chart_series.values.iter().enumerate() {
+            let x = x_position(index);
+            let y = y_position(*value);
+            writeln!(
+                svg,
+                r##"<circle cx="{x:.2}" cy="{y:.2}" r="6" fill="#0f172a" stroke="{}" stroke-width="3"><title>{}: {:.6}</title></circle>"##,
+                chart_series.color,
+                chart_series.label,
+                value
+            )
+            .expect("string write");
+        }
+    }
+
+    for (index, chart_series) in series.iter().enumerate() {
+        let legend_x = 610.0 + index as f64 * 150.0;
+        writeln!(
+            svg,
+            r#"<line x1="{legend_x:.2}" y1="78" x2="{:.2}" y2="78" stroke="{}" stroke-width="4" stroke-linecap="round"/><text x="{:.2}" y="83" class="legend">{}</text>"#,
+            legend_x + 30.0,
+            chart_series.color,
+            legend_x + 40.0,
+            chart_series.label
+        )
+        .expect("string write");
+    }
+    svg.push_str("</svg>\n");
+    svg
+}
+
 fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     let summary = &result.summary;
     let mut document = String::new();
-    writeln!(document, "# Adaptive delivery-health simulation\n").expect("string write");
+    writeln!(document, "# Adaptive delivery-health report\n").expect("string write");
+    writeln!(document, "## Run configuration\n").expect("string write");
     writeln!(
         document,
-        "Initial arity: `{}`. Target arity: `{}`. Initial clients: `{}`. Public random seed: `{}`.\n",
+        "| Initial arity | Target arity | Initial clients | Public random seed |\n|---:|---:|---:|---:|\n| {} | {} | {} | {} |\n",
         config.initial_arity,
         config.target_arity,
         config.initial_member_count,
@@ -1289,7 +1622,6 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     .expect("string write");
 
     writeln!(document, "## Pre-transition byte comparison\n").expect("string write");
-    writeln!(document, "The byte comparison uses observed complete serialized Commit wires. `Real quaternary probe Commit bytes` is populated for every Add, Update, and Remove row with an authenticated fresh q wire. Add uses a real q Update on the resulting post-add population because the frozen post-transition mapping rejects Add/remapping; Update and Remove use their matched operation. `Matched fresh binary probe Commit bytes` records a fresh binary Commit with the same active-member count, committer ordinal, operation, and removal target where applicable. `Real saving` is quaternary minus matched fresh binary, so a negative value means the quaternary Commit is smaller. Both probes populate their occupied internal nodes before measurement; warm-up bytes are excluded. After transition the quaternary tree is authoritative: its CommitSecret and GroupContext tree hash are derived from the quaternary root, the ordinary binary UpdatePath-node vector is empty, and the wire carries exactly `ceil(log4(active clients))` quaternary parent records (four at 128 clients). Retained binary TreeCover values are delivery fallback only and are erased by authenticated retirement. The probes are observed wire data, but they are not merged into the live workload state.\n").expect("string write");
     writeln!(
         document,
         "| Commit | Operation | Committer node index | Active clients | Real quaternary probe Commit bytes | Matched fresh binary probe Commit bytes | Real saving | Real decision |\n|---:|---|---:|---:|---:|---:|---:|---|"
@@ -1323,14 +1655,12 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
     writeln!(document, "\n## Transition cost\n").expect("string write");
     writeln!(
         document,
-        "| Transition Commit | Committer node index | C_real delivery targets | Full MLS transition Commit bytes |\n|---:|---:|---:|---|\n| {} | {} | {} | {} |\n",
+        "| Transition Commit | Committer node index | Transition bytes |\n|---:|---:|---:|\n| {} | {} | {} |\n",
         summary.transition_commit_sequence,
         transition.committer_target_node_index,
-        optional_u32(transition.c_real),
-        summary.full_transition_commit_bytes_state,
+        optional_u64(transition.bytes_sent),
     )
     .expect("string write");
-    writeln!(document, "The transition row is the observed full serialized Commit from the experimental fork. Endpoint health uses the retained authenticated availability snapshot after that Commit.\n").expect("string write");
 
     writeln!(document, "## Post-transition commits\n").expect("string write");
     writeln!(
@@ -1360,14 +1690,26 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
         .expect("string write");
     }
 
+    writeln!(document, "\n## Post-transition charts\n").expect("string write");
+    writeln!(
+        document,
+        "![C_new and C_old endpoint costs]({DELIVERY_HEALTH_COST_CHART_FILE_NAME})\n"
+    )
+    .expect("string write");
+    writeln!(
+        document,
+        "![h_newcost and h_oldcost]({DELIVERY_HEALTH_FRACTION_CHART_FILE_NAME})"
+    )
+    .expect("string write");
+
     writeln!(document, "\n## Transition-end result\n").expect("string write");
     writeln!(
         document,
-        "TreeCover is deleted when `h_newcost > 0.7` or `h_oldcost < 0.5`. The condition was **{}** after `{}` post-transition Commit(s); trigger: `{}`. Adds: `{}`. Updates: `{}`. Removes: `{}`. Final clients: `{}`.\n",
+        "| Retirement condition met | Post-transition commits | Trigger | Adds | Updates | Removes | Final clients | Retirement state |\n|---|---:|---|---:|---:|---:|---:|---|\n| {} | {} | {} | {} | {} | {} | {} | {} |\n",
         if summary.retirement_condition_met {
-            "met"
+            "yes"
         } else {
-            "not met"
+            "no"
         },
         summary.post_transition_commit_count,
         summary.retirement_trigger,
@@ -1375,22 +1717,9 @@ fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
         summary.update_commit_count,
         summary.remove_commit_count,
         summary.final_member_count,
+        summary.live_protocol_retirement_state,
     )
     .expect("string write");
-
-    writeln!(document, "\n## Counting rules\n").expect("string write");
-    writeln!(document, "- `Committer node index` is the committer's target-tree leaf ordinal, not its member identifier.").expect("string write");
-    writeln!(document, "- `C_leaf` is the current active-client count, matching the operator's worst-case convention.").expect("string write");
-    writeln!(document, "- `C_new` and `C_old` are committer-specific recipient-entry costs, not counts of healthy keys. Better coverage makes these costs decrease toward `C_ideal`; the corresponding health fractions increase. Costs can differ between rows because the random committer path changes.").expect("string write");
-    writeln!(document, "- `Usable new nodes` and `Usable old nodes` expose availability separately. Update does not invalidate old nodes. Remove invalidates the removed member's known old and stale-new paths before refreshing the removing committer's new path, so its net usable-new count is not guaranteed to increase.").expect("string write");
-    writeln!(document, "- `C_new` evaluates every required target-tree sibling using only the new tree: one send for a usable new-tree node; otherwise one direct send to every active leaf beneath that required node. Old TreeCover values never contribute to `C_new` or `h_newcost`.").expect("string write");
-    writeln!(document, "- `C_old` places the same committer in the old TreeCover and recursively selects safe usable old nodes. A missing required old node is split into safe child subtrees, so the count reflects TreeCover recipient entries rather than logical client leaves.").expect("string write");
-    writeln!(document, "- `C_real` models actual delivery priority for each required target set: use one usable new-tree node; otherwise use the smallest usable old-TreeCover cover; otherwise send directly to uncovered active leaves. `C_real` does not enter either health formula.").expect("string write");
-    writeln!(document, "- `C_ideal` counts the non-empty target-tree sibling nodes when every required internal value is usable.").expect("string write");
-    writeln!(document, "- The new tree starts with no usable internal values. An `update` populates the target-tree internal nodes on its committer path. A `remove` invalidates old and new direct-path ancestors known by the removed member, removes that client, then refreshes the removing committer's new-tree path.").expect("string write");
-    writeln!(document, "- Operation labels are `add`, `remove`, or `update`; binary operations are randomized across all three, while the post-transition frozen mapping safely permits only `remove` and `update`. A removal never selects its committer as the target.").expect("string write");
-    writeln!(document, "\n## Boundary\n").expect("string write");
-    writeln!(document, "These rows are real experimental-fork observations. Each accepted Commit was authenticated, atomically merged, and followed by a ciphertext-free retained-availability snapshot. The final row is a signed authenticated retirement Commit; its transaction deletes the retained TreeCover key envelope and exposes only redacted deletion counts. This remains thesis-local experimental software, not an interoperability or production-security claim.").expect("string write");
 
     writeln!(document, "\n## Post-transition averages\n").expect("string write");
     writeln!(
@@ -1628,7 +1957,7 @@ mod tests {
         let result = simulate(config).expect("simulation");
         let report = markdown(config, &result);
         assert!(report.contains(
-            "| Committer node index | Operation type | C_new | C_old | C_real | h_newcost | h_oldcost | Bytes sent |"
+            "| Committer node index | Operation type | Usable new nodes | Usable old nodes | C_new endpoint cost | C_old endpoint cost | C_real endpoint cost | h_newcost | h_oldcost | Bytes sent |"
         ));
         assert!(report.contains(
             "| Average C_new | Average C_old | Average C_real | Average h_newcost | Average h_oldcost | Average bytes sent |"
@@ -1640,8 +1969,22 @@ mod tests {
         assert!(report.contains(
             "| Commit | Operation | Committer node index | Active clients | Real quaternary probe Commit bytes | Matched fresh binary probe Commit bytes | Real saving | Real decision |"
         ));
-        assert!(report.contains("h_newcost > 0.7"));
+        assert!(report.contains("| Transition Commit | Committer node index | Transition bytes |"));
+        assert!(!report.contains("C_real delivery targets"));
+        assert!(report.contains("![C_new and C_old endpoint costs](delivery_costs.svg)"));
+        assert!(report.contains("![h_newcost and h_oldcost](delivery_health.svg)"));
+        assert!(!report.contains("The byte comparison uses"));
+        assert!(!report.contains("## Counting rules"));
+        assert!(!report.contains("## Boundary"));
         assert!(report.contains("1/117 (0.008547)"));
         assert!(report.contains("10/13 (0.769231)"));
+
+        let cost_chart = delivery_cost_chart_svg(&result.events);
+        assert!(cost_chart.contains("C_new"));
+        assert!(cost_chart.contains("C_old"));
+        let health_chart = delivery_health_chart_svg(&result.events);
+        assert!(health_chart.contains("h_newcost"));
+        assert!(health_chart.contains("h_oldcost"));
+        assert!(health_chart.contains("new threshold 0.70"));
     }
 }
