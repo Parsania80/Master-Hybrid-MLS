@@ -211,8 +211,10 @@ The thesis specifically requires the post-quantum ciphertext to be transmitted a
 
 Mode 4 writes `summary.csv`, `events.csv`, a table-only `report.md`,
 `delivery_costs.svg`, and `delivery_health.svg`. The two SVGs plot
-`C_new`/`C_old` and `h_newcost`/`h_oldcost` for post-transition commits. Healthy
-probe templates are prepared once per population count and reloaded into
-isolated provider storage for each operation; setup bytes remain excluded. The
-launcher uses normal Cargo parallelism and does not deliberately lower CPU or
-I/O priority.
+`C_new`/`C_old` and `h_newcost`/`h_oldcost` for post-transition commits. They
+use a white print-friendly background and black MATLAB-like series: the first
+series is solid with triangle markers, while the second is dashed with square
+markers. Healthy probe templates are prepared once per population count and
+reloaded into isolated provider storage for each operation; setup bytes remain
+excluded. The launcher uses normal Cargo parallelism and does not deliberately
+lower CPU or I/O priority.

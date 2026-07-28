@@ -218,4 +218,4 @@ Source: `C:\Users\Parsania\Documents\GitHub\Master-Hybrid-MLS\ترم 4\پایا�
 
 **Current:** Task 86 — operator acceptance of the optimized real fork report on Linux and Windows GNU/MinGW.
 
-**Next:** Rerun mode 4 on Linux with a fresh label, inspect schema-6 CSV/Markdown provenance, transition bytes, retirement rows, and both SVG charts, and compare them with the successful Windows GNU/MinGW artifact `task86-fast-charts-128-v1` (488.098 seconds).
+**Next:** Rerun mode 4 on Linux with a fresh label, inspect schema-6 CSV/Markdown provenance, transition bytes, retirement rows, and the white-background black triangle/square SVG charts, and compare them with the successful Windows GNU/MinGW artifact `task86-fast-charts-128-v1` (488.098 seconds).

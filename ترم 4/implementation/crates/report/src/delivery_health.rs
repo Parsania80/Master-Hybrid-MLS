@@ -1297,7 +1297,15 @@ fn events_csv(events: &[DeliveryHealthEvent]) -> Result<Vec<u8>, DeliveryHealthE
 struct ChartSeries {
     label: &'static str,
     color: &'static str,
+    dash_array: Option<&'static str>,
+    marker: ChartMarker,
     values: Vec<f64>,
+}
+
+#[derive(Clone, Copy)]
+enum ChartMarker {
+    Triangle,
+    Square,
 }
 
 struct ChartThreshold {
@@ -1331,12 +1339,16 @@ fn delivery_cost_chart_svg(events: &[DeliveryHealthEvent]) -> String {
         &[
             ChartSeries {
                 label: "C_new",
-                color: "#22d3ee",
+                color: "#111111",
+                dash_array: None,
+                marker: ChartMarker::Triangle,
                 values: c_new,
             },
             ChartSeries {
                 label: "C_old",
-                color: "#a78bfa",
+                color: "#111111",
+                dash_array: Some("10 6"),
+                marker: ChartMarker::Square,
                 values: c_old,
             },
         ],
@@ -1383,12 +1395,16 @@ fn delivery_health_chart_svg(events: &[DeliveryHealthEvent]) -> String {
         &[
             ChartSeries {
                 label: "h_newcost",
-                color: "#34d399",
+                color: "#111111",
+                dash_array: None,
+                marker: ChartMarker::Triangle,
                 values: h_new,
             },
             ChartSeries {
                 label: "h_oldcost",
-                color: "#fb923c",
+                color: "#111111",
+                dash_array: Some("10 6"),
+                marker: ChartMarker::Square,
                 values: h_old,
             },
         ],
@@ -1396,12 +1412,12 @@ fn delivery_health_chart_svg(events: &[DeliveryHealthEvent]) -> String {
         &[
             ChartThreshold {
                 label: "new threshold 0.70",
-                color: "#6ee7b7",
+                color: "#4b5563",
                 value: 0.7,
             },
             ChartThreshold {
                 label: "old threshold 0.50",
-                color: "#fdba74",
+                color: "#6b7280",
                 value: 0.5,
             },
         ],
@@ -1440,41 +1456,25 @@ fn line_chart_svg(
     .expect("string write");
     svg.push_str(
         r##"<defs>
-  <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-    <stop offset="0%" stop-color="#071426"/>
-    <stop offset="55%" stop-color="#0f1f38"/>
-    <stop offset="100%" stop-color="#172554"/>
-  </linearGradient>
-  <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
-    <stop offset="0%" stop-color="#17233b" stop-opacity="0.98"/>
-    <stop offset="100%" stop-color="#0b1528" stop-opacity="0.98"/>
-  </linearGradient>
-  <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-    <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#020617" flood-opacity="0.55"/>
-  </filter>
-  <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-    <feGaussianBlur stdDeviation="3" result="blur"/>
-    <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-  </filter>
   <style>
-    .title{font:700 26px Inter,Segoe UI,sans-serif;fill:#f8fafc}
-    .axis-label{font:600 13px Inter,Segoe UI,sans-serif;fill:#cbd5e1;letter-spacing:.04em}
-    .tick{font:12px Inter,Segoe UI,sans-serif;fill:#94a3b8}
-    .legend{font:600 13px Inter,Segoe UI,sans-serif;fill:#e2e8f0}
-    .grid{stroke:#64748b;stroke-width:1;stroke-opacity:.22}
-    .axis{stroke:#94a3b8;stroke-width:1.2;stroke-opacity:.65}
+    .title{font:700 26px Inter,Segoe UI,sans-serif;fill:#111111}
+    .axis-label{font:600 13px Inter,Segoe UI,sans-serif;fill:#111111;letter-spacing:.04em}
+    .tick{font:12px Inter,Segoe UI,sans-serif;fill:#374151}
+    .legend{font:600 13px Inter,Segoe UI,sans-serif;fill:#111111}
+    .grid{stroke:#d1d5db;stroke-width:1}
+    .axis{stroke:#111111;stroke-width:1.4}
   </style>
 </defs>
 "##,
     );
     writeln!(
         svg,
-        r#"<rect width="{WIDTH:.0}" height="{HEIGHT:.0}" rx="28" fill="url(#background)"/>"#
+        r##"<rect width="{WIDTH:.0}" height="{HEIGHT:.0}" fill="#ffffff"/>"##
     )
     .expect("string write");
     writeln!(
         svg,
-        r##"<rect x="42" y="42" width="1036" height="556" rx="24" fill="url(#panel)" stroke="#334155" stroke-width="1" filter="url(#shadow)"/>"##
+        r##"<rect x="42" y="42" width="1036" height="556" rx="12" fill="#ffffff" stroke="#9ca3af" stroke-width="1"/>"##
     )
     .expect("string write");
     writeln!(svg, r#"<text x="78" y="84" class="title">{title}</text>"#).expect("string write");
@@ -1529,7 +1529,7 @@ fn line_chart_svg(
         let x = x_position(index);
         writeln!(
             svg,
-            r##"<line x1="{x:.2}" y1="{:.2}" x2="{x:.2}" y2="{:.2}" stroke="#94a3b8" stroke-opacity=".35"/>"##,
+            r##"<line x1="{x:.2}" y1="{:.2}" x2="{x:.2}" y2="{:.2}" stroke="#111111" stroke-opacity=".55"/>"##,
             TOP + PLOT_HEIGHT,
             TOP + PLOT_HEIGHT + 7.0
         )
@@ -1563,6 +1563,9 @@ fn line_chart_svg(
     }
 
     for chart_series in series {
+        let dash = chart_series.dash_array.map_or_else(String::new, |pattern| {
+            format!(r#" stroke-dasharray="{pattern}""#)
+        });
         let points = chart_series
             .values
             .iter()
@@ -1572,31 +1575,33 @@ fn line_chart_svg(
             .join(" ");
         writeln!(
             svg,
-            r#"<polyline points="{points}" fill="none" stroke="{}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>"#,
-            chart_series.color
+            r#"<polyline points="{points}" fill="none" stroke="{}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"{dash}/>"#,
+            chart_series.color,
         )
         .expect("string write");
         for (index, value) in chart_series.values.iter().enumerate() {
             let x = x_position(index);
             let y = y_position(*value);
-            writeln!(
-                svg,
-                r##"<circle cx="{x:.2}" cy="{y:.2}" r="6" fill="#0f172a" stroke="{}" stroke-width="3"><title>{}: {:.6}</title></circle>"##,
-                chart_series.color,
-                chart_series.label,
-                value
-            )
-            .expect("string write");
+            write_chart_marker(&mut svg, chart_series, x, y, *value);
         }
     }
 
     for (index, chart_series) in series.iter().enumerate() {
         let legend_x = 610.0 + index as f64 * 150.0;
+        let dash = chart_series.dash_array.map_or_else(String::new, |pattern| {
+            format!(r#" stroke-dasharray="{pattern}""#)
+        });
         writeln!(
             svg,
-            r#"<line x1="{legend_x:.2}" y1="78" x2="{:.2}" y2="78" stroke="{}" stroke-width="4" stroke-linecap="round"/><text x="{:.2}" y="83" class="legend">{}</text>"#,
+            r#"<line x1="{legend_x:.2}" y1="78" x2="{:.2}" y2="78" stroke="{}" stroke-width="3" stroke-linecap="round"{dash}/>"#,
             legend_x + 30.0,
             chart_series.color,
+        )
+        .expect("string write");
+        write_legend_marker(&mut svg, chart_series.marker, legend_x + 15.0, 78.0);
+        writeln!(
+            svg,
+            r#"<text x="{:.2}" y="83" class="legend">{}</text>"#,
             legend_x + 40.0,
             chart_series.label
         )
@@ -1604,6 +1609,52 @@ fn line_chart_svg(
     }
     svg.push_str("</svg>\n");
     svg
+}
+
+fn write_chart_marker(svg: &mut String, series: &ChartSeries, x: f64, y: f64, value: f64) {
+    match series.marker {
+        ChartMarker::Triangle => writeln!(
+            svg,
+            r##"<polygon points="{x:.2},{:.2} {:.2},{:.2} {:.2},{:.2}" fill="#ffffff" stroke="{}" stroke-width="2.5"><title>{}: {value:.6}</title></polygon>"##,
+            y - 7.0,
+            x - 7.0,
+            y + 6.0,
+            x + 7.0,
+            y + 6.0,
+            series.color,
+            series.label,
+        ),
+        ChartMarker::Square => writeln!(
+            svg,
+            r##"<rect x="{:.2}" y="{:.2}" width="12" height="12" fill="#ffffff" stroke="{}" stroke-width="2.5"><title>{}: {value:.6}</title></rect>"##,
+            x - 6.0,
+            y - 6.0,
+            series.color,
+            series.label,
+        ),
+    }
+    .expect("string write");
+}
+
+fn write_legend_marker(svg: &mut String, marker: ChartMarker, x: f64, y: f64) {
+    match marker {
+        ChartMarker::Triangle => writeln!(
+            svg,
+            r##"<polygon points="{x:.2},{:.2} {:.2},{:.2} {:.2},{:.2}" fill="#ffffff" stroke="#111111" stroke-width="2"/>"##,
+            y - 6.0,
+            x - 6.0,
+            y + 5.0,
+            x + 6.0,
+            y + 5.0,
+        ),
+        ChartMarker::Square => writeln!(
+            svg,
+            r##"<rect x="{:.2}" y="{:.2}" width="10" height="10" fill="#ffffff" stroke="#111111" stroke-width="2"/>"##,
+            x - 5.0,
+            y - 5.0,
+        ),
+    }
+    .expect("string write");
 }
 
 fn markdown(config: DeliveryHealthConfig, result: &SimulationResult) -> String {
@@ -1982,6 +2033,11 @@ mod tests {
         let cost_chart = delivery_cost_chart_svg(&result.events);
         assert!(cost_chart.contains("C_new"));
         assert!(cost_chart.contains("C_old"));
+        assert!(cost_chart.contains(r##"fill="#ffffff""##));
+        assert!(cost_chart.contains(r##"stroke="#111111""##));
+        assert!(cost_chart.contains("<polygon"));
+        assert!(cost_chart.contains("<rect"));
+        assert!(cost_chart.contains(r#"stroke-dasharray="10 6""#));
         let health_chart = delivery_health_chart_svg(&result.events);
         assert!(health_chart.contains("h_newcost"));
         assert!(health_chart.contains("h_oldcost"));
