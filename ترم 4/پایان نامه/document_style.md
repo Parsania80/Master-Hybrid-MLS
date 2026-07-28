@@ -90,6 +90,35 @@ For scripts that write Persian digits, use Unicode code points instead:
 
 The Persian digit code points are `U+06F0` through `U+06F9`.
 
+## Footnotes
+
+Footnotes use two visual columns. Their required reading and numbering order is:
+
+```text
+left column    right column
+3              1
+4              2
+```
+
+In other words, Word must fill the right footnote column from top to bottom first, then continue at the top of the left column. It must not display the same notes as:
+
+```text
+left column    right column
+1              3
+2              4
+```
+
+This ordering is controlled by the section's column flow, not by manually moving individual footnotes. For every thesis section that can contain footnotes:
+
+- `PageSetup.SectionDirection = 0`
+- `PageSetup.TextColumns.FlowDirection = 1`
+- The section must therefore have right-to-left column flow.
+- Keep Persian body paragraphs right-to-left through their paragraph and heading styles.
+- The `Footnote Text` style must use left-to-right reading order and regular left alignment.
+- Existing footnote paragraphs must not contain direct RTL or right-alignment formatting.
+
+These section and style settings make newly inserted footnotes follow the same right-column-first order automatically. If a new section is added, verify that it inherited the same section direction and column flow from the preceding body section.
+
 ## Safe editing workflow
 
 Before changing `Thesis.docx`:
@@ -129,6 +158,10 @@ Use this checklist for every future TOC or numbering change:
 - [ ] No TOC row is unexpectedly bold.
 - [ ] **Update entire table** does not undo the fixes.
 - [ ] Body headings and page numbers remain intact.
+- [ ] Footnotes fill the right column first, then the left column.
+- [ ] Four footnotes appear visually as `(3 1)` and `(4 2)`, not `(1 3)` and `(2 4)`.
+- [ ] A newly inserted footnote inherits left-to-right footnote formatting and the correct column order.
+- [ ] Any newly created body section has `SectionDirection = 0` and `TextColumns.FlowDirection = 1`.
 
 ## Important distinction
 
