@@ -9,11 +9,75 @@ $wdReadingOrderLtr = 1
 $wdReadingOrderRtl = 0
 $wdSectionDirectionRtl = 0
 $wdFlowRtl = 1
+$wordprocessingMl = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+function Set-Heading1NumberFormat([string]$path) {
+    Add-Type -AssemblyName WindowsBase
+    $package = [System.IO.Packaging.Package]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite)
+
+    try {
+        $documentPart = $package.GetPart([Uri]'/word/document.xml')
+        $documentReader = [System.IO.StreamReader]::new($documentPart.GetStream([System.IO.FileMode]::Open, [System.IO.FileAccess]::Read))
+        $documentXml = [System.Xml.XmlDocument]::new()
+        $documentXml.PreserveWhitespace = $true
+        $documentXml.LoadXml($documentReader.ReadToEnd())
+        $documentReader.Dispose()
+        $namespaceManager = [System.Xml.XmlNamespaceManager]::new($documentXml.NameTable)
+        $namespaceManager.AddNamespace('w', $wordprocessingMl)
+
+        $removedOverrides = 0
+        foreach ($heading in $documentXml.SelectNodes("//w:p[w:pPr/w:pStyle[@w:val='Heading1']]", $namespaceManager)) {
+            $numberingOverride = $heading.SelectSingleNode('w:pPr/w:numPr', $namespaceManager)
+            if ($null -ne $numberingOverride) {
+                [void]$numberingOverride.ParentNode.RemoveChild($numberingOverride)
+                $removedOverrides++
+            }
+        }
+
+        $documentStream = $documentPart.GetStream([System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+        $documentSettings = [System.Xml.XmlWriterSettings]::new()
+        $documentSettings.Encoding = [System.Text.UTF8Encoding]::new($false)
+        $documentWriter = [System.Xml.XmlWriter]::Create($documentStream, $documentSettings)
+        $documentXml.Save($documentWriter)
+        $documentWriter.Dispose()
+
+        $numberingPart = $package.GetPart([Uri]'/word/numbering.xml')
+        $numberingReader = [System.IO.StreamReader]::new($numberingPart.GetStream([System.IO.FileMode]::Open, [System.IO.FileAccess]::Read))
+        $numberingXml = [System.Xml.XmlDocument]::new()
+        $numberingXml.PreserveWhitespace = $true
+        $numberingXml.LoadXml($numberingReader.ReadToEnd())
+        $numberingReader.Dispose()
+        $numberingNs = [System.Xml.XmlNamespaceManager]::new($numberingXml.NameTable)
+        $numberingNs.AddNamespace('w', $wordprocessingMl)
+        $numberingId = $numberingXml.SelectSingleNode("//w:num[@w:numId='5']/w:abstractNumId", $numberingNs).GetAttribute('w:val')
+        $levelOne = $numberingXml.SelectSingleNode("//w:abstractNum[@w:abstractNumId='$numberingId']/w:lvl[@w:ilvl='0']", $numberingNs)
+        $levelText = $levelOne.SelectSingleNode('w:lvlText', $numberingNs)
+        $suffix = $levelOne.SelectSingleNode('w:suff', $numberingNs)
+        $null = $levelText.SetAttribute('val', $wordprocessingMl, '')
+        $null = $suffix.SetAttribute('val', $wordprocessingMl, 'nothing')
+
+        $numberingStream = $numberingPart.GetStream([System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+        $numberingSettings = [System.Xml.XmlWriterSettings]::new()
+        $numberingSettings.Encoding = [System.Text.UTF8Encoding]::new($false)
+        $numberingWriter = [System.Xml.XmlWriter]::Create($numberingStream, $numberingSettings)
+        $numberingXml.Save($numberingWriter)
+        $numberingWriter.Dispose()
+
+        return $removedOverrides
+    }
+    finally {
+        $package.Close()
+    }
+}
 
 $word = $null
 $document = $null
 
 try {
+    # Heading 1 stays in the multilevel list to reset Heading 2 counters, but
+    # its level's visible label is empty so chapter titles remain text-only.
+    $heading1OverridesRemoved = Set-Heading1NumberFormat $docPath
+
     $word = New-Object -ComObject Word.Application
     $word.Visible = $false
     $word.DisplayAlerts = 0
@@ -47,23 +111,13 @@ try {
         $section.PageSetup.TextColumns.FlowDirection = $wdFlowRtl
     }
 
-    # Keep chapter titles as Heading 1 / outline level 1, but do not display
-    # an automatic list label beside the title text.
-    $heading1NumbersRemoved = 0
-    foreach ($paragraph in $document.Paragraphs) {
-        if ($paragraph.OutlineLevel -eq 1 -and $paragraph.Range.ListFormat.ListString.Length -gt 0) {
-            $paragraph.Range.ListFormat.RemoveNumbers()
-            $heading1NumbersRemoved++
-        }
-    }
-
     $document.Fields.Update() | Out-Null
     foreach ($toc in $document.TablesOfContents) {
         $toc.Update()
     }
 
     $document.Save()
-    "Saved Thesis.docx after applying Word-level thesis styles, removing $heading1NumbersRemoved Heading 1 labels, and refreshing fields."
+    "Saved Thesis.docx after applying Word-level thesis styles, restoring $heading1OverridesRemoved Heading 1 list memberships, and refreshing fields."
 }
 finally {
     if ($null -ne $document) { $document.Close(0) }

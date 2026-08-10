@@ -46,6 +46,7 @@ Important rules:
 
 - Heading 1 paragraphs must not display an automatic number next to their title.
 - Keep any chapter designation, such as `فصل اول`, as literal title text rather than a generated list label.
+- Heading 1 must remain in the underlying multilevel list with an empty displayed label. This keeps Heading 2 numbering reset by chapter: removing Heading 1 from the list causes Chapter 2 to continue incorrectly as `۸-۱` instead of `۱-۲`.
 - The first section of Chapter 1 must be `۱-۱`.
 - Chapter 2 sections must restart correctly as `۱-۲`, `۲-۲`, etc.
 - Do not alter the outline levels:
