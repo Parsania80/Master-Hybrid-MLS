@@ -22,7 +22,7 @@ The main table of contents must look like the white-background reference image:
 - Dotted leaders between entry text and page number
 - Page numbers aligned consistently on the left
 - Entries should remain on one line where the page width allows
-- The separator between a heading number and its title must be a normal space, not an extra tab
+- The separator between a Heading 2 or Heading 3 number and its title must be a normal space, not an extra tab
 - The TOC must not have a black or gray document fill
 - TOC rows must use the same regular, non-bold formatting
 - TOC digits must be Persian digits:
@@ -30,12 +30,13 @@ The main table of contents must look like the white-background reference image:
 
 The dark screenshot seen previously was mainly Word Dark Mode and field shading. It was not a printable background fill.
 
-## Heading numbering
+## Headings and numbering
 
 The heading hierarchy is:
 
-- Heading 1: chapter number
-  - Example: `۱ فصل اول: مقدمه`
+- Heading 1: chapter title only, with no automatic list number
+  - Example: `فصل اول: مقدمه`
+  - Example: `ادبیات موضوع`
 - Heading 2: section number
   - Example: `۱-۱ مقدمه و پیش‌زمینه`
 - Heading 3: subsection number
@@ -43,16 +44,17 @@ The heading hierarchy is:
 
 Important rules:
 
-- Chapter 1 must always begin at `۱`, never `۲`.
+- Heading 1 paragraphs must not display an automatic number next to their title.
+- Keep any chapter designation, such as `فصل اول`, as literal title text rather than a generated list label.
 - The first section of Chapter 1 must be `۱-۱`.
 - Chapter 2 sections must restart correctly as `۱-۲`, `۲-۲`, etc.
 - Do not alter the outline levels:
   - Heading 1 → outline level 1
   - Heading 2 → outline level 2
   - Heading 3 → outline level 3
-- Heading list levels should use a space after the number, not a tab.
+- Heading 2 and Heading 3 list levels should use a space after the number, not a tab.
 - When changing numbering, verify both:
-  1. the heading numbers in the body;
+  1. Heading 1 remains text-only while Heading 2 and Heading 3 numbering remains correct in the body;
   2. the numbers generated in the TOC after using **Update entire table**.
 
 ## Persian numerals and Word fields
@@ -62,7 +64,7 @@ The TOC is a live Word `TOC` field. Its cached displayed text can be edited, but
 Therefore, a durable fix must also address:
 
 - Word’s Arabic numeral display setting;
-- the language metadata for Heading 1–3 numbering;
+- the language metadata for Heading 2–3 numbering;
 - the language metadata for TOC1–TOC3 styles;
 - the TOC page-reference fields.
 
@@ -131,7 +133,7 @@ Before changing `Thesis.docx`:
 6. Reopen it in Word.
 7. Use **Update entire table**.
 8. Verify:
-   - Chapter 1 is `۱`, not `۲`;
+   - Heading 1 titles have no automatic number;
    - section numbering is correct;
    - all TOC digits are Persian;
    - no mojibake appears;
@@ -150,7 +152,7 @@ Use this checklist for every future TOC or numbering change:
 - [ ] TOC direction is RTL.
 - [ ] TOC entries have one page-number tab and dotted leaders.
 - [ ] No entry is split because of an extra number/title tab.
-- [ ] Chapter 1 displays as `۱`.
+- [ ] Heading 1 chapter titles display as text-only (for example, `فصل اول: مقدمه`).
 - [ ] Chapter 1 first section displays as `۱-۱`.
 - [ ] Chapter 2 restarts correctly.
 - [ ] All TOC digits display as Persian digits.
@@ -167,7 +169,7 @@ Use this checklist for every future TOC or numbering change:
 
 There are three different kinds of numbers in this thesis:
 
-1. Body heading/list numbers
+1. Body heading/list numbers (Heading 2 and Heading 3; Heading 1 is text-only)
 2. TOC heading and page-reference numbers
 3. Numbers inside ordinary thesis text, figures, tables, equations, and references
 

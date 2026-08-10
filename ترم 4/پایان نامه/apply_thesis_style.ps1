@@ -47,13 +47,23 @@ try {
         $section.PageSetup.TextColumns.FlowDirection = $wdFlowRtl
     }
 
+    # Keep chapter titles as Heading 1 / outline level 1, but do not display
+    # an automatic list label beside the title text.
+    $heading1NumbersRemoved = 0
+    foreach ($paragraph in $document.Paragraphs) {
+        if ($paragraph.OutlineLevel -eq 1 -and $paragraph.Range.ListFormat.ListString.Length -gt 0) {
+            $paragraph.Range.ListFormat.RemoveNumbers()
+            $heading1NumbersRemoved++
+        }
+    }
+
     $document.Fields.Update() | Out-Null
     foreach ($toc in $document.TablesOfContents) {
         $toc.Update()
     }
 
     $document.Save()
-    'Saved Thesis.docx after applying Word-level thesis styles and refreshing fields.'
+    "Saved Thesis.docx after applying Word-level thesis styles, removing $heading1NumbersRemoved Heading 1 labels, and refreshing fields."
 }
 finally {
     if ($null -ne $document) { $document.Close(0) }
