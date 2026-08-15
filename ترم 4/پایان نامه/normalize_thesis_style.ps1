@@ -1,9 +1,18 @@
 # Applies persistent OOXML metadata after apply_thesis_style.ps1.
 # Run only while Thesis.docx is closed in Word.
 
+param(
+    [string]$DocumentPath
+)
+
 $ErrorActionPreference = 'Stop'
 
-$docPath = Join-Path $PSScriptRoot 'Thesis.docx'
+$docPath = if ($DocumentPath) {
+    [System.IO.Path]::GetFullPath($DocumentPath)
+}
+else {
+    Join-Path $PSScriptRoot 'Thesis.docx'
+}
 $w = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
 function Open-XmlPart([System.IO.Packaging.Package]$package, [string]$uri) {
@@ -64,6 +73,16 @@ try {
         $null = $lang.SetAttribute('bidi', $w, 'fa-IR')
     }
 
+    $captionStyle = $styleXml.SelectSingleNode("//w:style[@w:styleId='Caption']", $script:ns)
+    $captionPPr = Get-OrAddChild $styleXml $captionStyle 'w:pPr' 'pPr'
+    $captionBidi = Get-OrAddChild $styleXml $captionPPr 'w:bidi' 'bidi'
+    $captionBidi.RemoveAllAttributes()
+    $captionRPr = Get-OrAddChild $styleXml $captionStyle 'w:rPr' 'rPr'
+    $captionLang = Get-OrAddChild $styleXml $captionRPr 'w:lang' 'lang'
+    $null = $captionLang.SetAttribute('val', $w, 'fa-IR')
+    $null = $captionLang.SetAttribute('eastAsia', $w, 'fa-IR')
+    $null = $captionLang.SetAttribute('bidi', $w, 'fa-IR')
+
     $footnoteStyle = $styleXml.SelectSingleNode("//w:style[@w:styleId='FootnoteText']", $script:ns)
     $footnotePPr = Get-OrAddChild $styleXml $footnoteStyle 'w:pPr' 'pPr'
     $footnoteBidi = Get-OrAddChild $styleXml $footnotePPr 'w:bidi' 'bidi'
@@ -83,6 +102,18 @@ try {
                 $boldNode = $runProperties.SelectSingleNode("w:$nodeName", $script:ns)
                 if ($null -ne $boldNode) { [void]$runProperties.RemoveChild($boldNode) }
             }
+            $lang = Get-OrAddChild $documentXml $runProperties 'w:lang' 'lang'
+            $null = $lang.SetAttribute('val', $w, 'fa-IR')
+            $null = $lang.SetAttribute('eastAsia', $w, 'fa-IR')
+            $null = $lang.SetAttribute('bidi', $w, 'fa-IR')
+        }
+    }
+    $captionParagraphs = $documentXml.SelectNodes("//w:p[w:pPr/w:pStyle[@w:val='Caption']]", $script:ns)
+    foreach ($paragraph in $captionParagraphs) {
+        $pPr = Get-OrAddChild $documentXml $paragraph 'w:pPr' 'pPr'
+        $bidi = Get-OrAddChild $documentXml $pPr 'w:bidi' 'bidi'
+        $bidi.RemoveAllAttributes()
+        foreach ($runProperties in $paragraph.SelectNodes('.//w:rPr', $script:ns)) {
             $lang = Get-OrAddChild $documentXml $runProperties 'w:lang' 'lang'
             $null = $lang.SetAttribute('val', $w, 'fa-IR')
             $null = $lang.SetAttribute('eastAsia', $w, 'fa-IR')

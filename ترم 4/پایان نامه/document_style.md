@@ -176,6 +176,27 @@ There are three different kinds of numbers in this thesis:
 
 Unless explicitly requested, a TOC correction should not rewrite every number in the entire thesis.
 
+## Figure and table lists
+
+- Figure and table captions use literal Persian chapter/sequence numbers so the hidden Heading 1 label cannot produce a `0` chapter prefix.
+- Numbering restarts inside each chapter and is sequential among captions that actually exist.
+- Captions inside text boxes must be included; Word's normal Table of Figures field omits them.
+- `apply_thesis_style.ps1` rebuilds both front lists as separate `TOC 1` paragraphs with dotted leaders and Persian page numbers.
+- The front-list page numbers are refreshed whenever `apply_thesis_style.ps1` is rerun.
+- Keep the section-break paragraphs after the figure list and table list intact.
+
+Current verified counts:
+
+- 17 figures
+- 7 tables
+
+## Bibliography numbering
+
+- The generated bibliography is finalized as static paragraphs after the `BIBLIOGRAPHY` field is refreshed.
+- Each reference has a literal Persian list prefix from `U+06F0` through `U+06F9`.
+- This avoids mixed digit shaping caused by English bibliography text and automatic Word list labels.
+- The current bibliography is static after finalization. To add or change Word bibliography sources later, insert/update a new `BIBLIOGRAPHY` field first and then rerun `apply_thesis_style.ps1`.
+
 ## Recovery
 
 If a future edit causes corruption:
