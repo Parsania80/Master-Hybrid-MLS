@@ -90,6 +90,8 @@ try {
     $captionPPr = Get-OrAddChild $styleXml $captionStyle 'w:pPr' 'pPr'
     $captionBidi = Get-OrAddChild $styleXml $captionPPr 'w:bidi' 'bidi'
     $captionBidi.RemoveAllAttributes()
+    $captionJc = Get-OrAddChild $styleXml $captionPPr 'w:jc' 'jc'
+    $null = $captionJc.SetAttribute('val', $w, 'center')
     $captionRPr = Get-OrAddChild $styleXml $captionStyle 'w:rPr' 'rPr'
     $captionLang = $captionRPr.SelectSingleNode('w:lang', $script:ns)
     if ($null -ne $captionLang) { [void]$captionRPr.RemoveChild($captionLang) }
@@ -141,6 +143,8 @@ try {
         $pPr = Get-OrAddChild $documentXml $paragraph 'w:pPr' 'pPr'
         $bidi = Get-OrAddChild $documentXml $pPr 'w:bidi' 'bidi'
         $bidi.RemoveAllAttributes()
+        $jc = Get-OrAddChild $documentXml $pPr 'w:jc' 'jc'
+        $null = $jc.SetAttribute('val', $w, 'center')
         foreach ($runProperties in $paragraph.SelectNodes('.//w:rPr', $script:ns)) {
             $lang = $runProperties.SelectSingleNode('w:lang', $script:ns)
             if ($null -ne $lang) { [void]$runProperties.RemoveChild($lang) }

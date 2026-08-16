@@ -45,6 +45,7 @@ The heading hierarchy is:
 Important rules:
 
 - Heading 1 paragraphs must not display an automatic number next to their title.
+- Never apply Heading 1 to an empty paragraph: even an invisible empty Heading 1 advances the chapter counter and corrupts every following Heading 2/3 number.
 - Keep any chapter designation, such as `فصل اول`, as literal title text rather than a generated list label.
 - Heading 1 must remain in the underlying multilevel list with an empty displayed label. This keeps Heading 2 numbering reset by chapter: removing Heading 1 from the list causes Chapter 2 to continue incorrectly as `۸-۱` instead of `۱-۲`.
 - The first section of Chapter 1 must be `۱-۱`.
@@ -182,6 +183,8 @@ Unless explicitly requested, a TOC correction should not rewrite every number in
 
 ## Figure and table lists
 
+- Every figure and table caption uses centered paragraph alignment, including captions inside text boxes.
+- A floating caption text box must be anchored to its matching image and positioned directly below that image; do not leave the caption anchored to a nearby body paragraph or another figure.
 - Figure and table captions use literal Persian chapter/sequence numbers so the hidden Heading 1 label cannot produce a `0` chapter prefix.
 - Numbering restarts inside each chapter and is sequential among captions that actually exist.
 - Captions inside text boxes must be included; Word's normal Table of Figures field omits them.

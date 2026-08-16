@@ -14,10 +14,15 @@ else {
     Join-Path $PSScriptRoot 'Thesis.docx'
 }
 $wdAlignParagraphLeft = 0
+$wdAlignParagraphCenter = 1
 $wdReadingOrderLtr = 1
 $wdReadingOrderRtl = 0
 $wdSectionDirectionRtl = 0
 $wdFlowRtl = 1
+$msoTextOrientationHorizontal = 1
+$msoBringToFront = 0
+$msoFalse = 0
+$wdWrapNone = 3
 $wordprocessingMl = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
 function New-UnicodeString([int[]]$codePoints) {
@@ -42,6 +47,85 @@ function Get-CleanWordText($range) {
     $text = $text.Replace([char]13, ' ').Replace([char]7, ' ')
     $text = $text.Replace([string][char]0x200E, '').Replace([string][char]0x200F, '')
     return $text.Trim()
+}
+
+function Repair-FloatingFigureCaptions($document) {
+    $captionRecords = @()
+    $graphicRecords = @()
+
+    foreach ($shape in $document.Shapes) {
+        $hasText = $false
+        try { $hasText = ($shape.TextFrame.HasText -eq -1) } catch { }
+
+        if ($hasText) {
+            $text = Get-CleanWordText $shape.TextFrame.TextRange
+            if ($shape.TextFrame.TextRange.Paragraphs.Item(1).Style.NameLocal -eq 'Caption' -and
+                $text.Contains((New-UnicodeString @(0x0634,0x06A9,0x0644)))) {
+                $captionRecords += [pscustomobject]@{
+                    Shape = $shape
+                    Text = $text
+                    AnchorStart = $shape.Anchor.Start
+                }
+            }
+        }
+        elseif ($shape.Type -eq 13 -or $shape.Type -eq 28) {
+            $graphicRecords += [pscustomobject]@{
+                Shape = $shape
+                AnchorStart = $shape.Anchor.Start
+            }
+        }
+    }
+
+    $repaired = 0
+
+    foreach ($record in $captionRecords) {
+        $targetRecord = @($graphicRecords |
+            Sort-Object { [Math]::Abs($_.AnchorStart - $record.AnchorStart) } |
+            Select-Object -First 1)[0]
+
+        if ($null -eq $targetRecord) { continue }
+        Add-Member -InputObject $record -NotePropertyName Target -NotePropertyValue $targetRecord.Shape
+    }
+
+    foreach ($record in $captionRecords) {
+        if ($null -eq $record.Target) { continue }
+        $target = $record.Target
+
+        $anchorRange = $target.Anchor.Duplicate
+        $newShape = $document.Shapes.AddTextbox(
+            $msoTextOrientationHorizontal,
+            0,
+            0,
+            $target.Width,
+            24,
+            $anchorRange
+        )
+        $newShape.RelativeHorizontalPosition = $target.RelativeHorizontalPosition
+        $newShape.RelativeVerticalPosition = $target.RelativeVerticalPosition
+        $newShape.Left = $target.Left
+        $newShape.Top = $target.Top + $target.Height + 6
+        $newShape.Width = $target.Width
+        $newShape.Height = 24
+        $newShape.WrapFormat.Type = $wdWrapNone
+        $newShape.Line.Visible = $msoFalse
+        $newShape.Fill.Visible = $msoFalse
+        $newShape.TextFrame.AutoSize = $msoFalse
+        $newShape.TextFrame.MarginLeft = 0
+        $newShape.TextFrame.MarginRight = 0
+        $newShape.TextFrame.MarginTop = 0
+        $newShape.TextFrame.MarginBottom = 0
+        $newShape.TextFrame.TextRange.Text = $record.Text
+        $newShape.TextFrame.TextRange.Style = $document.Styles.Item('Caption')
+        $newShape.TextFrame.TextRange.ParagraphFormat.ReadingOrder = $wdReadingOrderRtl
+        $newShape.TextFrame.TextRange.ParagraphFormat.Alignment = $wdAlignParagraphCenter
+        $newShape.TextFrame.TextRange.Font.Hidden = 0
+        $newShape.ZOrder($msoBringToFront)
+
+        $record.Shape.Delete()
+        $repaired++
+    }
+
+    return $repaired
 }
 
 function Get-CaptionDescription([string]$text, [string]$label, [string]$kind) {
@@ -206,6 +290,7 @@ function Repair-CaptionsAndLists($document) {
         $target.Text = $record.NewText
         $record.Paragraph.Range.Style = $document.Styles.Item('Caption')
         $record.Paragraph.Range.ParagraphFormat.ReadingOrder = 0
+        $record.Paragraph.Range.ParagraphFormat.Alignment = $wdAlignParagraphCenter
     }
 
     # Remove legacy TC entries created by an earlier version of this repair.
@@ -317,7 +402,19 @@ function Set-Heading1NumberFormat([string]$path) {
         $namespaceManager.AddNamespace('w', $wordprocessingMl)
 
         $removedOverrides = 0
+        $emptyHeadingsRepaired = 0
         foreach ($heading in $documentXml.SelectNodes("//w:p[w:pPr/w:pStyle[@w:val='Heading1']]", $namespaceManager)) {
+            if ($null -eq $heading.SelectSingleNode('.//w:t[normalize-space(.) != ""]', $namespaceManager)) {
+                $styleNode = $heading.SelectSingleNode('w:pPr/w:pStyle', $namespaceManager)
+                $null = $styleNode.SetAttribute('val', $wordprocessingMl, 'Normal')
+                $numberingOverride = $heading.SelectSingleNode('w:pPr/w:numPr', $namespaceManager)
+                if ($null -ne $numberingOverride) {
+                    [void]$numberingOverride.ParentNode.RemoveChild($numberingOverride)
+                }
+                $emptyHeadingsRepaired++
+                continue
+            }
+
             $numberingOverride = $heading.SelectSingleNode('w:pPr/w:numPr', $namespaceManager)
             if ($null -ne $numberingOverride) {
                 [void]$numberingOverride.ParentNode.RemoveChild($numberingOverride)
@@ -344,6 +441,14 @@ function Set-Heading1NumberFormat([string]$path) {
         $levelOne = $numberingXml.SelectSingleNode("//w:abstractNum[@w:abstractNumId='$numberingId']/w:lvl[@w:ilvl='0']", $numberingNs)
         $levelText = $levelOne.SelectSingleNode('w:lvlText', $numberingNs)
         $suffix = $levelOne.SelectSingleNode('w:suff', $numberingNs)
+        if ($null -eq $levelText) {
+            $levelText = $numberingXml.CreateElement('w', 'lvlText', $wordprocessingMl)
+            [void]$levelOne.AppendChild($levelText)
+        }
+        if ($null -eq $suffix) {
+            $suffix = $numberingXml.CreateElement('w', 'suff', $wordprocessingMl)
+            [void]$levelOne.AppendChild($suffix)
+        }
         $null = $levelText.SetAttribute('val', $wordprocessingMl, '')
         $null = $suffix.SetAttribute('val', $wordprocessingMl, 'nothing')
 
@@ -354,7 +459,10 @@ function Set-Heading1NumberFormat([string]$path) {
         $numberingXml.Save($numberingWriter)
         $numberingWriter.Dispose()
 
-        return $removedOverrides
+        return [pscustomobject]@{
+            RemovedOverrides = $removedOverrides
+            EmptyHeadingsRepaired = $emptyHeadingsRepaired
+        }
     }
     finally {
         $package.Close()
@@ -367,7 +475,9 @@ $document = $null
 try {
     # Heading 1 stays in the multilevel list to reset Heading 2 counters, but
     # its level's visible label is empty so chapter titles remain text-only.
-    $heading1OverridesRemoved = Set-Heading1NumberFormat $docPath
+    $headingNumberRepair = Set-Heading1NumberFormat $docPath
+    $heading1OverridesRemoved = $headingNumberRepair.RemovedOverrides
+    $chapterHeadingCountersRepaired = $headingNumberRepair.EmptyHeadingsRepaired
 
     $word = New-Object -ComObject Word.Application
     $word.Visible = $false
@@ -380,6 +490,8 @@ try {
     if ($document.ReadOnly) {
         throw 'Thesis.docx opened read-only; close it in Word and try again.'
     }
+
+    $floatingCaptionsRepaired = Repair-FloatingFigureCaptions $document
 
     foreach ($field in $document.Fields) {
         if ($field.Code.Text.Trim() -match '^TOC(\s|$)') {
@@ -427,7 +539,7 @@ try {
     }
 
     $document.Save()
-    "Saved Thesis.docx after restoring $heading1OverridesRemoved Heading 1 list memberships, repairing $($captionRepair.Figures) figure captions and $($captionRepair.Tables) table captions, and applying Persian numbers to $bibliographyCount references."
+    "Saved Thesis.docx after repairing $chapterHeadingCountersRepaired blank Chapter 6 heading counters, re-anchoring $floatingCaptionsRepaired floating captions, restoring $heading1OverridesRemoved Heading 1 list memberships, repairing $($captionRepair.Figures) figure captions and $($captionRepair.Tables) table captions, and applying Persian numbers to $bibliographyCount references."
 }
 finally {
     if ($null -ne $document) { $document.Close(0) }
