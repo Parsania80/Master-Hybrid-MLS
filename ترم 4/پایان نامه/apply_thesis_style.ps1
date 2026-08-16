@@ -83,8 +83,21 @@ function Get-ChapterNumberForPosition($headings, [int]$position) {
 }
 
 function Add-CaptionListEntries($document, $section, $records) {
+    $orderedRecords = @($records | Sort-Object Position)
+    $bookmarkPrefix = if ($orderedRecords[0].Kind -eq 'F') { '_ThesisFig' } else { '_ThesisTab' }
+    $bookmarkNames = @()
     $lines = @()
-    foreach ($record in ($records | Sort-Object Position)) {
+    for ($recordIndex = 0; $recordIndex -lt $orderedRecords.Count; $recordIndex++) {
+        $record = $orderedRecords[$recordIndex]
+        $bookmarkName = $bookmarkPrefix + ($recordIndex + 1).ToString('000')
+        if ($document.Bookmarks.Exists($bookmarkName)) {
+            $document.Bookmarks.Item($bookmarkName).Delete()
+        }
+        $bookmarkRange = $record.AnchorParagraph.Range.Duplicate
+        if ($bookmarkRange.End -gt $bookmarkRange.Start) { $bookmarkRange.End-- }
+        [void]$document.Bookmarks.Add($bookmarkName, $bookmarkRange)
+        $bookmarkNames += $bookmarkName
+
         # wdActiveEndAdjustedPageNumber returns the page number shown in the section.
         $pageNumber = $record.AnchorParagraph.Range.Information(1)
         $lines += $record.NewText + "`t" + (ConvertTo-PersianDigits ([string]$pageNumber))
@@ -101,7 +114,12 @@ function Add-CaptionListEntries($document, $section, $records) {
         $paragraph.Range.ParagraphFormat.ReadingOrder = 0
         $paragraph.Range.Font.Bold = 0
         $paragraph.Range.Font.BoldBi = 0
-        try { $paragraph.Range.LanguageID = 1065 } catch {}
+        $linkRange = $paragraph.Range.Duplicate
+        if ($linkRange.End -gt $linkRange.Start) { $linkRange.End-- }
+        $missing = [Type]::Missing
+        [void]$document.Hyperlinks.Add($linkRange, '', $bookmarkNames[$index - 1], $missing, $missing, $missing)
+        $linkRange.Font.ColorIndex = 0
+        $linkRange.Font.Underline = 0
     }
 }
 
@@ -188,7 +206,6 @@ function Repair-CaptionsAndLists($document) {
         $target.Text = $record.NewText
         $record.Paragraph.Range.Style = $document.Styles.Item('Caption')
         $record.Paragraph.Range.ParagraphFormat.ReadingOrder = 0
-        try { $record.Paragraph.Range.LanguageID = 1065 } catch {}
     }
 
     # Remove legacy TC entries created by an earlier version of this repair.
@@ -356,12 +373,18 @@ try {
     $word.Visible = $false
     $word.DisplayAlerts = 0
 
-    # Hindi numeral display is Word's Persian-compatible numeral mode.
-    $word.Options.ArabicNumeral = 1
+    # Context mode keeps Persian-list digits Persian and Latin technical digits English.
+    $word.Options.ArabicNumeral = 2
 
     $document = $word.Documents.Open($docPath, $false, $false)
     if ($document.ReadOnly) {
         throw 'Thesis.docx opened read-only; close it in Word and try again.'
+    }
+
+    foreach ($field in $document.Fields) {
+        if ($field.Code.Text.Trim() -match '^TOC(\s|$)') {
+            $field.Locked = $false
+        }
     }
 
     foreach ($styleName in @('TOC 1', 'TOC 2', 'TOC 3')) {
@@ -395,6 +418,12 @@ try {
     $document.Repaginate()
     foreach ($toc in $document.TablesOfContents) {
         $toc.Update()
+    }
+
+    foreach ($field in $document.Fields) {
+        if ($field.Code.Text.Trim() -match '^TOC(\s|$)') {
+            $field.Locked = $true
+        }
     }
 
     $document.Save()

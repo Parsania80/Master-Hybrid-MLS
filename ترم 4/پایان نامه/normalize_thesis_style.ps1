@@ -39,6 +39,19 @@ function New-WordElement([System.Xml.XmlDocument]$xml, [string]$localName) {
     return $xml.CreateElement('w', $localName, $w)
 }
 
+function ConvertTo-PersianDigits([string]$value) {
+    $builder = [System.Text.StringBuilder]::new()
+    foreach ($character in $value.ToCharArray()) {
+        if ($character -ge '0' -and $character -le '9') {
+            [void]$builder.Append([char](0x06F0 + ([int]$character - [int][char]'0')))
+        }
+        else {
+            [void]$builder.Append($character)
+        }
+    }
+    return $builder.ToString()
+}
+
 function Get-OrAddChild([System.Xml.XmlDocument]$xml, [System.Xml.XmlNode]$parent, [string]$xpath, [string]$localName) {
     $node = $parent.SelectSingleNode($xpath, $script:ns)
     if ($null -eq $node) {
@@ -78,10 +91,8 @@ try {
     $captionBidi = Get-OrAddChild $styleXml $captionPPr 'w:bidi' 'bidi'
     $captionBidi.RemoveAllAttributes()
     $captionRPr = Get-OrAddChild $styleXml $captionStyle 'w:rPr' 'rPr'
-    $captionLang = Get-OrAddChild $styleXml $captionRPr 'w:lang' 'lang'
-    $null = $captionLang.SetAttribute('val', $w, 'fa-IR')
-    $null = $captionLang.SetAttribute('eastAsia', $w, 'fa-IR')
-    $null = $captionLang.SetAttribute('bidi', $w, 'fa-IR')
+    $captionLang = $captionRPr.SelectSingleNode('w:lang', $script:ns)
+    if ($null -ne $captionLang) { [void]$captionRPr.RemoveChild($captionLang) }
 
     $footnoteStyle = $styleXml.SelectSingleNode("//w:style[@w:styleId='FootnoteText']", $script:ns)
     $footnotePPr = Get-OrAddChild $styleXml $footnoteStyle 'w:pPr' 'pPr'
@@ -108,16 +119,31 @@ try {
             $null = $lang.SetAttribute('bidi', $w, 'fa-IR')
         }
     }
+    # Only the live main TOC rows contain field characters. The separate figure
+    # and table lists also use TOC1 formatting but are static, so leave them alone.
+    $mainTocParagraphs = $documentXml.SelectNodes(
+        "//w:p[w:pPr/w:pStyle[@w:val='TOC1' or @w:val='TOC2' or @w:val='TOC3'] and .//w:fldChar]",
+        $script:ns
+    )
+    foreach ($paragraph in $mainTocParagraphs) {
+        foreach ($textNode in $paragraph.SelectNodes('.//w:t', $script:ns)) {
+            $textNode.InnerText = ConvertTo-PersianDigits $textNode.InnerText
+        }
+    }
+    if ($mainTocParagraphs.Count -gt 0) {
+        $tocBegin = $mainTocParagraphs[0].SelectSingleNode('.//w:fldChar[@w:fldCharType="begin"]', $script:ns)
+        if ($null -ne $tocBegin) {
+            $null = $tocBegin.SetAttribute('fldLock', $w, 'true')
+        }
+    }
     $captionParagraphs = $documentXml.SelectNodes("//w:p[w:pPr/w:pStyle[@w:val='Caption']]", $script:ns)
     foreach ($paragraph in $captionParagraphs) {
         $pPr = Get-OrAddChild $documentXml $paragraph 'w:pPr' 'pPr'
         $bidi = Get-OrAddChild $documentXml $pPr 'w:bidi' 'bidi'
         $bidi.RemoveAllAttributes()
         foreach ($runProperties in $paragraph.SelectNodes('.//w:rPr', $script:ns)) {
-            $lang = Get-OrAddChild $documentXml $runProperties 'w:lang' 'lang'
-            $null = $lang.SetAttribute('val', $w, 'fa-IR')
-            $null = $lang.SetAttribute('eastAsia', $w, 'fa-IR')
-            $null = $lang.SetAttribute('bidi', $w, 'fa-IR')
+            $lang = $runProperties.SelectSingleNode('w:lang', $script:ns)
+            if ($null -ne $lang) { [void]$runProperties.RemoveChild($lang) }
         }
     }
     Save-XmlPart $documentItem
@@ -135,4 +161,4 @@ finally {
     $package.Close()
 }
 
-'Normalized TOC metadata and footnote direction formatting in Thesis.docx.'
+'Normalized TOC metadata, Persian main-TOC digits, and footnote direction formatting in Thesis.docx.'

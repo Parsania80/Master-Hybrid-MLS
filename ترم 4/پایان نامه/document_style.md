@@ -69,11 +69,15 @@ Therefore, a durable fix must also address:
 - the language metadata for TOC1–TOC3 styles;
 - the TOC page-reference fields.
 
-The Word numeral display setting used for this document is the Hindi/Persian-compatible mode:
+The Word numeral display setting used for this document is context-sensitive mode:
 
-- `Application.Options.ArabicNumeral = 1`
+- `Application.Options.ArabicNumeral = 2`
+
+This keeps digits in Persian headings and list labels Persian while leaving digits in Latin technical terms, formulas, bibliography text, years, volume numbers, RFC numbers, and identifiers such as `SHA3-256`, `X25519`, and `ML-KEM-768` in English.
 
 After changing it, test by actually updating the complete TOC. Do not rely only on the cached XML text.
+
+After Word refreshes the main TOC, `normalize_thesis_style.ps1` converts every cached section and page digit in that TOC to literal Persian Unicode digits and locks the TOC field. This keeps the main TOC fully Persian without changing English digits elsewhere. Rerun `apply_thesis_style.ps1` followed by `normalize_thesis_style.ps1` whenever the main TOC must be refreshed.
 
 ## Encoding rule
 
