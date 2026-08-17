@@ -508,6 +508,13 @@ try {
         $style.ParagraphFormat.ReadingOrder = $wdReadingOrderRtl
     }
 
+    # Body headings are bold, while the separate TOC styles above remain regular.
+    foreach ($styleName in @('Heading 1', 'Heading 2', 'Heading 3')) {
+        $style = $document.Styles.Item($styleName)
+        $style.Font.Bold = -1
+        $style.Font.BoldBi = -1
+    }
+
     $footnoteStyle = $document.Styles.Item('Footnote Text')
     $footnoteStyle.ParagraphFormat.ReadingOrder = $wdReadingOrderLtr
     $footnoteStyle.ParagraphFormat.Alignment = $wdAlignParagraphLeft

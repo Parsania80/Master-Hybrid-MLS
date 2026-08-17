@@ -44,6 +44,8 @@ The heading hierarchy is:
 
 Important rules:
 
+- Heading 1, Heading 2, and Heading 3 are bold in the thesis body.
+- TOC 1, TOC 2, and TOC 3 remain regular weight even when their source body headings are bold.
 - Heading 1 paragraphs must not display an automatic number next to their title.
 - Never apply Heading 1 to an empty paragraph: even an invisible empty Heading 1 advances the chapter counter and corrupts every following Heading 2/3 number.
 - Keep any chapter designation, such as `فصل اول`, as literal title text rather than a generated list label.

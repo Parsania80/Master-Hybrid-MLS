@@ -86,6 +86,15 @@ try {
         $null = $lang.SetAttribute('bidi', $w, 'fa-IR')
     }
 
+    foreach ($styleId in @('Heading1', 'Heading2', 'Heading3')) {
+        $style = $styleXml.SelectSingleNode("//w:style[@w:styleId='$styleId']", $script:ns)
+        $rPr = Get-OrAddChild $styleXml $style 'w:rPr' 'rPr'
+        foreach ($nodeName in @('b', 'bCs')) {
+            $boldNode = Get-OrAddChild $styleXml $rPr "w:$nodeName" $nodeName
+            $boldNode.RemoveAllAttributes()
+        }
+    }
+
     $captionStyle = $styleXml.SelectSingleNode("//w:style[@w:styleId='Caption']", $script:ns)
     $captionPPr = Get-OrAddChild $styleXml $captionStyle 'w:pPr' 'pPr'
     $captionBidi = Get-OrAddChild $styleXml $captionPPr 'w:bidi' 'bidi'
@@ -132,6 +141,18 @@ try {
             $null = $lang.SetAttribute('val', $w, 'fa-IR')
             $null = $lang.SetAttribute('eastAsia', $w, 'fa-IR')
             $null = $lang.SetAttribute('bidi', $w, 'fa-IR')
+        }
+    }
+    $bodyHeadingParagraphs = $documentXml.SelectNodes(
+        "//w:p[w:pPr/w:pStyle[@w:val='Heading1' or @w:val='Heading2' or @w:val='Heading3']]",
+        $script:ns
+    )
+    foreach ($paragraph in $bodyHeadingParagraphs) {
+        foreach ($runProperties in $paragraph.SelectNodes('.//w:rPr', $script:ns)) {
+            foreach ($nodeName in @('b', 'bCs')) {
+                $boldNode = Get-OrAddChild $documentXml $runProperties "w:$nodeName" $nodeName
+                $boldNode.RemoveAllAttributes()
+            }
         }
     }
     # Only the live main TOC rows contain field characters. The separate figure
@@ -193,4 +214,4 @@ finally {
     $package.Close()
 }
 
-'Normalized TOC metadata, Persian main-TOC digits, persistent black list links, and footnote direction formatting in Thesis.docx.'
+'Normalized bold body headings, regular-weight TOC entries, Persian main-TOC digits, persistent black list links, and footnote direction formatting in Thesis.docx.'
