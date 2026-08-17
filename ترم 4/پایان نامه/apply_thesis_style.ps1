@@ -202,7 +202,9 @@ function Add-CaptionListEntries($document, $section, $records) {
         if ($linkRange.End -gt $linkRange.Start) { $linkRange.End-- }
         $missing = [Type]::Missing
         [void]$document.Hyperlinks.Add($linkRange, '', $bookmarkNames[$index - 1], $missing, $missing, $missing)
-        $linkRange.Font.ColorIndex = 0
+        # Use explicit black rather than wdAuto; wdAuto allows Word to apply the
+        # purple Followed Hyperlink theme color after the link is clicked.
+        $linkRange.Font.Color = 0
         $linkRange.Font.Underline = 0
     }
 }

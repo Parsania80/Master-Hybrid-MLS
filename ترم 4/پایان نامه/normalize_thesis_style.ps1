@@ -96,6 +96,19 @@ try {
     $captionLang = $captionRPr.SelectSingleNode('w:lang', $script:ns)
     if ($null -ne $captionLang) { [void]$captionRPr.RemoveChild($captionLang) }
 
+    # Keep clickable list entries visually identical before and after Ctrl+Click.
+    foreach ($styleId in @('Hyperlink', 'FollowedHyperlink')) {
+        $hyperlinkStyle = $styleXml.SelectSingleNode("//w:style[@w:styleId='$styleId']", $script:ns)
+        if ($null -eq $hyperlinkStyle) { continue }
+        $hyperlinkRPr = Get-OrAddChild $styleXml $hyperlinkStyle 'w:rPr' 'rPr'
+        $hyperlinkColor = Get-OrAddChild $styleXml $hyperlinkRPr 'w:color' 'color'
+        $hyperlinkColor.RemoveAllAttributes()
+        $null = $hyperlinkColor.SetAttribute('val', $w, '000000')
+        $hyperlinkUnderline = Get-OrAddChild $styleXml $hyperlinkRPr 'w:u' 'u'
+        $hyperlinkUnderline.RemoveAllAttributes()
+        $null = $hyperlinkUnderline.SetAttribute('val', $w, 'none')
+    }
+
     $footnoteStyle = $styleXml.SelectSingleNode("//w:style[@w:styleId='FootnoteText']", $script:ns)
     $footnotePPr = Get-OrAddChild $styleXml $footnoteStyle 'w:pPr' 'pPr'
     $footnoteBidi = Get-OrAddChild $styleXml $footnotePPr 'w:bidi' 'bidi'
@@ -150,6 +163,21 @@ try {
             if ($null -ne $lang) { [void]$runProperties.RemoveChild($lang) }
         }
     }
+    $listHyperlinks = $documentXml.SelectNodes(
+        "//w:hyperlink[starts-with(@w:anchor,'_ThesisFig') or starts-with(@w:anchor,'_ThesisTab')]",
+        $script:ns
+    )
+    foreach ($hyperlink in $listHyperlinks) {
+        foreach ($run in $hyperlink.SelectNodes('.//w:r', $script:ns)) {
+            $runProperties = Get-OrAddChild $documentXml $run 'w:rPr' 'rPr'
+            $color = Get-OrAddChild $documentXml $runProperties 'w:color' 'color'
+            $color.RemoveAllAttributes()
+            $null = $color.SetAttribute('val', $w, '000000')
+            $underline = Get-OrAddChild $documentXml $runProperties 'w:u' 'u'
+            $underline.RemoveAllAttributes()
+            $null = $underline.SetAttribute('val', $w, 'none')
+        }
+    }
     Save-XmlPart $documentItem
 
     $footnoteItem = Open-XmlPart $package '/word/footnotes.xml'
@@ -165,4 +193,4 @@ finally {
     $package.Close()
 }
 
-'Normalized TOC metadata, Persian main-TOC digits, and footnote direction formatting in Thesis.docx.'
+'Normalized TOC metadata, Persian main-TOC digits, persistent black list links, and footnote direction formatting in Thesis.docx.'

@@ -189,6 +189,7 @@ Unless explicitly requested, a TOC correction should not rewrite every number in
 - Numbering restarts inside each chapter and is sequential among captions that actually exist.
 - Captions inside text boxes must be included; Word's normal Table of Figures field omits them.
 - `apply_thesis_style.ps1` rebuilds both front lists as separate `TOC 1` paragraphs with dotted leaders and Persian page numbers.
+- Figure/table list hyperlinks remain black and un-underlined in both normal and followed (already clicked) states.
 - The front-list page numbers are refreshed whenever `apply_thesis_style.ps1` is rerun.
 - Keep the section-break paragraphs after the figure list and table list intact.
 
