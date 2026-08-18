@@ -17,8 +17,8 @@ $wdAlignParagraphLeft = 0
 $wdAlignParagraphCenter = 1
 $wdReadingOrderLtr = 1
 $wdReadingOrderRtl = 0
-$wdSectionDirectionRtl = 0
-$wdFlowRtl = 1
+$wdSectionDirectionLtr = 1
+$wdFlowLtr = 0
 $msoTextOrientationHorizontal = 1
 $msoBringToFront = 0
 $msoFalse = 0
@@ -518,15 +518,22 @@ try {
     $footnoteStyle = $document.Styles.Item('Footnote Text')
     $footnoteStyle.ParagraphFormat.ReadingOrder = $wdReadingOrderLtr
     $footnoteStyle.ParagraphFormat.Alignment = $wdAlignParagraphLeft
+    $document.Footnotes.NumberStyle = 0
 
     foreach ($footnote in $document.Footnotes) {
         $footnote.Range.ParagraphFormat.ReadingOrder = $wdReadingOrderLtr
         $footnote.Range.ParagraphFormat.Alignment = $wdAlignParagraphLeft
+        $footnote.Reference.LanguageID = 1033
+        $markerRange = $footnote.Range.Duplicate
+        if ($markerRange.End -gt $markerRange.Start) {
+            $markerRange.End = $markerRange.Start + 1
+            $markerRange.LanguageID = 1033
+        }
     }
 
     foreach ($section in $document.Sections) {
-        $section.PageSetup.SectionDirection = $wdSectionDirectionRtl
-        $section.PageSetup.TextColumns.FlowDirection = $wdFlowRtl
+        $section.PageSetup.SectionDirection = $wdSectionDirectionLtr
+        $section.PageSetup.TextColumns.FlowDirection = $wdFlowLtr
     }
 
     $document.Fields.Update() | Out-Null

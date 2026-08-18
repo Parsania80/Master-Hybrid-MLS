@@ -106,28 +106,29 @@ Footnotes use two visual columns. Their required reading and numbering order is:
 
 ```text
 left column    right column
-3              1
-4              2
-```
-
-In other words, Word must fill the right footnote column from top to bottom first, then continue at the top of the left column. It must not display the same notes as:
-
-```text
-left column    right column
 1              3
 2              4
 ```
 
+In other words, Word must fill the left footnote column from top to bottom first, then continue at the top of the right column. It must not display the same notes as:
+
+```text
+left column    right column
+3              1
+4              2
+```
+
 This ordering is controlled by the section's column flow, not by manually moving individual footnotes. For every thesis section that can contain footnotes:
 
-- `PageSetup.SectionDirection = 0`
-- `PageSetup.TextColumns.FlowDirection = 1`
-- The section must therefore have right-to-left column flow.
+- `PageSetup.SectionDirection = 1`
+- `PageSetup.TextColumns.FlowDirection = 0`
+- The section must therefore have left-to-right column flow.
 - Keep Persian body paragraphs right-to-left through their paragraph and heading styles.
 - The `Footnote Text` style must use left-to-right reading order and regular left alignment.
-- Existing footnote paragraphs must not contain direct RTL or right-alignment formatting.
+- The `Footnote Reference` style and all footnote markers use English (`en-US`) number shaping.
+- Existing footnote paragraphs must contain explicit LTR and left-alignment formatting.
 
-These section and style settings make newly inserted footnotes follow the same right-column-first order automatically. If a new section is added, verify that it inherited the same section direction and column flow from the preceding body section.
+These section and style settings make newly inserted footnotes follow the same left-column-first order automatically. If a new section is added, verify that it inherited the same section direction and column flow from the preceding body section.
 
 ## Safe editing workflow
 
@@ -168,10 +169,10 @@ Use this checklist for every future TOC or numbering change:
 - [ ] No TOC row is unexpectedly bold.
 - [ ] **Update entire table** does not undo the fixes.
 - [ ] Body headings and page numbers remain intact.
-- [ ] Footnotes fill the right column first, then the left column.
-- [ ] Four footnotes appear visually as `(3 1)` and `(4 2)`, not `(1 3)` and `(2 4)`.
+- [ ] Footnotes fill the left column first, then the right column.
+- [ ] Four footnotes appear visually as `(1 3)` and `(2 4)`, not `(3 1)` and `(4 2)`.
 - [ ] A newly inserted footnote inherits left-to-right footnote formatting and the correct column order.
-- [ ] Any newly created body section has `SectionDirection = 0` and `TextColumns.FlowDirection = 1`.
+- [ ] Any newly created body section has `SectionDirection = 1` and `TextColumns.FlowDirection = 0`.
 
 ## Important distinction
 

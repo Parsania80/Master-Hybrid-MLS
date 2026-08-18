@@ -14,6 +14,7 @@ else {
     Join-Path $PSScriptRoot 'Thesis.docx'
 }
 $w = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+$w15 = 'http://schemas.microsoft.com/office/word/2012/wordml'
 
 function Open-XmlPart([System.IO.Packaging.Package]$package, [string]$uri) {
     $part = $package.GetPart([Uri]$uri)
@@ -124,12 +125,34 @@ try {
     $null = $footnoteBidi.SetAttribute('val', $w, '0')
     $footnoteJc = Get-OrAddChild $styleXml $footnotePPr 'w:jc' 'jc'
     $null = $footnoteJc.SetAttribute('val', $w, 'left')
+    $footnoteReferenceStyle = $styleXml.SelectSingleNode("//w:style[@w:styleId='FootnoteReference']", $script:ns)
+    $footnoteReferenceRPr = Get-OrAddChild $styleXml $footnoteReferenceStyle 'w:rPr' 'rPr'
+    $footnoteReferenceRtl = Get-OrAddChild $styleXml $footnoteReferenceRPr 'w:rtl' 'rtl'
+    $footnoteReferenceRtl.RemoveAllAttributes()
+    $null = $footnoteReferenceRtl.SetAttribute('val', $w, '0')
+    $footnoteReferenceLang = Get-OrAddChild $styleXml $footnoteReferenceRPr 'w:lang' 'lang'
+    $footnoteReferenceLang.RemoveAllAttributes()
+    $null = $footnoteReferenceLang.SetAttribute('val', $w, 'en-US')
+    $null = $footnoteReferenceLang.SetAttribute('eastAsia', $w, 'en-US')
+    $null = $footnoteReferenceLang.SetAttribute('bidi', $w, 'en-US')
     Save-XmlPart $styleItem
 
     $documentItem = Open-XmlPart $package '/word/document.xml'
     $documentXml = $documentItem.Xml
     $script:ns = [System.Xml.XmlNamespaceManager]::new($documentXml.NameTable)
     $script:ns.AddNamespace('w', $w)
+    $script:ns.AddNamespace('w15', $w15)
+    foreach ($sectionProperties in $documentXml.SelectNodes('//w:sectPr', $script:ns)) {
+        $sectionBidi = $sectionProperties.SelectSingleNode('w:bidi', $script:ns)
+        if ($null -ne $sectionBidi) { [void]$sectionProperties.RemoveChild($sectionBidi) }
+        $footnoteColumns = $sectionProperties.SelectSingleNode('w15:footnoteColumns', $script:ns)
+        if ($null -eq $footnoteColumns) {
+            $footnoteColumns = $documentXml.CreateElement('w15', 'footnoteColumns', $w15)
+            [void]$sectionProperties.AppendChild($footnoteColumns)
+        }
+        $footnoteColumns.RemoveAllAttributes()
+        $null = $footnoteColumns.SetAttribute('val', $w, '2')
+    }
     $tocParagraphs = $documentXml.SelectNodes("//w:p[w:pPr/w:pStyle[@w:val='TOC1' or @w:val='TOC2' or @w:val='TOC3']]", $script:ns)
     foreach ($paragraph in $tocParagraphs) {
         foreach ($runProperties in $paragraph.SelectNodes('.//w:rPr', $script:ns)) {
@@ -199,14 +222,42 @@ try {
             $null = $underline.SetAttribute('val', $w, 'none')
         }
     }
+    foreach ($markerRun in $documentXml.SelectNodes('//w:r[w:footnoteReference]', $script:ns)) {
+        $runProperties = Get-OrAddChild $documentXml $markerRun 'w:rPr' 'rPr'
+        $rtl = Get-OrAddChild $documentXml $runProperties 'w:rtl' 'rtl'
+        $rtl.RemoveAllAttributes()
+        $null = $rtl.SetAttribute('val', $w, '0')
+        $lang = Get-OrAddChild $documentXml $runProperties 'w:lang' 'lang'
+        $lang.RemoveAllAttributes()
+        $null = $lang.SetAttribute('val', $w, 'en-US')
+        $null = $lang.SetAttribute('eastAsia', $w, 'en-US')
+        $null = $lang.SetAttribute('bidi', $w, 'en-US')
+    }
     Save-XmlPart $documentItem
 
     $footnoteItem = Open-XmlPart $package '/word/footnotes.xml'
     $footnoteXml = $footnoteItem.Xml
     $script:ns = [System.Xml.XmlNamespaceManager]::new($footnoteXml.NameTable)
     $script:ns.AddNamespace('w', $w)
-    foreach ($node in @($footnoteXml.SelectNodes('//w:footnote/w:p/w:pPr/w:bidi | //w:footnote/w:p/w:pPr/w:jc | //w:footnote//w:rPr/w:rtl', $script:ns))) {
-        [void]$node.ParentNode.RemoveChild($node)
+    foreach ($paragraph in $footnoteXml.SelectNodes('//w:footnote[not(@w:type)]/w:p', $script:ns)) {
+        $pPr = Get-OrAddChild $footnoteXml $paragraph 'w:pPr' 'pPr'
+        $bidi = Get-OrAddChild $footnoteXml $pPr 'w:bidi' 'bidi'
+        $bidi.RemoveAllAttributes()
+        $null = $bidi.SetAttribute('val', $w, '0')
+        $jc = Get-OrAddChild $footnoteXml $pPr 'w:jc' 'jc'
+        $jc.RemoveAllAttributes()
+        $null = $jc.SetAttribute('val', $w, 'left')
+    }
+    foreach ($markerRun in $footnoteXml.SelectNodes('//w:r[w:footnoteRef]', $script:ns)) {
+        $rPr = Get-OrAddChild $footnoteXml $markerRun 'w:rPr' 'rPr'
+        $rtl = Get-OrAddChild $footnoteXml $rPr 'w:rtl' 'rtl'
+        $rtl.RemoveAllAttributes()
+        $null = $rtl.SetAttribute('val', $w, '0')
+        $lang = Get-OrAddChild $footnoteXml $rPr 'w:lang' 'lang'
+        $lang.RemoveAllAttributes()
+        $null = $lang.SetAttribute('val', $w, 'en-US')
+        $null = $lang.SetAttribute('eastAsia', $w, 'en-US')
+        $null = $lang.SetAttribute('bidi', $w, 'en-US')
     }
     Save-XmlPart $footnoteItem
 }
@@ -214,4 +265,4 @@ finally {
     $package.Close()
 }
 
-'Normalized bold body headings, regular-weight TOC entries, Persian main-TOC digits, persistent black list links, and footnote direction formatting in Thesis.docx.'
+'Normalized bold body headings, regular-weight TOC entries, Persian main-TOC digits, persistent black list links, and left-to-right English-numbered two-column footnotes in Thesis.docx.'
