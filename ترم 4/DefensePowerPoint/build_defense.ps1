@@ -1,3 +1,7 @@
+﻿param(
+    [switch]$OverwriteManualEdits
+)
+
 $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName System.Drawing
@@ -6,6 +10,39 @@ $workDir = (Get-Location).Path
 $sourcePath = Join-Path $workDir 'p.pptx'
 $outputPath = Join-Path $workDir 'Thesis_Defense_Final.pptx'
 $pdfPath = Join-Path $workDir 'Thesis_Defense_Final.pdf'
+$TotalSlides = 25
+
+# The presentation contains carefully hand-adjusted formulas and mixed RTL/LTR
+# spacing. Preserve that authored PPTX on normal runs; rebuilding from p.pptx is
+# intentionally opt-in because it replaces those manual edits.
+if((Test-Path -LiteralPath $outputPath) -and -not $OverwriteManualEdits) {
+    $existingPpt = $null
+    $existingPres = $null
+    try {
+        $existingPpt = New-Object -ComObject PowerPoint.Application
+        $existingPres = $existingPpt.Presentations.Open($outputPath,$false,$false,$false)
+        $existingPres.Save()
+        $existingPres.SaveAs($pdfPath,32)
+        $slideCount = $existingPres.Slides.Count
+        $existingPres.Close(); $existingPres = $null
+        $existingPpt.Quit(); $existingPpt = $null
+        [pscustomobject]@{
+            PPTX=$outputPath
+            PDF=$pdfPath
+            Slides=$slideCount
+            PreservedManualEdits=$true
+            PptxBytes=(Get-Item -LiteralPath $outputPath).Length
+            PdfBytes=(Get-Item -LiteralPath $pdfPath).Length
+        } | ConvertTo-Json -Compress
+        return
+    }
+    finally {
+        if($existingPres){ try{$existingPres.Close()}catch{} }
+        if($existingPpt){ try{$existingPpt.Quit()}catch{} }
+        [GC]::Collect()
+        [GC]::WaitForPendingFinalizers()
+    }
+}
 
 function OleColor([string]$hex) {
     $hex = $hex.TrimStart('#')
@@ -13,6 +50,13 @@ function OleColor([string]$hex) {
     $g = [Convert]::ToInt32($hex.Substring(2,2),16)
     $b = [Convert]::ToInt32($hex.Substring(4,2),16)
     return [System.Drawing.ColorTranslator]::ToOle([System.Drawing.Color]::FromArgb($r,$g,$b))
+}
+
+function Convert-ToPersianDigits([string]$text) {
+    $western = @('0','1','2','3','4','5','6','7','8','9')
+    $persian = @('۰','۱','۲','۳','۴','۵','۶','۷','۸','۹')
+    for($i=0;$i -lt 10;$i++){ $text = $text.Replace($western[$i],$persian[$i]) }
+    return $text
 }
 
 $Canvas = OleColor '#F6F8FB'
@@ -43,7 +87,8 @@ function Get-SectionMeta([int]$slideNumber) {
     elseif($slideNumber -le 13){ $index=3; $label='طرح پیشنهادی'; $color=$Blue; $pale=$PaleBlue }
     elseif($slideNumber -le 15){ $index=4; $label='ارزیابی امنیتی'; $color=$Green; $pale=$PaleGreen }
     elseif($slideNumber -le 19){ $index=5; $label='ارزیابی کارایی'; $color=$Amber; $pale=$PaleAmber }
-    else { $index=6; $label='نتایج'; $color=$Green; $pale=$PaleGreen }
+    elseif($slideNumber -le 21){ $index=6; $label='نتایج'; $color=$Green; $pale=$PaleGreen }
+    else { $index=7; $label='مراجع'; $color=$Blue; $pale=$PaleBlue }
     return [pscustomobject]@{Index=$index;Label=$label;Color=$color;Pale=$pale}
 }
 
@@ -172,7 +217,7 @@ function Clear-CentralContent($slide) {
 }
 
 function Update-Navigation($slide) {
-    $labels = @('عنوان','مسئله پژوهش','پیشینه و شکاف پژوهشی','طرح پیشنهادی','ارزیابی امنیتی','ارزیابی کارایی','نتایج و جمع‌بندی')
+    $labels = @('عنوان','مسئله پژوهش','پیشینه و شکاف پژوهشی','طرح پیشنهادی','ارزیابی امنیتی','ارزیابی کارایی','نتایج و جمع‌بندی','مراجع')
     $active = (Get-SectionMeta $slide.SlideIndex).Index
     $railShape = $slide.Shapes.AddShape(1,768,0,192,540)
     $railShape.Fill.ForeColor.RGB = $Rail
@@ -194,15 +239,15 @@ function Update-Navigation($slide) {
     $null = Add-Text $slide 'دفاع پایان‌نامه کارشناسی ارشد' 786 121 156 20 10.5 $RailMuted $false 2 $true $BodyFont
     $null = Add-Line $slide 790 148 938 148 $Green 1.2 $false $false
     $null = Add-Text $slide 'مسیر ارائه' 790 153 148 22 13 $White $true 3 $true $BodyFont
-    for($i=0; $i -lt 7; $i++){
-        $y = 178 + $i*44
+    for($i=0; $i -lt 8; $i++){
+        $y = 174 + $i*38
         $isActive = ($i -eq $active)
         $fill = $(if($isActive){$Green}else{$Rail})
         $textColor = $(if($isActive){$White}else{$RailMuted})
-        $null = Add-Box $slide '' 784 $y 160 36 $fill $fill 10 $textColor $false 2 $false 5 'Calibri'
-        $fontSize = $(if($i -eq 2 -or $i -eq 6){10.6}else{11.5})
-        $null = Add-Text $slide $labels[$i] 813 ($y+5) 121 24 $fontSize $textColor $true 3 $true $BodyFont
-        $null = Add-Text $slide ('{0:00}' -f ($i+1)) 789 ($y+8) 24 18 8.5 $textColor $true 2 $false 'Calibri'
+        $null = Add-Box $slide '' 784 $y 160 32 $fill $fill 10 $textColor $false 2 $false 5 'Calibri'
+        $fontSize = $(if($i -eq 2 -or $i -eq 6){10.1}else{11})
+        $null = Add-Text $slide $labels[$i] 813 ($y+4) 121 22 $fontSize $textColor $true 3 $true $BodyFont
+        $null = Add-Text $slide ('{0:00}' -f ($i+1)) 789 ($y+7) 24 16 8 $textColor $true 2 $false 'Calibri'
     }
 }
 
@@ -213,7 +258,8 @@ function Update-Footer($slide, [int]$number) {
     $null = Add-Line $slide 0 510 960 510 $Green 2.2 $false $false
     $null = Add-Text $slide 'پروتکل تبادل کلید گروهی ترکیبی برپایه TreeKEM' 250 515 491 18 8.9 $White $true 3 $true $BodyFont
     $null = Add-Text $slide 'محمدرضا پارسانیا' 790 515 145 18 9.2 $RailMuted $true 3 $true $BodyFont
-    $null = Add-Box $slide ('{0:00} / 21' -f $number) 24 515 72 18 $Green $Green 9 $White $true 2 $false 5 'Calibri'
+    $pageText = Convert-ToPersianDigits ('{0:00}/{1:00}' -f $TotalSlides,$number)
+    $null = Add-Box $slide $pageText 24 515 72 18 $Green $Green 10 $White $true 2 $true 5 $BodyFont
 }
 
 function Add-Notes($slide, [string]$notes) {
@@ -295,6 +341,31 @@ function Add-TableCell($slide, [string]$text, [double]$x, [double]$y, [double]$w
     return Add-Box $slide $text $x $y $w $h $fill $line $size $textColor $bold 2 $rtl 1 $(if($rtl){'B Zar'}else{'Calibri'})
 }
 
+function Add-ReferenceCard($slide, [int]$number, [string]$citation,
+                           [double]$x, [double]$y, [double]$w, [double]$h, [int]$accent) {
+    $card = Add-Box $slide '' $x $y $w $h $White $LightGray 10 $DarkGray $false 1 $false 5 'Calibri'
+    $card.Line.Weight = 0.7
+    Add-SoftShadow $card
+    $null = Add-Box $slide ('{0:00}' -f $number) ($x+10) ($y+10) 36 21 $accent $accent 8.5 $White $true 2 $false 5 'Calibri'
+    $fontSize = $(if($citation.Length -gt 270){7.7}elseif($citation.Length -gt 220){8.1}else{8.6})
+    $body = Add-Text $slide $citation ($x+54) ($y+7) ($w-64) ($h-14) $fontSize $DarkGray $false 1 $false 'Calibri'
+    $body.TextFrame.VerticalAnchor = 1
+}
+
+function Add-ReferencePage($slide, [string]$pageTitle, $items, [int]$startNumber) {
+    Add-Title $slide $pageTitle
+    $null = Add-Text $slide 'منابع به ترتیب استناد در پایان‌نامه' 50 82 680 20 11.5 $MidGray $false 3 $true $BodyFont
+    $count = $items.Count
+    $split = [Math]::Ceiling($count/2)
+    if($split -eq 4){ $startY=103; $cardH=86; $gap=8 } else { $startY=114; $cardH=103; $gap=11 }
+    for($i=0;$i -lt $count;$i++){
+        if($i -lt $split){ $x=400; $row=$i } else { $x=45; $row=$i-$split }
+        $y = $startY + $row*($cardH+$gap)
+        $accent = $(if((($startNumber+$i)%3) -eq 1){$Blue}elseif((($startNumber+$i)%3) -eq 2){$Green}else{$Amber})
+        Add-ReferenceCard $slide ($startNumber+$i) $items[$i] $x $y 330 $cardH $accent
+    }
+}
+
 $ppt = $null
 $pres = $null
 try {
@@ -308,7 +379,7 @@ try {
     $source.Close()
 
     $pres = $ppt.Presentations.Open($outputPath,$false,$false,$false)
-    $templateSources = @(1,2,2,5,8,8,8,8,8,8,8,8,8,9,9,10,10,10,12,12,12)
+    $templateSources = @(1,2,2,5,8,8,8,8,8,8,8,8,8,9,9,10,10,10,12,12,12,12,12,12,12)
     # Duplicate each original template slide and immediately move the copy to the end.
     # This keeps the original 1..13 indices stable while the 21-slide deck is assembled.
     foreach($src in $templateSources){
@@ -615,13 +686,56 @@ try {
     $null=Add-Box $s 'نتیجه: کاهش ارتفاع زمانی ارزشمند است که هزینه چندگیرنده و دوره گذار نیز کنترل شود.' 90 440 590 52 $DarkBlue $DarkBlue 17 $White $true 2 $true 5 'B Zar'
     Add-Notes $s 'نوآوری اصلی فقط افزودن یک KEM نیست؛ معماری، رمزنگاری ترکیبی را با سیاست ساختاری و گذار هزینه‌محور پیوند می‌دهد. پیام نهایی این است که کاهش ارتفاع بدون کنترل fanout و گذار کافی نیست.'
 
-    # Slide 21 — Limitations / future / questions
-    $s = $pres.Slides.Item(21); Add-Title $s 'محدودیت‌ها، مسیر آینده و پرسش‌ها'
-    $null=Add-CardHeader $s 'محدودیت‌های فعلی' "• پیام و محاسبه بزرگ‌تر`n• هزینه اولیه گذار`n• نگهداری موقت دو درخت`n• پیچیدگی TreeCover`n• پنجره محدود PCS" 420 115 310 260 $PaleRed $Red $Red
-    $null=Add-CardHeader $s 'پژوهش‌های آینده' "• سیاست پویا برای انتخاب مرتبه`n• اولویت درمان گره‌های افشاشده`n• عضویت بسیار پویا`n• جلوگیری از نوسان مرتبه`n• تحلیل کاهش مرتبه" 45 115 310 260 $PaleBlue $Blue $DarkBlue
-    $null=Add-Text $s 'سپاسگزارم' 245 410 290 42 30 $Blue $true 2 $true 'B Zar'
-    $null=Add-Box $s 'پرسش‌ها؟' 290 458 200 48 $DarkBlue $DarkBlue 23 $White $true 2 $true 5 'B Zar'
-    Add-Notes $s 'محدودیت‌ها را صریح و کوتاه بیان کنید و آن‌ها را به مسیرهای آینده متصل سازید. سپس ارائه را برای پرسش‌های داوران جمع‌بندی کنید.'
+    # Slide 21 — Limitations / future
+    $s = $pres.Slides.Item(21); Add-Title $s 'محدودیت‌ها و مسیر آینده'
+    $null=Add-CardHeader $s 'محدودیت‌های فعلی' "• پیام و محاسبه بزرگ‌تر`n• هزینه اولیه گذار`n• نگهداری موقت دو درخت`n• پیچیدگی TreeCover`n• پنجره محدود PCS" 420 108 310 285 $PaleRed $Red $Red
+    $null=Add-CardHeader $s 'پژوهش‌های آینده' "• سیاست پویا برای انتخاب مرتبه`n• اولویت درمان گره‌های افشاشده`n• عضویت بسیار پویا`n• جلوگیری از نوسان مرتبه`n• تحلیل کاهش مرتبه" 45 108 310 285 $PaleBlue $Blue $DarkBlue
+    $null=Add-Box $s 'مسیر بعدی: سیاست‌های پویاتر، ارزیابی در مقیاس بزرگ‌تر و تحلیل کاهش مرتبه.' 105 430 570 54 $DarkBlue $DarkBlue 15 $White $true 2 $true 5 $BodyFont
+    Add-Notes $s 'محدودیت‌ها را صریح و کوتاه بیان کنید و آن‌ها را مستقیماً به مسیرهای آینده متصل سازید.'
+
+    $references = @(
+      "(NIST), N. I. (2016). Post-Quantum Cryptography Standardization Project. NIST Cryptographic Technology Group – Online Resource.",
+      "Alwen, J., Coretti, S., Dodis, Y., Fazio, N., Göpfert, F., Kiltz, E., Paterson, K. G., Poettering, B., & Stebila, D. (2020). Multi-Recipient KEMs and Their Applications. Advances in Cryptology – EUROCRYPT 2020, LNCS 12106, 1–33.",
+      "Barbosa, M., Connolly, D., Duarte, J. D., Kaiser, A., Schwabe, P., Varner, K., & Westerbaan, B. (2024). X-Wing: The Hybrid KEM You’ve Been Looking For. IACR Communications in Cryptology, 1(1), 1–22.",
+      "Barnes, R., Beurdouche, B., Bhargavan, K., Millican, J., Omara, E., Perrin, T., Rescorla, E., Robert, R., Thomson, M., Tschofenig, H., & Wing, D. (2023). The Messaging Layer Security (MLS) Protocol. RFC 9420, IETF, 1–179.",
+      "Bos, J. W., Costello, C., Longa, P., & Naehrig, M. (2020). Post-Quantum TLS: Integrating PQC into TLS 1.3. NIST Workshop on Post-Quantum Cryptography.",
+      "Burmester, M., & Desmedt, Y. (1995). A Secure and Efficient Conference Key Distribution System. Advances in Cryptology – EUROCRYPT ’94, LNCS 950, 275–286.",
+      "Crockett, M., & Campagna, E. (2019, May 7). Hybrid Post-Quantum Key Encapsulation Methods (PQ KEM) for Transport Layer Security 1.2 (TLS). Internet-Draft, IETF.",
+      "Grover, L. K. (1996). A Fast Quantum Mechanical Algorithm for Database Search. Proceedings of the 28th Annual ACM Symposium on Theory of Computing, Philadelphia, PA, USA.",
+      "Hoffstein, J., Pipher, J., & Silverman, J. H. (1998). NTRU: A Ring-Based Public Key Cryptosystem. Advances in Cryptology — ANTS.",
+      "Kales, D., Krasnov, P., & Stebila, D. (2021). On the Security of Hybrid Key Exchange. IACR Cryptology ePrint Archive.",
+      "Kim, Y. (2004). Tree-Based Group Key Agreement. ACM Transactions on Information and System Security, 60–96.",
+      "Bindel, N., Brendel, J., Fischlin, M., Goncalves, B., & Stebila, D. (2019). Hybrid Key Encapsulation Mechanisms and Authenticated Key Exchange. PQCrypto 2019, 206–226.",
+      "Giacon, F., Heuer, F., & Poettering, B. (2018). KEM Combiners. Public-Key Cryptography – PKC 2018, LNCS 10769, 190–218.",
+      "Zhao, R. K., Sultan, N. H., Yialeloglou, P., Liu, D., Liebowitz, D., & Pieprzyk, J. (2024). MIKA: A Minimalist Approach to Hybrid Key Exchange. 1st Annual International Conference on Privacy, Security and Trust (PST), IEEE.",
+      "Shor, P. W. (1994). Algorithms for Quantum Computation: Discrete Logarithms and Factoring. Proceedings of the 35th Annual Symposium on Foundations of Computer Science (FOCS), 124–134.",
+      "Steiner, M., Tsudik, G., & Waidner, M. (1996). Diffie-Hellman Key Distribution Extended to Group Communication. Proceedings of the 3rd ACM Conference on Computer and Communications Security (CCS), 31–37.",
+      "Steiner, M., Tsudik, G., & Waidner, M. (1998). CLIQUES: A New Approach to Group Key Agreement. Proceedings of the 18th International Conference on Distributed Computing Systems (ICDCS), 380–387.",
+      "Wallez, T., Protzenko, J., & Bhargavan, K. (2025). TreeKEM: A Modular Machine-Checked Symbolic Security Analysis of Group Key Agreement in Messaging Layer Security. IEEE Symposium on Security and Privacy.",
+      "Wong, C. K. (1998). Secure Group Communications Using Key Graphs. ACM SIGCOMM ’98, 69–78."
+    )
+
+    # Slides 22–24 — References
+    $s = $pres.Slides.Item(22); Add-ReferencePage $s 'مراجع — ۱ از ۳' $references[0..6] 1
+    Add-Notes $s 'منابع یک تا هفت به ترتیب استناد نمایش داده شده‌اند.'
+    $s = $pres.Slides.Item(23); Add-ReferencePage $s 'مراجع — ۲ از ۳' $references[7..12] 8
+    Add-Notes $s 'منابع هشت تا سیزده به ترتیب استناد نمایش داده شده‌اند.'
+    $s = $pres.Slides.Item(24); Add-ReferencePage $s 'مراجع — ۳ از ۳' $references[13..18] 14
+    Add-Notes $s 'منابع چهارده تا نوزده به ترتیب استناد نمایش داده شده‌اند.'
+
+    # Slide 25 — Closing / questions
+    $s = $pres.Slides.Item(25)
+    $null = Add-Box $s 'پایان ارائه' 52 52 135 28 $Green $Green 12 $White $true 2 $true 5 $BodyFont
+    $null = Add-Node $s '' 130 190 44 $PaleBlue $Blue $Blue 8
+    $null = Add-Node $s '' 655 165 30 $PaleGreen $Green $Green 8
+    $null = Add-Node $s '' 690 365 22 $PaleAmber $Amber $Amber 8
+    $null = Add-Text $s 'سپاسگزارم' 90 126 590 72 40 $DarkBlue $true 2 $true $HeadingFont
+    $null = Add-Text $s 'از توجه شما سپاسگزارم' 120 210 530 30 16 $MidGray $false 2 $true $BodyFont
+    $closing = Add-Box $s '' 150 278 480 142 $White $LightGray 12 $Black $false 2 $true 5 $BodyFont
+    Add-SoftShadow $closing
+    $null = Add-Box $s 'پرسش‌ها؟' 235 300 310 62 $DarkBlue $DarkBlue 27 $White $true 2 $true 5 $HeadingFont
+    $null = Add-Text $s 'پروتکل تبادل کلید گروهی ترکیبی برپایه TreeKEM' 190 376 400 25 13 $DarkGray $true 2 $true $BodyFont
+    Add-Notes $s 'از داوران و حاضران تشکر کنید و ارائه را برای پرسش‌ها باز بگذارید.'
 
     $pres.Save()
     $pres.SaveAs($pdfPath,32)
