@@ -15,23 +15,48 @@ function OleColor([string]$hex) {
     return [System.Drawing.ColorTranslator]::ToOle([System.Drawing.Color]::FromArgb($r,$g,$b))
 }
 
-$Canvas = OleColor '#F2F5F9'
-$Blue = OleColor '#2C5F95'
-$DarkBlue = OleColor '#183B56'
-$LightBlue = OleColor '#D5E2F0'
-$PaleBlue = OleColor '#E7EFFA'
-$SidebarBlue = OleColor '#B7C8E7'
-$Black = OleColor '#111111'
-$DarkGray = OleColor '#3F4854'
-$MidGray = OleColor '#6B7280'
-$LightGray = OleColor '#E7EAF0'
+$Canvas = OleColor '#F6F8FB'
+$Rail = OleColor '#102A43'
+$RailMuted = OleColor '#B8C7D9'
+$Blue = OleColor '#315EFB'
+$DarkBlue = OleColor '#102A43'
+$LightBlue = OleColor '#DCE5FF'
+$PaleBlue = OleColor '#EDF1FF'
+$Black = OleColor '#17202A'
+$DarkGray = OleColor '#425466'
+$MidGray = OleColor '#708095'
+$LightGray = OleColor '#D8E1EB'
 $White = OleColor '#FFFFFF'
-$Green = OleColor '#1F7A6E'
-$PaleGreen = OleColor '#E4F2EF'
-$Red = OleColor '#A33E4C'
-$PaleRed = OleColor '#F7E6E9'
-$Amber = OleColor '#B7791F'
-$PaleAmber = OleColor '#FAF0DA'
+$Green = OleColor '#0F9D8A'
+$PaleGreen = OleColor '#E7F6F3'
+$Red = OleColor '#D3545D'
+$PaleRed = OleColor '#FCECEF'
+$Amber = OleColor '#D49A2A'
+$PaleAmber = OleColor '#FFF5DD'
+$BodyFont = 'B Yekan'
+$HeadingFont = 'B Titr'
+
+function Get-SectionMeta([int]$slideNumber) {
+    if($slideNumber -eq 1){ $index=0; $label='عنوان'; $color=$Blue; $pale=$PaleBlue }
+    elseif($slideNumber -le 3){ $index=1; $label='مسئله پژوهش'; $color=$Red; $pale=$PaleRed }
+    elseif($slideNumber -eq 4){ $index=2; $label='پیشینه و شکاف'; $color=$Amber; $pale=$PaleAmber }
+    elseif($slideNumber -le 13){ $index=3; $label='طرح پیشنهادی'; $color=$Blue; $pale=$PaleBlue }
+    elseif($slideNumber -le 15){ $index=4; $label='ارزیابی امنیتی'; $color=$Green; $pale=$PaleGreen }
+    elseif($slideNumber -le 19){ $index=5; $label='ارزیابی کارایی'; $color=$Amber; $pale=$PaleAmber }
+    else { $index=6; $label='نتایج'; $color=$Green; $pale=$PaleGreen }
+    return [pscustomobject]@{Index=$index;Label=$label;Color=$color;Pale=$pale}
+}
+
+function Add-SoftShadow($shape) {
+    try {
+        $shape.Shadow.Visible = -1
+        $shape.Shadow.ForeColor.RGB = $Rail
+        $shape.Shadow.Transparency = 0.88
+        $shape.Shadow.Blur = 5
+        $shape.Shadow.OffsetX = 0
+        $shape.Shadow.OffsetY = 2
+    } catch {}
+}
 
 function Set-Rtl($shape, [int]$alignment = 3) {
     # PowerPoint resets paragraph alignment when TextDirection is assigned.
@@ -42,6 +67,7 @@ function Set-Rtl($shape, [int]$alignment = 3) {
 }
 
 function Format-Text($shape, [double]$size, [int]$color, [bool]$bold, [string]$font, [int]$alignment, [bool]$rtl) {
+    if($font -eq 'B Zar'){ $font = $BodyFont }
     $tr = $shape.TextFrame.TextRange
     $tr.Font.Name = $font
     try { $tr.Font.NameComplexScript = $font } catch {}
@@ -100,10 +126,12 @@ function Add-Node($slide, [string]$text, [double]$cx, [double]$cy, [double]$diam
 }
 
 function Add-Title($slide, [string]$title, [string]$subtitle = '') {
-    $null = Add-Text $slide $title 40 18 625 48 29 $DarkBlue $true 2 $true 'B Zar'
-    $null = Add-Line $slide 60 72 650 72 $LightBlue 1.1 $false $false
-    $null = Add-Line $slide 605 72 650 72 $Blue 3 $false $false
-    if($subtitle){ $null = Add-Text $slide $subtitle 50 66 655 24 12.5 $MidGray $false 2 $false 'Calibri' }
+    $meta = Get-SectionMeta $slide.SlideIndex
+    $null = Add-Box $slide $meta.Label 50 25 126 25 $meta.Pale $meta.Pale 11.5 $meta.Color $true 2 $true 5 $BodyFont
+    $null = Add-Text $slide $title 188 14 544 52 29 $DarkBlue $true 3 $true $HeadingFont
+    $null = Add-Line $slide 50 76 730 76 $LightGray 1 $false $false
+    $null = Add-Line $slide 672 76 730 76 $meta.Color 3.2 $false $false
+    if($subtitle){ $null = Add-Text $slide $subtitle 50 82 680 22 11.5 $MidGray $false 3 $false 'Calibri' }
 }
 
 function Add-SectionTag($slide, [string]$text, [int]$fill = 0) {
@@ -120,16 +148,16 @@ function Add-ArrowBetween($slide, $leftShape, $rightShape, [int]$color = 0) {
 
 function Add-CardHeader($slide, [string]$header, [string]$body, [double]$x, [double]$y, [double]$w, [double]$h,
                         [int]$fill = 0, [int]$line = 0, [int]$headerColor = 0) {
-    $box = Add-Box $slide '' $x $y $w $h $fill $line 16 $Black $false 3 $true 5 'B Zar'
-    $box.Line.Weight = 1.15
-    $null = Add-Text $slide $header ($x+16) ($y+6) ($w-32) 27 18 $headerColor $true 3 $true 'B Zar'
-    $null = Add-Line $slide ($x+16) ($y+39) ($x+$w-16) ($y+39) $line 1 $false $false
-    $null = Add-Text $slide $body ($x+16) ($y+47) ($w-32) ($h-55) 15.5 $DarkGray $false 3 $true 'B Zar'
+    $box = Add-Box $slide '' $x $y $w $h $White $LightGray 16 $Black $false 3 $true 5 $BodyFont
+    $box.Line.Weight = 0.8
+    Add-SoftShadow $box
+    $null = Add-Box $slide $header ($x+12) ($y+10) ($w-24) 29 $line $line 14.2 $White $true 3 $true 5 $BodyFont
+    $null = Add-Text $slide $body ($x+16) ($y+48) ($w-32) ($h-57) 14.5 $DarkGray $false 3 $true $BodyFont
     return $box
 }
 
 function Add-CanvasBackground($slide) {
-    $bg = $slide.Shapes.AddShape(1,0,0,768,521)
+    $bg = $slide.Shapes.AddShape(1,0,0,960,540)
     $bg.Fill.ForeColor.RGB = $Canvas
     $bg.Line.Visible = 0
     $bg.ZOrder(1)
@@ -138,44 +166,54 @@ function Add-CanvasBackground($slide) {
 function Clear-CentralContent($slide) {
     for($i=$slide.Shapes.Count; $i -ge 1; $i--){
         $sh = $slide.Shapes.Item($i)
-        $keep = $false
-        if($sh.Left -ge 760){ $keep = $true }
-        if($sh.Top -ge 517 -and $sh.Left -lt 770){ $keep = $true }
-        if($sh.Left -ge 660 -and $sh.Top -lt 110 -and $sh.Type -eq 13){ $keep = $true }
+        $keep = ($sh.Type -eq 13 -and $sh.Left -ge 620 -and $sh.Top -lt 150)
         if(-not $keep){ $sh.Delete() }
     }
 }
 
 function Update-Navigation($slide) {
     $labels = @('عنوان','مسئله پژوهش','پیشینه و شکاف پژوهشی','طرح پیشنهادی','ارزیابی امنیتی','ارزیابی کارایی','نتایج و جمع‌بندی')
-    $buttons = @()
+    $active = (Get-SectionMeta $slide.SlideIndex).Index
+    $railShape = $slide.Shapes.AddShape(1,768,0,192,540)
+    $railShape.Fill.ForeColor.RGB = $Rail
+    $railShape.Line.Visible = 0
+    $plate = Add-Box $slide '' 810 15 108 102 $White $White 10 $White $false 2 $false 5 'Calibri'
+    Add-SoftShadow $plate
+    $logo = $null
     foreach($sh in @($slide.Shapes)){
-        try {
-            if($sh.Left -ge 760 -and $sh.Top -ge 30 -and $sh.Top -le 470 -and $sh.HasTextFrame -eq -1 -and $sh.TextFrame.HasText -eq -1){
-                $buttons += $sh
-            }
-        } catch {}
+        if($sh.Type -eq 13){ $logo = $sh; break }
     }
-    $buttons = $buttons | Sort-Object Top
-    for($i=0; $i -lt [Math]::Min(7,$buttons.Count); $i++){
-        $sh = $buttons[$i]
-        $sh.TextFrame.TextRange.Text = $labels[$i]
-        $fontSize = 15
-        if($i -eq 2 -or $i -eq 6){ $fontSize = 13.2 }
-        Format-Text $sh $fontSize $White $true 'B Zar' 2 $true
+    if($null -ne $logo){
+        $logo.LockAspectRatio = -1
+        $logo.Width = 88
+        $logo.Height = 88
+        $logo.Left = 820
+        $logo.Top = 22
+        $logo.ZOrder(0)
+    }
+    $null = Add-Text $slide 'دفاع پایان‌نامه کارشناسی ارشد' 786 121 156 20 10.5 $RailMuted $false 2 $true $BodyFont
+    $null = Add-Line $slide 790 148 938 148 $Green 1.2 $false $false
+    $null = Add-Text $slide 'مسیر ارائه' 790 153 148 22 13 $White $true 3 $true $BodyFont
+    for($i=0; $i -lt 7; $i++){
+        $y = 178 + $i*44
+        $isActive = ($i -eq $active)
+        $fill = $(if($isActive){$Green}else{$Rail})
+        $textColor = $(if($isActive){$White}else{$RailMuted})
+        $null = Add-Box $slide '' 784 $y 160 36 $fill $fill 10 $textColor $false 2 $false 5 'Calibri'
+        $fontSize = $(if($i -eq 2 -or $i -eq 6){10.6}else{11.5})
+        $null = Add-Text $slide $labels[$i] 813 ($y+5) 121 24 $fontSize $textColor $true 3 $true $BodyFont
+        $null = Add-Text $slide ('{0:00}' -f ($i+1)) 789 ($y+8) 24 18 8.5 $textColor $true 2 $false 'Calibri'
     }
 }
 
 function Update-Footer($slide, [int]$number) {
-    foreach($sh in @($slide.Shapes)){
-        try {
-            if($sh.Top -ge 517 -and $sh.Left -lt 770 -and $sh.HasTextFrame -eq -1){
-                $sh.TextFrame.TextRange.Text = 'پروتکل تبادل کلید گروهی ترکیبی برپایه TreeKEM — محمدرضا پارسانیا'
-                Format-Text $sh 10.2 $White $true 'B Zar' 3 $true
-            }
-        } catch {}
-    }
-    $null = Add-Text $slide ("$number/21") 34 520 80 18 10.5 $White $true 1 $false 'Calibri'
+    $footer = $slide.Shapes.AddShape(1,0,510,960,30)
+    $footer.Fill.ForeColor.RGB = $Rail
+    $footer.Line.Visible = 0
+    $null = Add-Line $slide 0 510 960 510 $Green 2.2 $false $false
+    $null = Add-Text $slide 'پروتکل تبادل کلید گروهی ترکیبی برپایه TreeKEM' 250 515 491 18 8.9 $White $true 3 $true $BodyFont
+    $null = Add-Text $slide 'محمدرضا پارسانیا' 790 515 145 18 9.2 $RailMuted $true 3 $true $BodyFont
+    $null = Add-Box $slide ('{0:00} / 21' -f $number) 24 515 72 18 $Green $Green 9 $White $true 2 $false 5 'Calibri'
 }
 
 function Add-Notes($slide, [string]$notes) {
@@ -185,7 +223,7 @@ function Add-Notes($slide, [string]$notes) {
             try {
                 if($shape.Type -eq 14 -and $shape.PlaceholderFormat.Type -eq 2){
                     $shape.TextFrame.TextRange.Text = $notes
-                    $shape.TextFrame.TextRange.Font.Name = 'B Zar'
+                    $shape.TextFrame.TextRange.Font.Name = $BodyFont
                     $shape.TextFrame.TextRange.Font.Size = 14
                     return
                 }
@@ -290,13 +328,20 @@ try {
 
     # Slide 1 — Title
     $s = $pres.Slides.Item(1)
-    $null = Add-Text $s 'پروتکل تبادل کلید گروهی ترکیبی برپایه TreeKEM' 60 115 650 82 34 $Blue $true 2 $true 'B Zar'
-    $null = Add-Text $s 'Hybrid Group Key Exchange based on TreeKEM' 95 202 580 30 19 $Black $false 2 $false 'Calibri'
-    $null = Add-Line $s 170 246 600 246 $Blue 2 $false $false
-    $null = Add-Text $s 'محمدرضا پارسانیا' 180 264 410 35 23 $Black $true 2 $true 'B Zar'
-    $null = Add-Text $s 'کارشناسی ارشد مهندسی کامپیوتر ـ گرایش امنیت سایبری' 135 302 500 30 18 $DarkGray $false 2 $true 'B Zar'
-    $null = Add-Box $s 'استاد راهنما: دکتر حمید ملا' 205 356 360 46 $PaleBlue $Blue 18 $DarkBlue $true 2 $true 5 'B Zar'
-    $null = Add-Text $s 'دانشگاه اصفهان  |  شهریور ۱۴۰۵' 190 423 390 28 17 $DarkGray $false 2 $true 'B Zar'
+    $null = Add-Box $s 'جلسه دفاع پایان‌نامه کارشناسی ارشد' 52 52 190 28 $Green $Green 11.5 $White $true 2 $true 5 $BodyFont
+    $null = Add-Text $s 'پروتکل تبادل کلید گروهی ترکیبی برپایه TreeKEM' 60 112 660 82 32 $DarkBlue $true 3 $true $HeadingFont
+    $null = Add-Text $s 'Hybrid Group Key Exchange based on TreeKEM' 60 205 660 28 16 $MidGray $false 3 $false 'Calibri'
+    $null = Add-Line $s 60 252 720 252 $LightGray 1.1 $false $false
+    $null = Add-Line $s 615 252 720 252 $Blue 4 $false $false
+    $identity = Add-Box $s '' 60 286 660 132 $White $LightGray 12 $Black $false 2 $true 5 $BodyFont
+    Add-SoftShadow $identity
+    $null = Add-Box $s 'پژوهشگر' 518 304 175 25 $Blue $Blue 11.5 $White $true 2 $true 5 $BodyFont
+    $null = Add-Text $s 'محمدرضا پارسانیا' 405 338 290 30 21 $DarkBlue $true 3 $true $HeadingFont
+    $null = Add-Text $s 'مهندسی کامپیوتر ـ امنیت سایبری' 405 373 290 23 13.5 $DarkGray $false 3 $true $BodyFont
+    $null = Add-Box $s 'استاد راهنما' 84 304 175 25 $Green $Green 11.5 $White $true 2 $true 5 $BodyFont
+    $null = Add-Text $s 'دکتر حمید ملا' 84 341 250 28 18 $DarkBlue $true 3 $true $HeadingFont
+    $null = Add-Text $s 'دانشگاه اصفهان' 84 374 250 22 13 $DarkGray $false 3 $true $BodyFont
+    $null = Add-Text $s 'شهریور ۱۴۰۵' 284 443 210 24 14 $MidGray $true 2 $true $BodyFont
     Add-Notes $s 'در آغاز، عنوان نهایی پایان‌نامه و هدف کلی پژوهش معرفی می‌شود. تأکید کنید که این ارائه درباره یک TreeKEM ترکیبی و تطبیقی در بستر MLS است.'
 
     # Slide 2 — Motivation
@@ -502,7 +547,7 @@ try {
       $yy=$y0+38+$r*48;$xx=$x0;$fill=$(if($r%2 -eq 0){$PaleBlue}else{$White})
       for($c=0;$c -lt 3;$c++){$tc=$(if($c -eq 1 -and $r -ne 3){$Green}elseif($c -eq 1){$Amber}else{$DarkGray});$null=Add-TableCell $s $rows[$r][$c] $xx $yy $widths[$c] 48 $fill $LightGray 13.5 $tc $(if($c -eq 1){$true}else{$false}) $true;$xx+=$widths[$c]}
     }
-    $null=Add-Text $s 'نتیجه کلیدی: TreeCover امن است، اما مدیریت دوره گذار بخشی از مدل امنیتی است.' 85 485 610 24 15.5 $Red $true 2 $true 'B Zar'
+    $null=Add-Text $s 'نتیجه کلیدی: TreeCover امن است، اما مدیریت دوره گذار بخشی از مدل امنیتی است.' 85 478 610 26 14.5 $Red $true 2 $true 'B Zar'
     Add-Notes $s 'این اسلاید نتایج است، نه تعریف ویژگی‌ها. روی دو قید تمرکز کنید: حذف امن رازها برای رازمانی پیش‌سو و پنجره محدود PCS در نواحی وابسته به پوشش افشاشده.'
 
     # Slide 16 — Complexity
@@ -536,7 +581,7 @@ try {
     $null=Add-CardHeader $s 'عملیات عادی؛ مرتبه ۲ در برابر ۴' "۸ عملیات Add / Remove / Update`nکاهش مشاهده‌شده: ۴٬۳۱۴ تا ۷٬۸۲۲ واحد`nمیانگین اختلاف: ۶٬۴۱۰ واحد" 35 115 300 165 $PaleBlue $Blue $DarkBlue
     $null=Add-CardHeader $s 'محیط اجرا' "rustc 1.93.1`nIntel i5-11400F`nUbuntu 26.04 LTS`nمؤلفه PQ آموزشی" 35 310 300 145 $PaleAmber $Amber $Amber
     Add-ChartPanel $s 'سلامت واقعی پس از گذار' 370 105 380 350 @('10','11','12','13','14') @(0.129310,0.008696,0.695652,0.669565,0.701754) 'h_newcost' $Blue @(0.732759,0.565217,0.634783,0.704348,0.675439) 'h_oldcost' $Green 1 0.70
-    $null=Add-Text $s 'غیریکنواختی طبیعی است: Committerها مسیرها و گره‌های درمان‌شده متفاوتی دارند.' 365 475 390 30 14 $DarkGray $true 2 $true 'B Zar'
+    $null=Add-Text $s 'غیریکنواختی طبیعی است: Committerها مسیرها و گره‌های درمان‌شده متفاوتی دارند.' 365 458 390 43 13.2 $DarkGray $true 2 $true 'B Zar'
     Add-Notes $s 'نمونه اولیه روابط تحلیلی را در یک اجرای آموزشی بررسی کرده است. نوسان h_newcost و h_oldcost خطا نیست؛ هر Committer ممکن است پوشش و مسیر متفاوتی مشاهده کند.'
 
     # Slide 19 — Comparison
