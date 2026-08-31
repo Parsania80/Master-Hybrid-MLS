@@ -15,27 +15,30 @@ function OleColor([string]$hex) {
     return [System.Drawing.ColorTranslator]::ToOle([System.Drawing.Color]::FromArgb($r,$g,$b))
 }
 
-$Blue = OleColor '#4472C4'
-$DarkBlue = OleColor '#1F4E79'
-$LightBlue = OleColor '#D9E6F7'
-$PaleBlue = OleColor '#EEF4FB'
+$Canvas = OleColor '#F2F5F9'
+$Blue = OleColor '#2C5F95'
+$DarkBlue = OleColor '#183B56'
+$LightBlue = OleColor '#D5E2F0'
+$PaleBlue = OleColor '#E7EFFA'
 $SidebarBlue = OleColor '#B7C8E7'
 $Black = OleColor '#111111'
 $DarkGray = OleColor '#3F4854'
 $MidGray = OleColor '#6B7280'
 $LightGray = OleColor '#E7EAF0'
 $White = OleColor '#FFFFFF'
-$Green = OleColor '#4F7F33'
-$PaleGreen = OleColor '#E5F0DE'
-$Red = OleColor '#A13B3B'
-$PaleRed = OleColor '#F6E3E3'
-$Amber = OleColor '#A66D16'
-$PaleAmber = OleColor '#F8EDD5'
+$Green = OleColor '#1F7A6E'
+$PaleGreen = OleColor '#E4F2EF'
+$Red = OleColor '#A33E4C'
+$PaleRed = OleColor '#F7E6E9'
+$Amber = OleColor '#B7791F'
+$PaleAmber = OleColor '#FAF0DA'
 
 function Set-Rtl($shape, [int]$alignment = 3) {
+    # PowerPoint resets paragraph alignment when TextDirection is assigned.
+    # Set direction first, then re-apply alignment to both text APIs.
+    try { $shape.TextFrame2.TextRange.ParagraphFormat.TextDirection = 2 } catch {}
     try { $shape.TextFrame.TextRange.ParagraphFormat.Alignment = $alignment } catch {}
     try { $shape.TextFrame2.TextRange.ParagraphFormat.Alignment = $alignment } catch {}
-    try { $shape.TextFrame2.TextRange.ParagraphFormat.TextDirection = 2 } catch {}
 }
 
 function Format-Text($shape, [double]$size, [int]$color, [bool]$bold, [string]$font, [int]$alignment, [bool]$rtl) {
@@ -97,7 +100,9 @@ function Add-Node($slide, [string]$text, [double]$cx, [double]$cy, [double]$diam
 }
 
 function Add-Title($slide, [string]$title, [string]$subtitle = '') {
-    $null = Add-Text $slide $title 34 20 690 48 30 $Blue $true 2 $true 'B Zar'
+    $null = Add-Text $slide $title 40 18 625 48 29 $DarkBlue $true 2 $true 'B Zar'
+    $null = Add-Line $slide 60 72 650 72 $LightBlue 1.1 $false $false
+    $null = Add-Line $slide 605 72 650 72 $Blue 3 $false $false
     if($subtitle){ $null = Add-Text $slide $subtitle 50 66 655 24 12.5 $MidGray $false 2 $false 'Calibri' }
 }
 
@@ -116,9 +121,18 @@ function Add-ArrowBetween($slide, $leftShape, $rightShape, [int]$color = 0) {
 function Add-CardHeader($slide, [string]$header, [string]$body, [double]$x, [double]$y, [double]$w, [double]$h,
                         [int]$fill = 0, [int]$line = 0, [int]$headerColor = 0) {
     $box = Add-Box $slide '' $x $y $w $h $fill $line 16 $Black $false 3 $true 5 'B Zar'
-    $null = Add-Text $slide $header ($x+8) ($y+5) ($w-16) 25 18 $headerColor $true 2 $true 'B Zar'
-    $null = Add-Text $slide $body ($x+10) ($y+34) ($w-20) ($h-40) 15.5 $DarkGray $false 3 $true 'B Zar'
+    $box.Line.Weight = 1.15
+    $null = Add-Text $slide $header ($x+16) ($y+6) ($w-32) 27 18 $headerColor $true 3 $true 'B Zar'
+    $null = Add-Line $slide ($x+16) ($y+39) ($x+$w-16) ($y+39) $line 1 $false $false
+    $null = Add-Text $slide $body ($x+16) ($y+47) ($w-32) ($h-55) 15.5 $DarkGray $false 3 $true 'B Zar'
     return $box
+}
+
+function Add-CanvasBackground($slide) {
+    $bg = $slide.Shapes.AddShape(1,0,0,768,521)
+    $bg.Fill.ForeColor.RGB = $Canvas
+    $bg.Line.Visible = 0
+    $bg.ZOrder(1)
 }
 
 function Clear-CentralContent($slide) {
@@ -156,11 +170,12 @@ function Update-Footer($slide, [int]$number) {
     foreach($sh in @($slide.Shapes)){
         try {
             if($sh.Top -ge 517 -and $sh.Left -lt 770 -and $sh.HasTextFrame -eq -1){
-                $sh.TextFrame.TextRange.Text = "پروتکل تبادل کلید گروهی ترکیبی برپایه TreeKEM — محمدرضا پارسانیا                              $number"
-                Format-Text $sh 10.5 $White $true 'B Zar' 2 $true
+                $sh.TextFrame.TextRange.Text = 'پروتکل تبادل کلید گروهی ترکیبی برپایه TreeKEM — محمدرضا پارسانیا'
+                Format-Text $sh 10.2 $White $true 'B Zar' 3 $true
             }
         } catch {}
     }
+    $null = Add-Text $slide ("$number/21") 34 520 80 18 10.5 $White $true 1 $false 'Calibri'
 }
 
 function Add-Notes($slide, [string]$notes) {
@@ -267,6 +282,7 @@ try {
     for($i=1;$i -le $pres.Slides.Count;$i++){
         $slide = $pres.Slides.Item($i)
         Clear-CentralContent $slide
+        Add-CanvasBackground $slide
         Update-Navigation $slide
         Update-Footer $slide $i
         $slide.Name = ('Defense-{0:00}' -f $i)
@@ -306,8 +322,18 @@ try {
     $null = Add-Text $s 'اعضا در برگ‌ها؛ رازها در مسیر مستقیم تا ریشه' 45 88 330 28 17 $DarkGray $false 2 $true 'B Zar'
     $coords=@(@(205,135),@(125,215),@(285,215),@(75,315),@(155,315),@(255,315),@(335,315))
     foreach($edge in @(@(0,1),@(0,2),@(1,3),@(1,4),@(2,5),@(2,6))){$null=Add-Line $s $coords[$edge[0]][0] ($coords[$edge[0]][1]+16) $coords[$edge[1]][0] ($coords[$edge[1]][1]-16) $Blue 1.5 $false $false}
-    $names=@('Root','L','R','A','B','C','D'); for($i=0;$i -lt 7;$i++){ $fill=$(if($i -eq 3){$PaleGreen}elseif($i -lt 3){$PaleBlue}else{$White}); $null=Add-Node $s $names[$i] $coords[$i][0] $coords[$i][1] 38 $fill $Blue $DarkBlue 11 }
-    $null=Add-Line $s 75 315 125 215 $Green 4 $false $false; $null=Add-Line $s 125 215 205 135 $Green 4 $false $false
+    # Draw the selected direct path before the nodes so edges terminate cleanly at node borders.
+    $null=Add-Line $s 75 315 125 215 $Green 2.8 $false $false
+    $null=Add-Line $s 125 215 205 135 $Green 2.8 $false $false
+    $names=@('Root','L','R','A','B','C','D')
+    for($i=0;$i -lt 7;$i++){
+        $onPath = ($i -eq 0 -or $i -eq 1 -or $i -eq 3)
+        $fill = $(if($onPath){$PaleGreen}elseif($i -eq 2){$PaleBlue}else{$White})
+        $line = $(if($onPath){$Green}else{$Blue})
+        $nodeSize = $(if($i -eq 0){8.5}else{11})
+        $diameter = $(if($i -eq 0){42}else{38})
+        $null=Add-Node $s $names[$i] $coords[$i][0] $coords[$i][1] $diameter $fill $line $DarkBlue $nodeSize
+    }
     $steps=@('Path Update','Commit Secret','MLS Key Schedule','Epoch Secret')
     $prev=$null
     for($i=0;$i -lt $steps.Count;$i++){
@@ -319,9 +345,9 @@ try {
 
     # Slide 4 — Gap
     $s = $pres.Slides.Item(4); Add-Title $s 'شکاف پژوهشی'
-    $null = Add-CardHeader $s 'TreeKEM کلاسیک' "پویا و مقیاس‌پذیر`nاما وابسته به فرض‌های کلاسیک" 35 120 215 180 $PaleBlue $Blue $DarkBlue
+    $null = Add-CardHeader $s 'TreeKEM کلاسیک' "پویا و مقیاس‌پذیر`nاما وابسته به فرض‌های کلاسیک" 515 120 215 180 $PaleBlue $Blue $DarkBlue
     $null = Add-CardHeader $s 'مهاجرت مستقیم PQ' "مقاومت کوانتومی بیشتر`nاما کلید و متن رمز بزرگ‌تر" 275 120 215 180 $PaleRed $Red $Red
-    $null = Add-CardHeader $s 'درخت دودویی ثابت' "هزینه لگاریتمی`nاما ارتفاع زیاد در گروه‌های بزرگ" 515 120 215 180 $PaleAmber $Amber $Amber
+    $null = Add-CardHeader $s 'درخت دودویی ثابت' "هزینه لگاریتمی`nاما ارتفاع زیاد در گروه‌های بزرگ" 35 120 215 180 $PaleAmber $Amber $Amber
     $null = Add-Box $s 'چگونه TreeKEM ترکیبی و تطبیقی، امنیت را حفظ و سربار گروه‌های بزرگ را کنترل کند؟' 90 350 590 86 $White $Blue 20 $DarkBlue $true 2 $true 5 'B Zar'
     Add-Notes $s 'سه خلأ را جدا کنید: وابستگی کلاسیک، سربار مهاجرت پساکوانتومی و محدودیت مرتبه ثابت. پرسش برجسته پایین اسلاید، سؤال طراحی پایان‌نامه است.'
 
@@ -546,8 +572,8 @@ try {
 
     # Slide 21 — Limitations / future / questions
     $s = $pres.Slides.Item(21); Add-Title $s 'محدودیت‌ها، مسیر آینده و پرسش‌ها'
-    $null=Add-CardHeader $s 'محدودیت‌های فعلی' "• پیام و محاسبه بزرگ‌تر`n• هزینه اولیه گذار`n• نگهداری موقت دو درخت`n• پیچیدگی TreeCover`n• پنجره محدود PCS" 45 115 310 260 $PaleRed $Red $Red
-    $null=Add-CardHeader $s 'پژوهش‌های آینده' "• سیاست پویا برای انتخاب مرتبه`n• اولویت درمان گره‌های افشاشده`n• عضویت بسیار پویا`n• جلوگیری از نوسان مرتبه`n• تحلیل کاهش مرتبه" 420 115 310 260 $PaleBlue $Blue $DarkBlue
+    $null=Add-CardHeader $s 'محدودیت‌های فعلی' "• پیام و محاسبه بزرگ‌تر`n• هزینه اولیه گذار`n• نگهداری موقت دو درخت`n• پیچیدگی TreeCover`n• پنجره محدود PCS" 420 115 310 260 $PaleRed $Red $Red
+    $null=Add-CardHeader $s 'پژوهش‌های آینده' "• سیاست پویا برای انتخاب مرتبه`n• اولویت درمان گره‌های افشاشده`n• عضویت بسیار پویا`n• جلوگیری از نوسان مرتبه`n• تحلیل کاهش مرتبه" 45 115 310 260 $PaleBlue $Blue $DarkBlue
     $null=Add-Text $s 'سپاسگزارم' 245 410 290 42 30 $Blue $true 2 $true 'B Zar'
     $null=Add-Box $s 'پرسش‌ها؟' 290 458 200 48 $DarkBlue $DarkBlue 23 $White $true 2 $true 5 'B Zar'
     Add-Notes $s 'محدودیت‌ها را صریح و کوتاه بیان کنید و آن‌ها را به مسیرهای آینده متصل سازید. سپس ارائه را برای پرسش‌های داوران جمع‌بندی کنید.'
