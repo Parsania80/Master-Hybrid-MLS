@@ -2,7 +2,7 @@
 
 ## What is this?
 
-This repository is intended to become a reproducible Rust research prototype for a thesis experiment. It will compare normal binary Messaging Layer Security (MLS), binary MLS augmented with experimental mKyber delivery, and an experimental adaptive transition from a binary tree to a quaternary tree.
+This repository is a Rust thesis prototype that compares three ways to update a secure group: standard Messaging Layer Security (MLS), binary MLS with experimental mKyber delivery, and an adaptive version that changes its tree from two children per node to four (2→4).
 
 ## Why does it exist?
 
@@ -10,9 +10,41 @@ The experiment studies whether changing TreeKEM arity can reduce measured commun
 
 ## What problem does it solve?
 
-The planned software will create a valid 128-member baseline MLS group, replay controlled multi-member workloads, measure real serialized costs, evaluate transition start and end rules, verify member convergence, and generate reproducible CSV, JSON, and Markdown reports.
+The software creates real MLS groups, runs controlled group changes, measures the bytes of serialized Commit messages, checks that members reach the same group state, and writes public CSV, JSON, Markdown, and SVG results. These measurements let a reviewer see both the cost of switching trees and the cost of later updates.
 
-## Current status
+## Reviewer guide: where the protocol happens
+
+Think of an MLS group as a shared tree of members. A **Commit** is a signed group change, such as adding or removing a member or refreshing keys. An **epoch** is the group state after a Commit. TreeKEM uses the tree to deliver new secrets to the right members. A binary tree has up to two children at each parent; the experimental quaternary tree has up to four.
+
+| Phase | What happens in plain language | Main code |
+|---|---|---|
+| 1. Standard MLS reference | The project creates a normal MLS group, joins members using Welcome messages, and processes Add, Remove, and Update Commits. This is the reference result. | [baseline MLS adapter](crates/mls-adapter/src/lib.rs) (`create_group`, `join_from_welcome`, `add_members`, `remove_members_by_identity`, `self_update`, `process_message`) |
+| 2. Experimental binary MLS | A separate OpenMLS fork keeps the binary tree and adds experimental mKyber alongside classical delivery of path secrets. | [hybrid sender/receiver](crates/hybrid-path-secret/src/lib.rs) (`seal_hybrid_path_level_with_provider`, `open_hybrid_path_level_with_provider`); [fork TreeKEM path processing](crates/openmls-hybrid/openmls/src/treesync/treekem.rs) |
+| 3. Watch and decide | Accepted Commits provide a window of observed costs. The policy checks whether switching is allowed and whether the candidate has a sufficient measured saving. A probe Commit is measured separately and does not change the live group. | [start decision](crates/transition-policy/src/lib.rs) (`TransitionStartEvaluator::evaluate_post_warmup`); [real workload gate](crates/experimental-mls-adapter/src/lib.rs) (`execute_experimental_delivery_health_workload`) |
+| 4. Start 2→4 | A real authenticated Commit changes the public `ArityState` from `Normal` to `Transitioning`. All members verify the same mapping from old leaves to new leaves and the frozen old-tree delivery cover before applying it. | [state change](crates/arity-state/src/lib.rs) (`ArityState::begin_transition`); [transition Commit](crates/openmls-hybrid/openmls/src/group/mls_group/processing.rs) (`begin_experimental_transition`, `merge_staged_commit_experimental_transition_atomic`) |
+| 5. Operate with four-way authority | New Update/Remove Commits use the quaternary path and root for the group secret and authenticated tree hash. Old binary tree keys remain temporarily available only to help deliver secrets when a new-tree recipient node is not yet usable. | [quaternary Commit application](crates/openmls-hybrid/openmls/src/group/mls_group/processing.rs) (`merge_staged_commit_experimental_quaternary_atomic`); [delivery and path code](crates/openmls-hybrid/openmls/src/treesync/treekem.rs) |
+| 6. Finish migration | After enough post-transition Commits, the project measures how usable the new tree and old delivery cover are. If the strict retirement rule triggers, another authenticated Commit returns `ArityState` to `Normal` with arity 4 and removes the retained old-tree material atomically. | [health and thresholds](crates/transition-tree/src/lib.rs) (`delivery_endpoint_health`); [retirement Commit](crates/openmls-hybrid/openmls/src/group/mls_group/processing.rs) (`retire_experimental_treecover`, `merge_staged_commit_experimental_retirement_atomic`) |
+
+### The two `if` decisions that mark migration
+
+**When does 2→4 start?** In [the policy evaluator](crates/transition-policy/src/lib.rs), the answer is yes only when **all five** checks pass: the group is still in `Normal` state; the proposed arity is double the current arity (2→4); the group has stayed large enough for the required number of epochs; enough relevant Commits were observed; and the measured saving is strictly greater than the configured threshold `Delta`. In [the real delivery-health workload](crates/experimental-mls-adapter/src/lib.rs), the `if` immediately before `begin_transition` adds two demonstration requirements: at least five binary observations and at least one binary Update. If any check fails, the transition Commit is not created. If they all pass, `begin_experimental_transition` creates the signed GroupContext Commit and members apply it atomically. The start is **that accepted Commit**, not the earlier probe or calculation.
+
+Mode 4 uses a matched per-Commit saving for this start decision and reports the one-time transition bytes separately. A smaller probe Commit by itself does not prove that the transition cost has been repaid.
+
+**When does migration end?** While the state is `Transitioning`, each accepted post-transition Commit updates two health scores: `h_new` for usable new-tree delivery and `h_old` for the retained old-tree cover. In [the threshold code](crates/transition-tree/src/lib.rs), retirement is allowed when **`h_new > 0.70` OR `h_old < 0.50`**. Equality does not count. The [real workload](crates/experimental-mls-adapter/src/lib.rs) also requires at least five impactful post-transition Commits before its retirement `if` can run. Once the rule triggers, `retire_experimental_treecover` creates a signed retirement Commit; successful atomic application makes the state `Normal` with arity 4 and clears the retained transition material. Until that Commit succeeds, the group is still transitioning.
+
+The **start and end refer to protocol state**, while report rows show the measured events. The fixed 128-member three-mode comparison demonstrates a real transition and one post-transition update; it is not a full retirement trace. For the complete start-to-retirement path, use mode 4 below and inspect its `events.csv` and `report.md`.
+
+### Show the full path to a reviewer
+
+On Linux, run `./test.sh` and choose **mode 4**. On Windows, run `test.bat` and choose **mode 4**. Use a fresh public run label and an initial group size from 64 to 256. The generated `report/<run>/report.md` shows the binary observations, the transition Commit, the later four-way Commits, and the retirement Commit; `output/<run>/events.csv` has the corresponding rows. This is an in-process research demonstration. It does not connect real clients over a network.
+
+<details>
+<summary>Development history and detailed status</summary>
+
+## Development history and detailed status
+
+The entries below record milestones as they were completed. Earlier future-tense statements describe the state *at that milestone*; the reviewer guide above and the mode-4 report contract below describe the current implemented path.
 
 The Rust workspace pins the approved dependencies and contains an unchanged OpenMLS 0.8.1 baseline adapter. It can create and join a standard group, stage and merge normal Add/remove/self-update commits from multiple members, process standard messages, and encrypt application data. Independent regression tests verify epoch, authenticated GroupContext, RFC tree-hash convergence, and application delivery. The Phase 2, Phase 4, Phase 5, Phase 6, Phase 7, and Phase 8 quality gates have passed on Rust 1.93.1. The Phase 8 gate ran locked-offline format, workspace check, strict Clippy, focused ArityState/TreeCover/transition-auth suites, baseline regression, all-target tests, doc tests, release build, metadata, OpenMLS feature audit, and diff validation. OpenMLS remains at 0.8.1 with only its RustCrypto feature. Bootstrap summaries archive only public provenance: the exact command, compiler, package, and direct dependency versions. The Phase 4 gate also runs bounded property tests for public mKyber wire mutations and verifies OpenMLS has only its RustCrypto feature enabled. The mKyber crate also implements `EducationalMkyber512Reference`, the paper-based `mkyber512-thesis-v1` profile: it validates the shared domain, emits exact 768/704/48-byte artifacts, and tests multi-recipient agreement, malformed input rejection, deterministic public-artifact reproducibility, and common/recipient tampering. A project-owned public regression digest is not an official KAT or interoperability vector. Normal reference calls use dedicated OS-RNG entry points; deterministic entropy is private to unit tests. Long-lived private keys and shared secrets are zeroized on drop, while temporary secret material uses scoped guards. It records component-only byte costs from actual serialized arrays: the 704-byte common component, each 48-byte recipient component, and their sum. The hybrid crate now performs complete isolated experimental path-level delivery: one mKyber encapsulation for the co-path recipient set, a context-bound 32-byte HPKE exporter secret and encapsulation per recipient, the canonical hybrid KDF input/expansion, and AES-128-GCM path-secret wrapping. Its instrumentation records actual public ciphertext lengths but zero KDF contribution. Tests reject every altered serialized delivery field, non-recipients, and group/epoch/tree-version/path-node replays without returning a path secret. The adaptive-tree crate now provides deterministic mapping plus immutable, public `Update`/`Add`/`Remove` replay. The metrics crate records a real emitted baseline Commit as `B_i(2)`, an explicitly labeled `shadow_exact_codec` candidate `B_hat_i(4)`, and typed public tree, recipient-resolution, crypto-count, and monotonic timing facts. The transition-policy crate retains an accepted-commit trail, exact preflight savings, a five-condition start evaluator that records every public blocker, and byte-or-fixed-point-percent Delta resolution. It schedules nothing and does not construct or accept a transition Commit. This is thesis-local educational reference code, not an author-approved profile or vector corpus; it makes no interoperability, audit, side-channel, security-proof, business, or production claim. `SECURITY.md` records the non-standard protocol changes, threat model, interoperability boundary, X-Wing/C2PRI limitation, and unresolved assumptions. See `PROJECT.md`, `SECURITY.md`, `docs/adr/`, and `SESSION-LOG.md` for the authoritative decisions and audit trail.
 
@@ -83,6 +115,8 @@ The optimized real 128-member rejection-only run completed in 387.18 seconds: 29
 `PROJECT.md` now uses only standalone tasks, with no Task 57 gates or subtasks. Tasks 60–62 are complete. Tasks 63–67 add only the minimal thesis-table measurements that are still missing: environment/repetitions/peak RSS, clearly labeled educational arity-8 operation and 4-to-8 transition values, real/educational maturity facts, analytical byte/time error formulas, and final table-shaped outputs. Tasks 68–70 finish acceptance, documentation, and clean-checkout reproducibility. Educational codec/model values remain visibly distinct from real MLS/fork observations.
 
 Ubuntu 26.04 development setup is verified with the repository-pinned Rust 1.93.1 toolchain, including `rustfmt` and Clippy. The exact locked dependency graph is cached locally, and the workspace passes a locked offline all-target check.
+
+</details>
 
 ## How to use it
 
