@@ -198,8 +198,19 @@ Unless explicitly requested, a TOC correction should not rewrite every number in
 
 Current verified counts:
 
-- 17 figures
-- 7 tables
+- 15 figures (verified 2026-10-08)
+- 13 tables (verified 2026-10-08)
+
+## Equation numbering
+
+- Displayed formulas use English chapter-sequence labels in parentheses, such as `(2-1)`, `(2-2)`, and `(3-1)`.
+- Restart the sequence in each chapter; chapter 1 currently has no displayed formulas.
+- Inline notation and formulas used as table-cell symbols are not numbered.
+- Current displayed-formula counts: chapter 2: 66; chapter 3: 20; chapter 4: 130; chapter 5: 92; chapter 6: 2; total: 310.
+- Numbers use Word's native equation-array layout, with the equation centered and its number at the right.
+- Each displayed formula line has its own paragraph. Trailing manual line breaks inside a numbered math array can cause Word to save invalid math XML; remove those breaks before applying native equation numbering.
+- Seven long formulas use multiple lines; four of these also use 11.5-point math text to leave space for their labels. Body text formatting is preserved.
+- Equation numbers are explicit labels. Adding or deleting displayed formulas requires renumbering the affected chapter and refreshing the three front lists afterward.
 
 ## Bibliography numbering
 
