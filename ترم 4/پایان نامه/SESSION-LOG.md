@@ -3,6 +3,10 @@
 Purpose: this file preserves continuity between thesis work sessions. Add one short entry after each session so future work can resume without losing context.
 
 ```text
+[2026-10-09 18:45] Student: Requested English page abbreviations and digits only in منابع و مآخذ, leaving the rest unchanged. | Agent: Backed up the current Thesis.docx to Thesis-before-English-bibliography-20261009.docx; replaced five ص. page markers with pp.; set the 29 bibliography entries and their paragraph marks to English/LTR numeric formatting while retaining automatic numbering and indentation; locked the existing bibliography field against automatic regeneration. Verified all XML outside the bibliography block and all other DOCX package parts are byte-identical to the backup. Confirmed English reference numbers and page markers in native Word page images. Updated the bibliography rule in document_style.md. | Comprehension: Clear.
+```
+
+```text
 [2026-10-08 20:56] Student: Requested refreshing the contents, figures, and tables lists after edits and adding chapter-based formula numbers. | Agent: Read agent.md, document_style.md, PROJECT.md, and the session log; backed up Thesis.docx to Thesis-before-lists-and-equations-20261008.docx; refreshed the three lists (15 figures, 13 tables), repaired the new table caption, and numbered 310 displayed equations by chapter (2:66, 3:20, 4:130, 5:92, 6:2; chapter 1 has none). Wrapped seven long equations to keep labels readable, preserved all formula content and original image assets, and verified the 154-page Word/PDF rendering. Updated document_style.md with the numbering convention and current counts. Equation labels are explicit and need renumbering when equations are added or removed. | Comprehension: Clear.
 ```
 

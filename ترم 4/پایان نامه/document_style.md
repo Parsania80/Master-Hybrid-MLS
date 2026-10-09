@@ -214,10 +214,10 @@ Current verified counts:
 
 ## Bibliography numbering
 
-- The generated bibliography is finalized as static paragraphs after the `BIBLIOGRAPHY` field is refreshed.
-- Each reference has a literal Persian list prefix from `U+06F0` through `U+06F9`.
-- This avoids mixed digit shaping caused by English bibliography text and automatic Word list labels.
-- The current bibliography is static after finalization. To add or change Word bibliography sources later, insert/update a new `BIBLIOGRAPHY` field first and then rerun `apply_thesis_style.ps1`.
+- Bibliography entries use English digits (`0` through `9`) and English page abbreviations (`pp.`), as requested on 2026-10-09. Keep the Persian section heading and all other thesis sections unchanged.
+- The 29 reference entries retain their existing automatic numbering and indentation. Their paragraph marks and reference runs use left-to-right English formatting to prevent Persian digit shaping.
+- The existing `BIBLIOGRAPHY` field is locked to preserve this local correction. Updating it may regenerate Persian page abbreviations and automatic list numbering; reapply the English convention within the bibliography after any deliberate refresh.
+- The older bibliography-finalization logic in `apply_thesis_style.ps1` uses Persian prefixes. Do not apply that logic to the bibliography without adapting it to this English-only rule.
 
 ## Recovery
 
