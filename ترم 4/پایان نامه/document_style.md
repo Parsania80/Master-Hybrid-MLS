@@ -198,15 +198,27 @@ Unless explicitly requested, a TOC correction should not rewrite every number in
 
 Current verified counts:
 
-- 17 figures
-- 7 tables
+- 15 figures (verified 2026-10-08)
+- 13 tables (verified 2026-10-08)
+
+## Equation numbering
+
+- Displayed formulas use smaller Persian labels on the same line as the formula, such as `(۱-۲)`, `(۲-۲)`, and `(۱-۳)`. Multiline formula labels belong on the final row.
+- The first value is the formula sequence within the chapter and the second is the chapter number. Restart the first value in each chapter; chapter 1 currently has no displayed formulas.
+- Inline notation and formulas used as table-cell symbols are not numbered.
+- Current displayed-formula counts: chapter 2: 66; chapter 3: 20; chapter 4: 130; chapter 5: 92; chapter 6: 2; total: 310.
+- Formula labels are 9-point IRNazanin in a consistent right-hand column, approximately 1.3 cm inward from the right text margin, following the user's latest professor instruction on 2026-10-10. Native Word PDF measurements verified a visible inset of 36 points (1.27 cm) for all 310 labels.
+- Center the mathematical expression itself within the full text width, independently of the label. Preserve the right-hand label column. Use native `#` equation alignment and ten trailing 13-point Times New Roman nonbreaking spaces with 0.35-point character spacing to reserve the right inset. Paragraph right indentation alone is ignored by Word's native equation-number alignment.
+- Where Word centers the expression within the space remaining beside its label, add balancing leading whitespace of the label width plus its trailing inset to each equation-array row. Where Word already centers the expression within the full text width, omit that balancing whitespace. Check the rendered result: the expression center should match the text-area center, and the label right edge should remain at approximately 460.15 points on the current A4 pages. The previous explicit ten-space gap before the label has been removed to allow independent centering; leave adequate visual separation through wrapping long expressions.
+- Wrap long formulas as needed to keep the label in that column, preserving every mathematical symbol and the existing math fonts. Four formulas retain 11.5-point math text. Body text and all other numbering are preserved.
+- Formula labels are explicit. Adding or deleting displayed formulas requires renumbering the affected chapter labels afterward.
 
 ## Bibliography numbering
 
-- The generated bibliography is finalized as static paragraphs after the `BIBLIOGRAPHY` field is refreshed.
-- Each reference has a literal Persian list prefix from `U+06F0` through `U+06F9`.
-- This avoids mixed digit shaping caused by English bibliography text and automatic Word list labels.
-- The current bibliography is static after finalization. To add or change Word bibliography sources later, insert/update a new `BIBLIOGRAPHY` field first and then rerun `apply_thesis_style.ps1`.
+- Bibliography entries use English digits (`0` through `9`) and English page abbreviations (`pp.`), as requested on 2026-10-09. Keep the Persian section heading and all other thesis sections unchanged.
+- The 29 reference entries retain their existing automatic numbering and indentation. Their paragraph marks and reference runs use left-to-right English formatting to prevent Persian digit shaping.
+- The existing `BIBLIOGRAPHY` field is locked to preserve this local correction. Updating it may regenerate Persian page abbreviations and automatic list numbering; reapply the English convention within the bibliography after any deliberate refresh.
+- The older bibliography-finalization logic in `apply_thesis_style.ps1` uses Persian prefixes. Do not apply that logic to the bibliography without adapting it to this English-only rule.
 
 ## Recovery
 

@@ -1,0 +1,1466 @@
+
+PAGE 1
+IACR Communications in Cryptology https://doi.org/10.62056/a3qj89n4e
+ISSN 3006-5496, Vol. 1, No. 1, 22 pages.
+Checkforupdates
+X-Wing
+The Hybrid KEM You’ve Been Looking For
+Manuel Barbosa1,2,3 , Deirdre Connolly6 , João Diogo Duarte1,2 ,
+Aaron Kaiser3 , Peter Schwabe3,4 , Karolin Varner3,5 and
+Bas Westerbaan7
+1 University of Porto, Portugal
+2 INESC TEC, Portugal
+3 Max Planck Institute for Security and Privacy, Germany
+4 Radboud University, The Netherlands
+5 Rosenpass e.V., Germany
+6 SandboxAQ, USA
+7 Cloudflare, The Netherlands
+Abstract. X-Wing is a hybrid key-encapsulation mechanism based on X25519 and
+ML-KEM-768. It is designed to be the sensible choice for most applications. The
+concrete choice of X25519 and ML-KEM-768 allows X-Wing to achieve improved
+efficiencycomparedtousingagenericKEMcombiner. Inthispaper,weintroducethe
+X-Wing hybrid KEM construction and provide a proof of security. We show (1) that
+X-WingisaclassicallyIND-CCAsecureKEMifthestrongDiffie-Hellmanassumption
+holdsintheX25519nominalgroup,and(2)thatX-Wingisapost-quantumIND-CCA
+secure KEM if ML-KEM-768 is itself an IND-CCA secure KEM and SHA3-256 is
+securewhenusedasapseudorandomfunction. ThefirstresultisprovedintheROM,
+whereas the second one holds in the standard model. Loosely speaking, this means
+X-Wing is secure if either X25519 or ML-KEM-768 is secure. We stress that these
+security guarantees and optimizations are only possible due to the concrete choices
+that were made, and it may not apply in the general case.
+Keywords: HybridKEM·Post-QuantumCryptography·Public-KeyCryptography
+· X-Wing
+1 Introduction
+To counter the potential threat of store-now/decrypt-later attacks using quantum comput-
+ers, industry has started to deploy post-quantum key-encapsulation mechanisms (KEMs)
+forkeyagreement(cf. [O’B23,WR22]). Thepost-quantumcryptographythatisnowbeing
+considered for widespread adoption is relatively young compared to the public-key cryp-
+tography that has protected applications until now. For example, RSA and (elliptic-curve)
+Diffie-Hellman might not be secure against quantum-computers, but these schemes have
+undergone decades of cryptographic analysis. For this reason, many opt to deploy a hybrid
+of traditional and post-quantum schemes: if the post-quantum component turns out to be
+weak, security falls back to the (non-post-quantum) security of traditional constructions.
+Warning. X-WingdependsontheNISTstandardML-KEM,whichhasnotbeenfinalizedyet. Thus,
+X-Wingisnotfinalyet.
+E-mail: mbb@fc.up.pt(ManuelBarbosa),durumcrustulum@gmail.com(DeirdreConnolly),joao@dio
+goduarte.pt (João Diogo Duarte), aaron.kaiser@mpi-sp.org (Aaron Kaiser), peter@cryptojedi.org
+(PeterSchwabe),karo@cupdev.net(KarolinVarner),bas@westerbaan.name(BasWesterbaan)
+This work is licensed under a “CC BY 4.0” license.
+Received: 2024-01-09 Accepted: 2024-03-05
+
+PAGE 2
+2 X-Wing
+Conversely, when the traditional component becomes weak due to practical quantum
+attacks, security falls back to the (post-quantum) security of the post-quantum scheme.
+As pointed out by Giacon, Heuer, and Poettering [GHP18], under the standard IND-
+CCA security definition for KEMs1, creating a generic KEM combiner is more subtle than
+one might expect. They show that the obvious combiner KDF(k ∥k ) is not IND-CCA
+1 2
+secure in all cases, but that such a generic combiner can be made secure by mixing in
+the ciphertexts into the KDF input, e.g., as KDF(k ∥k ∥c ∥c ). As typical post-quantum
+1 2 1 2
+KEMs have large ciphertexts, this second combiner comes with a noticeable performance
+penalty.
+Despitethis,inspecificapplicationssuchasTLS1.3,thesimplercombineristakentobe
+securebecausetheciphertextsaremixedintothetranscripthash. Thishasledtothecurrent
+situation where there are two different hybrid KEMs, both called X25519Kyber768Draft00
+[WS23, WW23]: one for HPKE where the ciphertext is used in the key derivation input,
+and one for use in TLS where security instead relies on the transcript hash outside the
+combiner. This is an undesirable situation.
+In this paper, we show that there is a class of KEMs where the best of both worlds
+can be achieved: For these KEMs, the simple, more efficient combiner yields an IND-CCA
+secure hybrid KEM despite not using the KEM ciphertext during key derivation. We call
+theseKEMsciphertextsecondpreimageresistant(C2PRI)andshowthatML-KEM[NIS23]
+provides ciphertext second preimage resistance. We use this observation to design an
+efficient, hybrid KEM suitable for a broad range of applications.
+Furthermore, besides having to choose the details of the combiner (e.g., which PRF to
+use or which design to follow), the KEMs used in the combiner have to be decided upon
+as well, which involves several crucial choices to start the scheme. Then, the parameters
+and security levels have to be fixed. There might be further details to consider. For
+instance, for ECDH, designers need to decide upon how a KEM is to be created from the
+Diffie–Hellman key exchange like X25519 [Ber06, LHT16].
+AlthoughthereisvalueinhavingastandardizedrecipetocreatebespokehybridKEMs
+using a black-box combiner from existing KEMs [OWK23], for most use cases a single
+choice is beneficial for increased interoperability, and reduced engineering efforts. With
+X-Wing we are making concrete choices, and we provide a proof of security for these
+specificchoices. Thissimplifiesourproofandyieldsaperformancelevelunmetbyprevious
+constructions at the same security level.
+X-Wing is a concrete KEM and not a generic combiner. Its simplicity and performance
+ensures it is a good choice in most use cases, including TLS and HPKE. X-Wing targets
+128-bit security, and achieves this goal by combining X25519 and ML-KEM-768 using
+SHA3-256 as the key derivation function. ML-KEM-768 is chosen over ML-KEM-512 to
+hedge against advances in cryptanalysis and to match X25519Kyber768Draft00 [WS23],
+which already found real-world usage.
+In this paper, we show that X-Wing achieves IND-CCA security based on either the
+security properties of either X25519 or ML-KEM. In the pre-quantum case, we model
+SHA3-256 as a random oracle and reduce the IND-CCA security of the scheme to the
+strong Diffie-Hellman problem in the X25519 nominal group. To achieve this result, we
+also show that ML-KEM-768 retains a ciphertext second preimage resistance, even if its
+secret key is known to the attacker. In the post-quantum case, we give a standard model
+reduction from the IND-CCA security of X-Wing to IND-CCA security of ML-KEM-768
+while assuming SHA3-256 to be a PRF. Here we closely follow the proof idea for KEM
+combiners given by Giacon, Heuer, and Poettering [GHP18], while extending it to KEMs
+that may allow for a small decryption error probability.
+1Here,IND-CCAmeansthestandardnotionofciphertextindistinguishabilityunderadaptivechosen-
+ciphertextattacksforKEMs.
+
+PAGE 3
+M. Barbosa et al. 3
+Structure of this paper. To start, in Section 2 we describe the design of X-Wing, and
+explain the choices made. Before getting into the details of our construction, in Section 3,
+we give an intuitive explanation for the security of our scheme as well as a sketch of
+the proof. Notation and definitions are introduced Section 4. The QSF framework is
+introduced in Section 5; our generic construction – termed Quantum Superiority Fighter –
+constitutes a generalization of the specific X-Wing construction. In Section 6 we prove the
+security of QSFs in general, and finally, in Section 7 we show that X-Wing is a Quantum
+Superiority Fighter and provide benchmarks for an optimized implementation of X-Wing.
+2 Design
+X-Wing private key (2464 bytes):
+ML-KEM-768 private key X25519 private key X25519 public key
+(2400 bytes) (32 bytes) (32 bytes)
+X-Wing public key (1216 bytes):
+ML-KEM-768 public key X25519 public key
+(1184 bytes) (32 bytes)
+X-Wing ciphertext (1120 bytes):
+ML-KEM-768 ciphertext X25519 ciphertext
+(1088 bytes) (32 bytes)
+X-Wing shared key (32 bytes):
+ 
+\./ ML-KEM-768 X25519 X25519 X25519
+SHA3-256  /^\ shared key shared key ciphertext public key  
+ (6 bytes) (32 bytes) (32 bytes) (32 bytes) (32 bytes) 
+The initial X-Wing label is encoded as 6-byte ASCII string “\.//^\”.
+Figure 1: The X-Wing KEM private key, public key, ciphertext, and shared key.
+The primary goal of X-Wing is to be usable and the go-to solution in most applications.
+There are many aspects to being ‘usable’, which can be in conflict.
+First, there are the security guarantees and performance, which we already covered
+in the introduction; by targeting IND-CCA security at 128 bits with extra margin for
+ML-KEM, we have a solid security guarantee with comfortable margin, while retaining
+performance.
+Secondly, thereisimplementationsimplicity. WedesignedX-Wingsothatitisstraight-
+forward to implement with X25519 and ML-KEM-768 as black boxes. In particular, we
+opted not to use the DHKEM(X25519) construction from HPKE [BBLW22, ABH+21] that
+turns X25519 into a KEM. Also, these considerations steered us away from utilizing a stan-
+dardcombiner. ComparedtoaschemebasedonDHKEMandtheGHP-combiner[GHP18],
+weachievethesamesecurityatalowercomputationalcostandimplementationcomplexity.
+We stress that this optimization is possible, because of the concrete choices we made, and
+it may not apply in general.
+
+PAGE 4
+4 X-Wing
+WechoseX25519asitiscurrentlythede-factostandardtraditionalkey-agreementwith
+excellentperformance. ML-KEMiscurrentlyNIST’sonlychoiceforapost-quantumKEM.
+More importantly, these choices closely match with the choices made in the Internet-Draft
+X25519Kyber768Draft00[WS23],whichisusedinthecurrentwide-scaleearlydeploymentof
+post-quantumcryptographyinTLSbyGoogleandCloudflare[O’B23,WR22]. Asummary
+of the X-Wing design is depicted in Figure 1.
+Whilewecouldfurtherimproveperformance,byopeningupML-KEMandmergingthe
+keyderivationphaseofML-KEMwiththatofX-Wing,wedecidedagainstthisoptimization
+sinceitwouldrequiretheimplementertoopenuptheML-KEMimplementationabstraction,
+which might not always be possible or desirable.
+The final key-derivation includes the X25519 public key and ciphertext (i.e., both the
+DH long-term and ephemeral public keys). The first is added as a measure of security
+against multi-target attacks, similarly to what is done in the ML-KEM design.2 Removing
+the X25519 ciphertext from the final key-derivation step is not possible, as X25519, if seen
+as a KEM, is not ciphertext second preimage resistant. Removing either or both tokens
+would not improve performance by much, since in the KDF call, we are already processing
+only a single SHA3-256 input block.
+3 Security Intuition
+Second Preimage attacks against KEM Combiners. Hashing public keys, shared
+keys, and ciphertexts are natural steps in creating a generic KEM combiner, but one
+might think that the key-derivation stage could be as uncomplicated as concatenating
+both shared keys before applying a key-derivation function. Let us call this the pedestrian
+combiner. Giacon, Heuer, andPoettering[GHP18]showedthatsuchacombinerwouldnot
+robustly provide IND-CCA security. Instead, the GHP-combiner [GHP18] that is proved
+secure, additionally mixes both ciphertexts into the key-derivation step.
+The paper provides an in-depth explanation of the attack that can be performed if
+the ciphertexts are omitted. To briefly illustrate the attack, recall that a robust combiner
+is meant to combine two or more schemes so that security is preserved if all but one
+schemes are replaced by an arbitrarily bad scheme. Consider a hypothetical bad scheme,
+which is broken in the following sense: given a challenge ciphertext c , it is easy to find
+1
+another ciphertext c′ ̸=c that decapsulates to the same shared key k . Then, an attacker
+1 1 1
+could win the IND-CCA game against the KEM combiner as follows: Given (c ,c ) as the
+1 2
+challenge ciphertext, where c is the ciphertext for a secure KEM, the adversary knows
+2
+this will decapsulate to KDF(k ,k ) for unknown k . However, the attacker can simply
+1 2 2
+call its decapsulation oracle on (c′,c ), which is a legitimate query, and obtain the correct
+1 2
+shared key.
+Second Preimage Resistant KEMs. The fact that the previous attack works for a
+degenerate insecure KEM does not mean that omitting a corresponding ciphertext from
+the KDF input always leads to an attack. Indeed in this paper we show that, for X-Wing,
+this is not the case: we can omit the (large) ML-KEM-768 ciphertext from the KDF
+input, andstillprovethatX-Wing isanIND-CCA secureKEM.Intuitively, this isbecause
+ML-KEM-768 has the following property: even if ML-KEM-768 is broken as a KEM, we
+show that its internal structure—based on the Fujisaki-Okamoto transform—guarantees
+that it is impossible to find a second ciphertext as described above. We call this notion
+ciphertext second preimage resistance for KEMs.
+2https://groups.google.com/a/list.nist.gov/g/pqc-forum/c/C0D3W1KoINY/m/99kIvydoAwAJ
+
+PAGE 5
+M. Barbosa et al. 5
+Inlining the Diffie-Hellman based KEM. The X-Wing construction is not a generic
+KEM combiner because we do not treat the DH component as a black-box KEM. We
+insteadtakethedirectroute,reducingtheX25519-basedsecurityofourconstructiontothe
+hardnessofbreakingtheStrongDiffie-Hellman[ABR01](SDH)probleminanominalgroup.
+Intuitively, this means that we prove security based on a computational-Diffie-Hellman-like
+problem, but no assumption is made about the format of the generated group element.
+In particular, no assumption is made that the shared group element is indistinguishable
+from random bytes. Indistinguishability of the final shared secret from a random key is
+established by modeling the key-derivation function as a random oracle.
+Proof-strategy. Theproofissplitintotwocases: onecoveringthepossibilityofquantum
+computers becoming a reality (and thus breaking X25519), and the other one covering
+the possibility of post-quantum cryptography, specifically ML-KEM-768, being classically
+broken.
+Pre-Quantum Security: This the case case where X25519 is assumed to be secure
+but ML-KEM-768 may not offer any security. This proof is itself presented in two steps
+and, in both cases, the attacker is assumed to be classical. We first prove that X-Wing is
+IND-CCA secure when:
+1. The SHA3-256 KDF is modeled as a Random Oracle;
+2. X25519ismodeledasanominalgroupinwhichthestrongDiffie-Hellmanassumption
+holds; and
+3. ML-KEM-768ismodeledasapossiblybrokenKEMthatprovidesnosecuritybeyond
+ciphertext second preimage resistance.
+We then show that ML-KEM-768 satisfies the ciphertext second preimage resistance
+property, again in the ROM.
+Post-Quantum Security: This is the case where ML-KEM-768 is assumed to be post-
+quantum secure, but X25519 offers no security. This proof is itself presented in two steps
+and, in both cases, the attacker is assumed to be able to perform quantum computations,
+but it interacts with X-Wing classically. We prove in the standard model that X-Wing is
+secure when:
+1. The SHA3-256 KDF is modeled as a (post-quantum) PRF;
+2. There is no assumption on the X25519 component; and
+3. ML-KEM-768 is assumed to provide (post-quantum) IND-CCA security.
+We present the above proofs in a modular way, by first justifying the QSF design, and
+then arguing that SHA3-356, X25519 and ML-KEM-768 are good instantiations.
+4 Preliminaries
+4.1 Notation and conventions
+For an integer n, we denote by Z
+n
+the residual ring Z/nZ. a ←$A denotes sampling a
+uniformly at random from a non-empty finite set A. ← denotes a deterministic assignment
+of a variable. {0,1}n is the set of all bitstrings of length n. (x,y) denotes a tuple of two
+elements x and y. X[y] denotes access into the table X at position y. Tables are denoted
+with bold uppercase variable names or P. An uninitialized position in a table is denoted
+with the bottom symbol ⊥. X[·]←y sets all positions of table X to y. o←$A(I) denotes
+
+PAGE 6
+6 X-Wing
+running the algorithm A with input I with uniform random coins and o describing its
+output. If A has additionally access to an oracle O, this is denoted as o←$AO(·)(I). A
+securitygameconsistsofamainprocedureandoptionallysomeoracleprocedures. Whena
+gameisplayed, themainprocedureisrunandadversaryAisgivensomeinputsandaccess
+to the oracle procedures. Based on the output of the adversary A and its oracle calls, the
+main procedure outputs 1 or 0 depending on whether the adversary A won the game. If a
+game aborts at any time, it means that the adversary has no advantage in winning this
+game. Incaseofadecisiongame,thismeansthatthegamereturnsarandombitindicating
+whether the adversary has won or not. Whenever an adversary algorithm executes "stop
+with x", it halts returning x to its challenger. We denote an adversary A playing game G
+as G . The probability of the game returning a 1 when played by adversary A is written
+A
+as Pr[G ⇒1]. Our security analyses are concrete, which means that we prove that the
+A
+advantage of an attacker against a construction with fixed parameters is bounded by a
+real value that is argued to be small. Here, small means a summation of statistical terms
+and advantage terms, the former representing worst-case probabilities below 2−128 and the
+latter representing attacks on lower-level primitives that are assumed to require at least
+2128 steps to break.
+4.2 Key-Encapsulation Mechanisms
+4.2.1 Syntax
+Definition 1 (Key Encapsulation Mechanism (KEM)). A key encapsulation mechanism
+is a triple of algorithms KEM = {KeyGen,Enc,Dec} with public keyspace PK, private
+keyspace SK, ciphertext space C, and shared keyspace K. The triple of algorithms is
+defined as:
+• KEM.KeyGen()
+$←
+(sk,pk) Randomized algorithm that outputs a secret (private)
+key sk ∈SK, and a public key pk ∈PK.
+• KEM.Enc(pk) $← (k,c) Randomized algorithm that, given a public key pk ∈ PK,
+outputs a shared key k ∈K, and a ciphertext c∈C.
+• KEM.Dec(c,sk) → y ∈ {k,⊥} Deterministic algorithm that, given a secret key,
+sk ∈SK and a ciphertext c∈C, returns the shared key k ∈K. In case of rejection,
+this algorithm returns ⊥.
+4.2.2 Correctness
+The correctness of a KEM imposes that, except with small probability drawn over the
+random coin space of KEM.KeyGen and KEM.Enc, we have that KEM.Dec correctly
+recovers the shared key produced by KEM.Enc. Formally, we say that a KEM is δ-correct
+if:
+(cid:20) (cid:12) (cid:21)
+Pr k ̸=k′ (cid:12) (cid:12) (sk (k ,p ,c k ) ) ← ← $ $ E K n e c y ( G p e k n ) () ≤δ.
+(cid:12) k′←Dec(c,sk)
+4.2.3 Security
+The IND-CCA security game for KEMs is denoted as IND-CCAb and is shown in
+KEM,A
+Figure 2.
+Definition 2 (IND-CCA advantage for KEMs). The advantage of A in breaking the
+IND-CCA security of KEM is defined as
+AdvKEM =(cid:12) (cid:12) Pr[IND-CCA0 ⇒1]−Pr[IND-CCA1 ⇒1](cid:12) (cid:12).
+IND-CCA,A KEM,A KEM,A
+
+PAGE 7
+M. Barbosa et al. 7
+Game IND-CCAb Oracle Dec(c)
+KEM,A
+(sk,pk)←$ KEM.KeyGen() if c=c∗ then
+(k
+0
+,c∗)←$ KEM.Enc(pk) return ⊥
+k
+1
+←$K k ←KEM.Dec(c,sk)
+b′ ←$ADec(·)(pk,c∗,k
+b
+) return k
+return b′
+Figure 2: IND-CCA security game for KEMs.
+4.3 Pseudorandom function
+A pseudorandom function (PRF) is a keyed deterministic function that cannot be distin-
+guished from a truly random function.
+Definition 3 (Pseudorandom Function (PRF)). For a finite keyspace K, input space X,
+finite output space Y, and an efficiently computable function f :K×X →Y, we define
+the PRF advantage of adversary A based on the experiments in Figure 3 as
+Advf =(cid:12) (cid:12) Pr[PRF0 ⇒1]−Pr[PRF1 ⇒1](cid:12) (cid:12).
+PRF,A f,A f,A
+Game PRFb Oracle Eval (x)
+f,A f
+T[·]←⊥ if x∈T then
+k ←$K return T[x]
+b′ ←$AEval(·) y 0 ←f(k,x); y 1 ←$Y
+return b′
+T[x]←y
+b
+return y
+b
+Figure 3: PRF security games.
+4.4 Nominal Group
+The construction that we introduce in this paper uses an elliptic curve. In our security
+proofs, we abstract away the elliptic curve and use the notion of a nominal group. In this
+section, we recall the definition of a nominal group, as of [ABH+21].
+Definition 4 (Nominal Group [ABH+21]). A nominal group N = (G,g,p,ε ,ε ,exp)
+h u
+consistsofanefficientlyrecognizablefinitesetofelementsG (alsocalled“groupelements”),
+a base element g ∈ G, a prime p, a finite set of honest exponents ε ⊂ Z, a finite
+h
+set of exponents ε ⊂ Z/pZ, and an efficiently computable exponentiation function
+u
+exp:G×Z→G,wherewewriteXy forexp(X,y). Theexponentiationfunctionisrequired
+to have the following properties:
+1. (Xy)z =Xyz for all X ∈G,y,z ∈Z.
+2. The function ϕ defined by ϕ(x)=gx is a bijection from ε to {gx|x∈[1,p−1]}.
+u
+As done in [ABH+21] for a nominal group N =(G,g,p,ε ,ε ,exp), we define D to
+h u H
+be the uniform distribution of honestly generated exponents ε and D to be the uniform
+h U
+distribution on ε . We also recall the definition for the statistical distance between these
+u
+distributions: ∆ =∆[D ,D ]= 1 P |Pr(x)−Pr(x)| [ABH+21].
+N H U 2 x∈ZDU DH
+
+PAGE 8
+8 X-Wing
+4.5 Strong Diffie-Hellman Problem
+Definition 5 (Strong Diffie-Hellman (SDH) Problem). We define the advantage function
+of an adversary A against the Strong Diffie-Hellman problem over the nominal group N as
+h (cid:12) i
+AdvSDH =Pr Z =gxy(cid:12)x,y ←ε ;Z ←ADH(·,·)(gx,gy) .
+N,A (cid:12) u
+where DH is a decision oracle that on input (Y,Z) with Y,Z ∈ G, returns 1 iff Yx = Z
+and 0 otherwise.
+5 Introducing QSF
+In this section, we introduce a framework to build a robust hybrid KEM based on two
+building blocks, a nominal group and another KEM. We show that the resulting KEM is
+secure even if one of the building blocks loses its security properties. We call this QSF.
+Definition 6 (QSF). Let N = (G,g,p,ε ,ε ,exp) be a nominal group, let KEM be a
+h u
+key encapsulation mechanism and let H be a hash function. We define the QSF KEM as
+depicted in Figure 4.
+Algorithm KeyGen() Algorithm Enc(pk)
+(sk
+1
+,pk
+1
+)←$ KEM.KeyGen() (pk
+1
+,pk
+2
+)←pk
+sk
+2
+←$ε
+h
+k
+1
+,c
+1
+←$ KEM.Enc(pk
+1
+)
+pk
+2
+←exp(g,sk
+2
+) sk
+e
+←$ε
+h
+pk ←(pk ,pk ) c ←exp(g,sk )
+1 2 2 e
+sk ←(sk ,sk ,pk ) k ←exp(pk ,sk )
+1 2 2 2 2 e
+return (sk,pk) k ←H(label∥k ∥k ∥c ∥pk )
+1 2 2 2
+c←(c ,c )
+1 2
+return (k,c)
+Algorithm Dec(c,sk)
+(sk ,sk ,pk )←sk
+1 2 2
+(c ,c )←c
+1 2
+k ←KEM.Dec(c ,sk )
+1 1 1
+k ←exp(c ,sk )
+2 2 2
+if k =⊥ then
+1
+return ⊥
+k ←H(label∥k ∥k ∥c ∥pk )
+1 2 2 2
+return k
+Figure 4: QSF Framework.
+5.1 Correctness
+The correctness of the QSF framework follows from the correctness of the KEM used
+to instantiate QSF. Formally, if QSF is instantiated with a δ-correct KEM, then the
+correctness of QSF is defined as follows:
+(cid:20) (cid:12) (cid:21)
+Pr k ̸=k′ (cid:12) (cid:12) (sk (k ,p ,c k ) ) ← ← $ $ E K n e c y ( G p e k n ) () ≤δ.
+(cid:12) k′←Dec(c,sk)
+
+PAGE 9
+M. Barbosa et al. 9
+6 Security of QSF
+In this section, we will analyze the security of the QSF framework. We will consider two
+cases. In the first case, we will analyze the security of QSF relative to the security of the
+nominal group, while in the second case, we analyze the security relative to the security of
+the underlying KEM.
+6.1 Reduction to SDH and C2PRI in the ROM
+As mentioned in the introduction, we introduce ciphertext second preimage resistance for
+KEMs (C2PRI) and show that this notion is sufficient, together with the SDH security of
+the nominal group, to make QSF an IND-CCA secure KEM.
+Definition 7 (C2PRI). WedefinetheadvantagefunctionofanadversaryAagainstKEM
+second preimage resistance as:
+(cid:20) (cid:12) (cid:21)
+AdvC K 2 E P M R , I A =Pr Dec(c,sk)=k∗∧c̸=c∗ (cid:12) (cid:12) (cid:12) ( c ( s ← k k ∗ , A p ,c k ( ∗ ) s ) ← k ← , $ p $ K k E e , n k y c G ∗ ( e , p c n k ∗ ( ) ) ) .
+Note that the adversary also gets access to the secret key. This ensures that this
+notion will hold even if other security notions are broken, such as IND-CCA security. This
+allows us to prove the security of QSF relative to the strength of the nominal group for an
+arbitrarily bad KEM. With this definition, we can prove the IND-CCA security of QSF.
+Note that this notion is related to the key-binding properties introduced by Cremers et
+al. in [CDM23] and Alwen et al. in [AHK+23, §5.3]. Instead of finding any collision, as
+for the properties introduced by Cremers et al. and Alwen et al., we opted for a second
+preimageresistancenotion, asthisbestfitsourrequirementsinthefollowingproof. Thisis
+a strictly weaker notion, since the adversary is tasked to find a second preimage instead of
+any collision. Also this allows us to prove better concrete bounds on the achieved security
+level.
+Theorem 1. Let N =(G,g,p,ε ,ε ,exp) be a nominal group and KEM be a key encap-
+h u
+sulation mechanism, let H be a random oracle with an output size of n and let A be an
+adversary against the IND-CCA security of QSF in Definition 6 making at most q queries
+h
+to the random oracles. Then there exist adversaries B and C such that,
+AdvIND-CCA ≤2∆ +AdvSDH+AdvC2PRI.
+QSF,A N N,B KEM,C
+The run-times of B and C are roughly the same as of A. B performs at most 2q queries
+h
+to its own DH oracle.
+Proof. Let us consider the following games,
+Game 0 Let G be defined as in Figure 5. In this game, Σ is used to model H(m) as lazily
+0
+sampled random oracle. Clearly, G is the IND-CCA0 game instantiated with QSF.
+0
+By definition,
+Pr[IND-CCA0 ⇒1]=Pr[GA ⇒1].
+QSF,A 0
+Game 1 For G we choose the secret keys sk and sk from the set of exponents ε instead
+1 2 e u
+of the set of honest exponents ε . This allows us to use the SDH problem to bound
+h
+the probability of the next game hop.
+Claim 1
+|Pr[GA ⇒1]−Pr[GA ⇒1]|≤2∆ .
+0 1 N
+
+PAGE 10
+10 X-Wing
+Game G /G /G /G /G Oracle Dec(c)
+0 1 2 3 4
+P[·]←⊥ if c=c∗ then
+(sk ,pk )←KEM.KeyGen() return ⊥
+1 1
+sk
+2
+←$ε
+h
+(c
+1
+,c
+2
+)←c
+sk
+2
+←$ε
+u
+▷ G
+1
+−G
+4
+k
+1
+←KEM.Dec(c
+1
+,sk
+1
+)
+pk ←exp(g,sk ) k ←exp(c ,sk )
+2 2 2 2 2
+pk ←(pk ,pk ) if k =⊥ then
+1 2 1
+(k∗,c∗)←KEM.Enc(pk ) return ⊥
+1 1 1
+sk
+e
+←$ε
+h
+▷ G
+3
+−G
+4
+◁
+sk
+e
+←$ε
+u
+▷ G
+1
+−G
+4
+if k
+1
+=k
+1
+∗∧c
+1
+̸=c∗
+1
+then
+c∗ ←exp(g,sk ) abort
+2 e 2
+k∗ ←exp(pk ,sk ) s←label∥k ∥k ∥c ∥pk
+2 2 e 1 2 2 2
+c∗ ←(c∗,c∗) if P[s]=⊥ then
+1 2
+s←label∥k
+1
+∗∥k
+2
+∗∥c∗
+2
+∥pk
+2
+P[s]←${0,1}n
+if
+P[s]=⊥
+then k ←
+P[s]
+P[s]←${0,1}n
+return k
+k∗ ← P[s]
+k∗ ←${0,1}n ▷ G
+4
+H(m)
+b′ ←ADec(·),H(·)(pk,c∗,k∗) ▷ G
+2
+−G
+4
+◁
+return b′ if label∥k 1 ∥k 2 ∥c 2 ∥pk 2 =m then
+if k =k∗ then
+2 2
+abort
+1
+if
+P[m]=⊥
+then
+P[m]←${0,1}n
+return
+P[m]
+Figure 5: Game G −G .
+0 4
+Proof With this game hop, we change the distribution from which these values are chosen.
+∆ defines the bound on the probability of an adversary to distinguish the original
+N
+distribution from the new one for one element. As we are replacing the distribution
+of two elements, we get 2∆ as an upper bound for A to detect this change.
+N
+Game 2 With the changes in G we prevent the adversary from querying the random oracle
+2
+containingthevaluek∗ thatwasusedtogeneratethechallengekeyk∗. Thisprevents
+2
+A entirely from obtaining the shared challenge key k∗ from the random oracle.
+Claim 2
+|Pr[GA ⇒1]−Pr[GA ⇒1]|≤Pr[abort ]=AdvSDH.
+1 2 1 N,B
+Proof To prove this claim, we show the existence of adversary B that wins the SDH game
+exactly when A would query H containing the k∗ used to generate k∗. Consider
+2 2
+adversary B from Figure 6 playing the SDH game and simulating A’s view on the
+IND-CCA game.
+Adversary B uses the challenge group elements X =exp(g,x) as the static public key
+andY =exp(g,y)astheephemeralpublickeyforthechallengeciphertext. Therefore,
+the shared challenge key k∗ is supposed to be H (label∥k∗∥exp(Y,x)∥c∗∥pk ). B is
+2 1 2 2
+unable to compute exp(Y,x) and therefore sets k∗ to a uniform random value. For
+A to win the IND-CCA game, it would have to query H with exp(Y,x). B can
+2
+use the DH oracle to detect when A queries H with the result of exp(Y,x), since
+2
+
+PAGE 11
+M. Barbosa et al. 11
+Adversary BDH(·,·)(X,Y) Oracle Dec(c)
+P[·]←⊥ if c=c∗ then
+E[·]←⊥ return ⊥
+(sk
+1
+,pk
+1
+)←$ KEM.KeyGen() (c
+1
+,c
+2
+)←c
+pk ←X k ←KEM.Dec(c ,sk )
+2 1 1 1
+pk ←(pk ,pk ) if k =⊥ then
+1 2 1
+(k
+1
+∗,c∗
+1
+)←$ KEM.Enc(pk
+2
+) return ⊥
+c∗ ←Y if E[(c ,k )]=⊥ then
+2 2 1
+c∗ ←(c∗
+1
+,c∗
+2
+) E[(c
+2
+,k
+1
+)]←${0,1}n
+k∗ ←${0,1}n return E[(c
+2
+,k
+1
+)]
+b′ ←ADec(·),H(·)(pk,c∗,k∗)
+H(m)
+if label∥k ∥k ∥c ∥pk =m then
+1 2 2 2
+if DH(Y,k )=1 then
+2
+stop with k
+2
+if DH(c ,k )=1 then
+2 2
+if E[(c ,k )]=⊥ then
+2 1
+E[(c
+2
+,k
+1
+)]←${0,1}n
+return E[(c ,k )]
+2 1
+if
+P[m]=⊥
+then
+P[m]←${0,1}n
+return
+P[m]
+Figure 6: Adversary B.
+DH(Y,k∗)=1iffk∗ =exp(Y,x). Therefore, ifthischeckintheH oracleevaluatesto
+2 2
+1 we know that the k provided has to equal k∗. When this happens, A has provided
+2 2
+B with the solution to the SDH game. A similar approach can be used to simulate
+the Dec oracle. When calculating the shared key in the Dec oracle, the input for the
+random oracle has to have the form label∥k ∥exp(c ,x)∥c ∥pk which B is not able
+1 2 2 2
+to compute. B can use the same method as before to check whether A performs such
+a query using the DH oracle. We then use the table E to ensure consistency between
+the random oracle H and the Dec oracle. Therefore, B simulates A’s view on the
+IND-CCA game perfectly and wins the SDH game iff the adversary queries H with
+the result of exp(Y,x), which is the k∗ used to generate k∗. Note that the adversary
+2
+B makes at most 2q queries to the DH oracle.
+h
+Game 3 G introduces changes that prevent the adversary from querying the Dec oracle with
+3
+a ciphertext c that is different from the ciphertext c∗ that was used to generate
+1 1
+the challenge ciphertext c∗, but results in the same k as the k∗ that was used to
+1 1
+generate k∗.
+Claim 3
+|Pr[GA ⇒1]−Pr[GA ⇒1]|≤Pr[abort ]=AdvC2PRI.
+2 3 2 KEM,C
+Proof To prove this claim, we show the existence of an adversary C, depicted in Figure 7,
+that simulates A’s view on the IND-CCA game and wins iff A would trigger abort .
+2
+All oracles are simulated perfectly. This is easily possible, since C also obtains the
+secret key from its challenger. C stops exactly when the abort would be hit in G .
+2 3
+Whenthestopinstructionisreached,C obtainedak thatisequaltok∗ butwherec
+1 1 1
+and c∗ are different. This means that C found a second ciphertext that decapsulates
+1
+
+PAGE 12
+12 X-Wing
+Adversary C(sk ,pk ,k∗,c∗) Oracle Dec(c)
+1 1 1 1
+P[·]←⊥ if c=c∗ then
+sk
+2
+←$ε
+u
+return ⊥
+pk ←exp(g,sk ) (c ,c )←c
+2 2 1 2
+pk ←(pk ,pk ) k ←KEM.Dec(c ,sk )
+1 2 1 1 1
+sk
+e
+←$ε
+u
+k
+2
+←exp(c
+2
+,sk
+2
+)
+c∗ ←exp(g,sk ) if k =⊥ then
+2 e 1
+k∗ ←exp(pk ,sk ) return ⊥
+2 2 e
+c∗ ←(c∗,c∗) if k =k∗∧c ̸=c∗ then
+1 2 1 1 1 1
+s←label∥k∗∥k∗∥c∗∥pk stop with c
+1 2 2 2 1
+if P[s]=⊥ then k ←H (label∥k ∥k ∥c ∥pk )
+2 1 2 2 2
+P[s]←${0,1}n
+return k
+k∗ ← P[s]
+b′ ←ADec(·),H(·)(pk,c∗,k∗) H(m)
+if label∥k ∥k ∥c ∥pk =m then
+1 2 2 2
+if k =k∗ then
+2 2
+abort
+1
+if
+P[m]=⊥
+then
+P[m]←${0,1}n
+return
+P[m]
+Figure 7: Adversary C.
+to the same shared key as the challenge key k∗. The ciphertext c is therefore a
+1 1
+correct answer for the C2PRI game.
+Game 4 In G we replace the shared challenge key k∗ with a uniform random key. With this
+4
+change we reached the IND-CCA1 game instantiated with QSF. Therefore,
+Claim 4
+Pr[GA ⇒1]=Pr[GA ⇒1].
+3 4
+Proof To prove that this change is undetectable by A, we need to argue that A’s view
+when interacting with the various oracles is independent of the value of k∗. The
+abort condition in H prevents the adversary from querying the random oracle with
+the value of k∗ used to generate the shared key k∗ from the challenge. Since the
+2
+adversary A cannot query the random oracle H with the input used to generate k∗,
+the output of the random oracle H is independent of k∗. The abort condition in
+Dec also prevents the adversary from querying the Dec oracle in a way that would
+result in k∗ being outputted. Either c or c must be different from c∗ or c∗. If c is
+1 2 1 2 1
+different, then the resulting key k must be different from k∗, otherwise the abort
+1 1
+condition would be triggered. If c is different, then the input to the random oracle
+2
+must also be different, since it is included in its input. Therefore, the behavior of
+the Dec oracle is independent of the value of k∗. Since the behavior of all oracles is
+independent of k∗, the adversary cannot detect this game hop.
+Now that k∗ is chosen uniformly at random, which means that G matches the definition
+4
+of the IND-CCA1 game perfectly. Therefore,
+QSF,A
+Pr[GA ⇒1]=Pr[IND-CCA1 ⇒1].
+4 QSF,A
+This concludes the proof of Theorem 1.
+
+PAGE 13
+M. Barbosa et al. 13
+6.2 Reduction to security of KEM in the standard model
+Theorem 2. Let N =(G,g,p,ε ,ε ,exp) be a nominal group and KEM be a key encap-
+h u
+sulation mechanism, let H be a secure PRF with an output size of n when keyed on k ,
+1
+and let A be an adversary against the IND-CCA security of QSF in Definition 6. Then,
+there exist B, C, D, and E, such that,
+AdvQSF ≤AdvKEM +AdvKEM +AdvH +AdvH +2δ,
+IND-CCA,A IND-CCA,B IND-CCA,C PRF,D PRF,E
+where δ is the correctness bound for KEM. The run-times of B, C, D, and E are roughly
+the same as of A. B and C perform at most q queries to their own decapsulation oracles.
+d
+Proof. This proof follows closely the proof for [GHP18, Theorem 1].
+Game G /G /G /G /G Oracle Dec(c)
+0 1 2 3 4
+sk
+1
+,pk
+1
+←$ KEM.KeyGen() if c=c∗ then
+sk
+2
+←$ε
+h
+return ⊥
+pk ←exp(g,sk ) (c ,c )←c
+2 2 1 2
+pk ←(pk ,pk ) k ←KEM.Dec(c ,sk )
+1 2 1 1 1
+sk ←(sk ,sk ) k ←exp(c ,sk )
+1 2 2 2 2
+k
+1
+∗,c∗
+1
+←$ KEM.Enc(pk
+1
+) if k
+1
+=⊥ then
+sk
+e
+←$ε
+u
+return ⊥
+c∗ ←exp(g,sk ) if c =c∗ then ▷ G −G
+2 e 1 1 1 3
+k∗ ←exp(pk ,sk ) k ←k∗
+2 2 e 1 1
+k
+1
+∗ ←$K ▷ G
+1
+−G
+3
+k ←H(label∥k
+1
+∥k
+2
+∥c
+2
+∥pk
+2
+)
+k∗ ←H(label∥k∗∥k∗∥c∗∥pk ) if c =c∗ then ▷ G
+1 2 2 2 1 1 2
+k∗ ←${0,1}n ▷ G
+2
+−G
+4
+k ←${0,1}n
+c∗ ←(c∗,c∗) return k
+1 2
+b′ ←$ADec(·)(pk,c∗,k∗)
+return b′
+Figure 8: Games G to G .
+0 4
+Game 0 This is the standard IND-CCA security game for QSF and so,
+Pr[IND-CCA0 ⇒1]=Pr[G ⇒1].
+QSF,A 0
+Game 1 The challenge shared key produced by KEM is replaced with a random key.
+Claim 1 This change should not be noticeable by the adversary A. If it is, then we can
+construct an efficient adversary B against the IND-CCA security of KEM with
+roughly the same running time as A, such that,
+(cid:12)
+(cid:12)
+Pr[GA ⇒1]−Pr[GA ⇒1](cid:12) (cid:12)≤AdvIND-CCA,B+δ.
+0 1 KEM
+Proof We construct B as in Figure 9. The adversary B simulates the environment of A
+by calculating the nominal group components of QSF itself and embedding the
+KEM challenge into the QSF challenge. The decapsulation oracle is simulated by B
+as follows: it can calculate the nominal group part itself and query its own KEM
+decapsulation oracle on all ciphertexts except c∗. Because of this, it will simply use
+1
+its own challenge shared key k∗ if c∗ is in the decapsulation query by A.
+1 1
+
+PAGE 14
+14 X-Wing
+The strategy adopted by B correctly interpolates between games G and G , except
+0 1
+when c∗ would decapsulate to something other than k∗ in G . We can bound the
+1 1 0
+probability of this inconsistency using the correctness of KEM, which justifies the δ
+term in the claim. More precisely, we have
+(cid:12) (cid:12) Pr[GA ⇒1]−Pr[G0 ⇒1](cid:12) (cid:12)≤δ,
+0 KEM,B
+and
+Pr[GA ⇒1]=Pr[G1 ⇒1],
+1 KEM,B
+which means that
+(cid:12)
+(cid:12)
+Pr[GA ⇒1]−Pr[GA ⇒1](cid:12) (cid:12)≤AdvKEM +δ,
+0 1 IND-CCA,B
+and B will clearly perform at most as many decapsulation queries to its KEM
+decapsulation oracle as A makes decapsulation queries.
+Game 2 Inthisgame, allQSFsharedkeysthatareprovidedtotheadversarycomputedusing
+k∗ are replaced with random values.
+1
+Claim 2 This change should not be noticeable by the adversary A. If it is, then we can
+construct an efficient adversary D against the PRF security of H with roughly the
+same running time as A, such that
+(cid:12) (cid:12) Pr[GA ⇒1]−Pr[GA ⇒1](cid:12) (cid:12)≤AdvH .
+1 2 PRF,D
+Proof This is a simple reduction shown in Figure 10. This adversary can generate all
+cryptographic parameters except k∗, for which it uses its PRF oracle. As we can
+1
+see, when the challenge PRF key is real, then D will be using a real output of
+the pseudorandom function and hence running G ; whereas if the challenge key is
+1
+random, D will be using a uniformly sampled output and running G . Hence,
+2
+Pr[GA ⇒1]=Pr[G0 ⇒1],
+1 H,D
+and
+Pr[GA ⇒1]=Pr[G1 ⇒1],
+2 H,D
+which means that
+(cid:12) (cid:12) Pr[GA ⇒1]−Pr[GA ⇒1](cid:12) (cid:12)≤AdvH ,
+1 2 PRF,D
+andDwillperformoneevaluationqueryforgeneratingthechallengekeyandperform
+at most one evaluation query per decapsulation query by A.
+Game 3 We undo the modification introduced in the previous game, but only for keys output
+by the decapsulation oracle.
+Claim 3 We justify this hop with a reduction to the PRF property of H very similar to the
+previous one.
+(cid:12) (cid:12) Pr[GA ⇒1]−Pr[GA ⇒1](cid:12) (cid:12)≤AdvH .
+2 3 PRF,E
+
+PAGE 15
+M. Barbosa et al. 15
+Proof We construct E as in Figure 10, and the analysis is similar to the previous hop.
+Pr[GA ⇒1]=Pr[PRF0 ⇒1],
+2 H,E
+and
+Pr[GA ⇒1]=Pr[PRF1 ⇒1],
+3 H,E
+which means that
+(cid:12) (cid:12) Pr[GA ⇒1]−Pr[GA ⇒1](cid:12) (cid:12)≤AdvH ,
+2 3 PRF,E
+and E will perform at most one evaluation query per decapsulation query by A as it
+will never call the evaluation oracle in its main algorithm.
+Game 4 Finally, we revert the changes introduced in Game 1 and use a real key for k∗
+1
+once more. This makes the decapsulation oracle identical to Game 0, and the only
+remaining change in the main experiment is that k∗ is random.
+Claim 4 This hop is justified in a way that is very similar to the jump to Game 1. We
+introduceadversaryC againsttheIND-CCAsecurityofKEM,withroughlythesame
+running time as A, in Figure 9. We claim that,
+(cid:12)
+(cid:12)
+Pr[GA ⇒1]−Pr[GA ⇒1](cid:12) (cid:12)≤AdvKEM +δ.
+3 4 IND-CCA,C
+Proof Again, the reduction to the IND-CCA security of KEM is perfect, except if c∗ would
+2
+not decapsulate to k∗ in Game 4. This event can be bound by the correctness of
+1
+KEM, and the claim follows.
+Claim 5 Pr[GA ⇒1]=Pr[IND-CCA1 ⇒1]
+4 QSF,A
+Proof This follows from the definition of IND-CCA1 .
+QSF,A
+The theorem follows from collecting all the terms in the claims.
+Adversary BDecO(·)/CDecO(·)(pk
+1
+,k
+1
+∗,c∗
+1
+) Oracle Dec(c)
+sk
+2
+←$ε
+h
+if c=c∗ then
+pk ←exp(g,sk ) return ⊥
+2 2
+pk ←(pk ,pk ) (c ,c )←c
+1 2 1 2
+sk
+e
+←$ε
+u
+k
+2
+←exp(c
+2
+,sk
+2
+)
+k
+1
+,c∗
+1
+←$ KEM.Enc(pk
+1
+) if c
+1
+=c∗
+1
+then
+c∗ ←exp(g,sk ) k ←k∗
+2 e 1 1
+k∗ ←exp(pk ,sk ) else k ←Dec (c )
+2 2 e 1 O 1
+k∗ ←H(label∥k∗∥k∗∥c∗∥pk ) if k =⊥ then
+1 2 2 2 1
+k∗ ←${0,1}n ▷ C return ⊥
+c∗ ←(c∗,c∗) k ←H(label∥k 1 ∥k 2 ∥c 2 ∥pk 2 )
+1 2
+b′ ←$ADec(·)(pk,c∗,k∗) return k
+return b′
+Figure 9: Adversary B and C against the IND-CCA security of KEM. Note that both
+place at most q queries to Dec , one for each decapsulation query placed by A.
+d O
+
+PAGE 16
+16 X-Wing
+Adversary DEvalH(·)/EEvalH(·)() Oracle Dec(c)
+sk
+1
+,pk
+1
+←$ KEM.KeyGen() if c=c∗ then
+sk
+2
+←$ε
+h
+return ⊥
+pk ←exp(g,sk ) (c ,c )←c
+2 2 1 2
+pk ←(pk ,pk ) k ←exp(c ,sk )
+1 2 2 2 2
+sk ←(sk ,sk ,pk ) if c =c∗ then
+1 2 2 1 1
+k
+1
+,c∗
+1
+←$ KEM.Enc(pk
+1
+) k ←Eval
+H
+(label∥k
+2
+∥c
+2
+∥pk
+2
+)
+sk
+e
+←$ε
+u
+return k
+c∗ ←exp(g,sk ) k ←KEM.Dec(sk ,c )
+2 e 1 1 1
+k∗ ←exp(pk ,sk ) if k =⊥ then
+2 2 e 1
+k∗ ←Eval (label∥k∗∥c∗∥pk ) return ⊥
+H 2 2 2
+k∗ ←${0,1}n ▷ E k ←H(label∥k 1 ∥k 2 ∥c 2 ∥pk 2 )
+c∗ ←(c∗,c∗) return k
+1 2
+b′ ←$ADec(·)(pk,c∗,k∗)
+return b′
+Figure 10: Adversary D and E against the PRF security of H.
+7 X-Wing
+Now that we have proven the security of the QSF framework, we want to introduce one
+concrete instantiation of QSF using X25519, ML-KEM-768 and SHA3-256. We believe
+that this instantiation provides a secure and efficient KEM suitable for most applications.
+Asanameforthisinstantiation,wechooseX-Wing. ForourQSFprooftoapplytoX-Wing
+we need to show that X25519 can be modeled as a nominal group and that ML-KEM-768
+is C2PRI secure. This is done in this section, followed by the definition of X-Wing.
+7.1 X25519 is a nominal group
+X-Wing uses X25519 as specified in [LHT16]. As shown in [ABH+21] X25519 can be
+modeled as a nominal group N =(G,g,p,ε ,ε ,exp). We summarize the results in this
+h u
+section.
+We first define G to be all 256 bit long bitstrings. We then define an encoding function
+encode_pk as well as a decoding function decode_pk, mapping point on Curve25519 to a
+bitstringandviceversa. Forthis,wecanusetheencodinganddecodingfunctionsasdefined
+in[LHT16]. pistheorderofthelargestprimeordersubgroupandgisaCurve25519pointof
+orderp,suchthatthenumberofpointsonCurve25519is8p. ε ={8n|n∈[2251,2252−1]}
+h
+stands for all valid secret keys, respectively for the key generation function of X25519.
+exp(X,y)=encode_pk(y·decode_pk(X)), which corresponds to the X25519.DH function.
+Let ε ={8n|n∈[(p+1)/2,p−1]}. This provides us with a statistical difference between
+u
+the uniform distribution over ε and ε of ∆ <2−126 [ABH+21].
+u h N
+Therefore, the definition of this nominal group matches the definition of X25519
+perfectly.
+7.2 Second Preimage resistance of ML-KEM-768
+For the security of X-Wing it is important that ML-KEM-768 is C2PRI secure. Hence,
+we will show the ciphertext second preimage resistance of ML-KEM-768 in this section.
+Theorem 3 (ML-KEM-768 is C2PRI secure). Let k,d ,d be integers greater than or
+u v
+equal to 1, let PKE.Enc and PKE.Dec be deterministic algorithms and let G and J be
+
+PAGE 17
+M. Barbosa et al. 17
+independentrandomoracleswithoutputsizesof512and256bits, andletAbeanadversary
+against the C2PRI security of ML-KEM-768 making at most q and q many hash queries
+g j
+to the random oracles G and J. Then, the advantage of adversary A against the C2PRI
+security of ML-KEM-768 is defined as,
+q +q +2
+AdvC2PRI ≤ g j .
+ML-KEM-768,A 2256
+Proof. LetusrecallthedefinitionofthedecapsulationalgorithmofML-KEM-768,depicted
+in Figure 11.
+ML-KEM-768.Dec(sk ∈{0,1}768k+96,c∈{0,1}256(duk+dv))
+sk ←sk[0:384k]
+PKE
+pk ←sk[384k :768k+32]
+PKE
+h←sk[768k+32:768k+64]
+z ←sk[768k+64:768k+96]
+m′ ←PKE.Dec(sk ,c)
+PKE
+(K,r′)←G(m′∥h)
+K ←J(z∥c,32)
+c′ ←PKE.Enc(pk ,m′,r′)
+PKE
+if c̸=c′ then
+K ←K
+return K
+Figure 11: ML-KEM-768 decapsulation [NIS23]
+We notice that the shared key k∗ of the challenge, for which the adversary tries to
+find a second preimage, is generated by the random oracle G, since this key was honestly
+generated using the ML-KEM-768.Enc procedure. So we have three cases to analyze. The
+first is that the adversary finds a second ciphertext c that is different from the challenge
+ciphertext c∗ but results in the same input to G. In the second case, we need to analyze
+the probability that G will output the same shared secret with a different input. For the
+last case, we need to analyze the probability that J will output the same shared secret as
+the one from the challenge.
+Case 1: The input to G collides. Suppose PKE.Dec outputs the same m′ for two
+different ciphertexts c and c . Then the intermediate values K and r′ are the same for
+1 2
+bothdecapsulations. SincePKE.Encisdeterministic,c′ isthesameforbothdecapsulations.
+This also means that the equality check c =c′ cannot succeed for both ciphertexts. This
+i
+leadstoacontradiction,sinceatleastoneoftheciphertextshastoberejectedandtherefore
+the key generated by J is returned by ML-KEM-768.Dec.
+Case 2: The output of G collides. The output of G is interpreted as the two values
+K and r′. An adversary can already find a second preimage in the decapsulation function
+if it can find a second input to G that results in the same output K. Since G is modeled
+as a random oracle, and therefore behaves like a random function, the best the adversary
+can do is query the random oracle and hope to find such an input by chance. Therefore,
+the probability of an adversary finding such an input is bounded by qg+1, where the 1
+2256 2256
+comes from the possibility that the adversary does not query the random oracle on this
+value, but a collision-causing query is performed during the decryption done by the game.
+Case 3: The output of J collides. Since J is a random oracle independent of G, the
+best an adversary can do is to query the random oracle J to find such an input by chance.
+
+PAGE 18
+18 X-Wing
+Therefore, as in the previous case, the probability of finding such an input can also be
+bounded by qj+1.
+2256
+This concludes the proof for Theorem 3.
+Note that all KEMs that are the result of the Fujisaki-Okamoto transformation and
+use explicit rejection with independent random oracles are also C2PRI secure, since all
+arguments hold for them as well.
+7.3 Definition of X-Wing
+Definition 8 (X-Wing KEM). Given the ML-KEM-768 KEM, X25519 Diffie-Hellman
+key exchange, and the SHA3-256 hash function, the X-Wing KEM is defined as a tuple of
+algorithms {KeyGen,Enc,Dec}, which are in turn defined in Figure 12.
+Algorithm KeyGen() Algorithm Enc(pk)
+sk
+1
+,pk
+1
+←$ ML-KEM-768.KeyGen() (pk
+1
+,pk
+2
+)←pk
+sk
+2
+←$random(32) sk
+e
+←$random(32)
+pk ←X25519.DH(sk ,g ) c ←X25519.DH(sk ,g )
+2 2 X25519 2 e X25519
+sk ←(sk
+1
+,sk
+2
+,pk
+2
+) k
+1
+,c
+1
+←$ ML-KEM-768.Enc(pk)
+pk ←(pk ,pk ) k ←X25519.DH(sk ,pk )
+1 2 2 e 2
+return (sk,pk) s←“\.//^\”∥k ∥k ∥c ∥pk
+1 2 2 2
+k ←SHA3-256(s)
+c←(c ,c )
+1 2
+return (k,c)
+Algorithm Dec(c,sk)
+(sk ,sk ,pk )←sk
+1 2 2
+(c ,c )←c
+1 2
+k ←ML-KEM-768.Dec(c ,sk )
+1 1 1
+k ←X25519.DH(sk ,c )
+2 2 2
+s←“\.//^\”∥k ∥k ∥c ∥pk
+1 2 2 2
+k ←SHA3-256(s)
+return k
+Figure 12: X-Wing KEM. random(N) generates N random bytes. X25519.DH is the byte-
+orientedfunctionX25519definedinsection5ofRFC7748. g istheX25519basepoint
+X25519
+where u = 9 on curve25519 defined in section 6.1 of RFC 7748. ML-KEM-768.KeyGen,
+ML-KEM-768.Enc, and ML-KEM-768.Dec are defined in FIPS 203. SHA3-256 is defined
+in FIPS 202 [Dwo15]. The X-Wing label is inlined as the first 6 ASCII-encoded bytes of
+the SHA3-256 input.
+X-Wing has been brought to the IETF to be standardized [CSW24] as an RFC. The
+final definition may differ.
+8 Benchmarks
+We developed a reference and optimized X-Wing implementation in the C programming
+language3 and integrated it in the benchmarking environment of Libjade4. The code
+3https://github.com/x-wing-kem-team/xwing
+4https://github.com/formosa-crypto/libjade
+
+PAGE 19
+M. Barbosa et al. 19
+is available from https://github.com/x-wing-kem-team/xwing-benchmarks. The
+code package also includes a reference and optimized variant of X-Wing that includes
+the ML-KEM-768 ciphertext in the input to SHA3-256. In the following we refer to this
+variant as X-Wing-Hash-CT. Hence, X-Wing-Hash-CT uses 1222 bytes as input for the
+final key derivation, while X-Wing uses only 134 bytes by omitting the ML-KEM-768
+ciphertext. Benchmarkingbothvariantsallowsustoquantifythesavingsincomputational
+cost we obtain by proving that it is secure to not include the ML-KEM-768 ciphertext in
+the key-derivation hash in X-Wing. We also note that this is not the only performance
+optimization in X-Wing. Besides not including the large ML-KEM-768 ciphertext in the
+final key derivation, we also proved that it is sufficient to use X25519 as the Diffie-Hellman
+key exchange directly instead of using a KEM based on X25519. This also saves an
+additional key derivation step that would have been performed by the KEM based on
+X25519. We decided not to benchmark this, as it is highly dependent on the X25519
+based KEM we are comparing to. However, we believe that the results for omitting
+the ML-KEM-768 ciphertext in the final key derivation is already a strong argument for
+X-Wing.
+WechosetousethePQ-CrystalsreferenceandoptimizedimplementationofML-KEM5
+and we also utilize their reference and optimized implementation of SHA3-256, which itself
+is based on TweetFIPS2026 and the crypto_hash/keccakc512/simple/ SUPERCOP
+implementation7. For all Diffie-Hellman operations, we used lib255198.
+8.1 Benchmarking procedure
+Procedure. The benchmarking focused on counting the CPU clock-cycles used by the
+key generation, encapsulation and decapsulation algorithms for both X-Wing and X-Wing-
+Hash-CT.Furthermore, wealsodemonstratedtheCPUclock-cyclesrequiredforSHA3-256
+to process a 134 byte, and a 1222 byte input. These benchmarks were run on an x86-64
+Debian12machinewithan11thGenIntelCorei7-11700Kwithitsfrequencysetto3.5GHz
+and with 16Gb of RAM. Turbo-boost and hyperthreading were disabled. We used GCC
+version 13.2.0 with the flags taken directly from the AVX2 PQ-Crystals ML-KEM-768
+implementation, namely -mavx2 -mbmi2 -mpopcnt -march=native -mtune=native -O3
+-fomit-frame-pointer -z noexecstack. Each implementation’s various algorithms (i.e.
+key generation, encaps and decaps) is run 100 times and the benchmark that we used is
+the median of the results.
+Safety and correctness. The X-Wing and X-Wing-Hash-CT implementations were
+verified to be memory-safe via Valgrind and have 99% test coverage. These include
+functionality tests (e.g., if the decapsulated secret is equal to the secret produced by
+encapsulation) and, if applicable, verify that the implementation’s output matches the test
+vectors in defined in [CSW24].
+8.2 Benchmarking results
+Figure 14 contains tables that display the results of the benchmarks for X-Wing and
+X-Wing-Hash-CT, Table (a), and the SHA3-256, Table (b), optimized implementations.
+The results are plotted as a bar graph in Figure 13, whereby Figure 13a contains the plot
+of X-Wing and X-Wing-Hash-CT benchmarks, and Figure 13b contains the plot of the
+SHA3-256 benchmarks.
+5https://github.com/pq-crystals/kyber/tree/standard
+6https://keccak.team/2015/tweetfips202.html
+7http://bench.cr.yp.to/supercop.html
+8https://lib25519.cr.yp.to/
+
+PAGE 20
+20 X-Wing
+By omitting the ciphertext from the input to SHA3-256, we can see a 8% and 9%
+performance gain for encapsulation and decapsulation, respectively. This is in line with
+the SHA3-256 benchmarks, whereby Table c shows the clock-cycles of the encapsulation
+and decapsulation operations if we remove the respective clock-cycles that are due to
+calculating the hash. We see that the clock-cycles for both implementations coincide, with
+the small discrepancies being due to an extra memcpy being used in the X-Wing-Hash-CT.
+·103
+140
+120
+100
+80
+Keypair Encaps Decaps
+selcyc-kcolc
+UPC
+X-Wing
+X-Wing-Hash-CT
+·103
+10
+5
+134 bytes 1222 bytes
+(a) Benchmarks for X-Wing and X-Wing-Hash-
+CT AVX2 implementations.
+selcyc-kcolc
+UPC
+(b) Benchmarks for SHA3-256 implementation
+with different input sizes.
+Figure 13: Benchmark plots.
+Implementation Keypair Encaps Decaps Input length Hash
+X-Wing 70942 139374 116930 134 bytes 1774
+X-Wing-Hash-CT 70976 150708 128336 1222 bytes 12586
+Ratio 1.00 1.08 1.10 Ratio 7.10
+(a) Comparison of CPU clock-cycles when running X-Wing(b) Comparison of CPU clock-
+and X-Wing-Hash-CT. cycles when running SHA3-256
+when using 134 and 1222 byte in-
+put.
+Implementation Encaps − Hash Decaps − Hash
+X-Wing 137600 115156
+X-Wing-Hash-CT 138122 115750
+Ratio 1.00 1.01
+(c) Comparison of CPU clock-cycles when running X-Wing and X-Wing-Hash-CT, minus the
+respective cost of the SHA3-256 operation.
+Figure 14: Benchmark tables.
+9 Conclusion
+In this paper, we introduced the new hybrid KEM, X-Wing, which combines the security
+of X25519 and ML-KEM-768 to provide a robust KEM that is secure even if the security
+
+PAGE 21
+M. Barbosa et al. 21
+of one of the schemes is broken. We improve on generic KEM combiners by not including
+the ML-KEM-768 ciphertext in the final key derivation, and by using X25519 as is instead
+of a KEM based on X25519. For all of these changes, we provide proofs to ensure that no
+vulnerabilities are introduced by these changes. We also show that these changes have
+a significant impact on the performance of the scheme by providing benchmarks of the
+proposed schemes. With all of this, we believe that X-Wing is a good choice for a hybrid
+KEM in most use cases.
+Acknowledgments
+We would like to thank all reviewers, our shepherd, and everybody who contributed to
+discussions about X-Wing on IETF’s CFRG mailing list. The feedback and discussions
+helped us a lot to improve this paper.
+This research was supported by Deutsche Forschungsgemeinschaft (DFG, German
+research Foundation) as part of the Excellence Strategy of the German Federal and
+State Governments – EXC 2092 CASA - 390781972; and by the European Commission
+through the ERC Starting Grant 805031 (EPOQUE); and by National Funds through the
+Portuguese funding agency, FCT – Fundação para a Ciência e a Tecnologia, within project
+UIDP/50014/2020.
+References
+[ABH+21] Joël Alwen, Bruno Blanchet, Eduard Hauck, Eike Kiltz, Benjamin Lipp, and
+DoreenRiepel. AnalysingtheHPKEstandard. InAnneCanteautandFrançois-
+Xavier Standaert, editors, Advances in Cryptology – EUROCRYPT 2021,
+Part I, volume 12696 of Lecture Notes in Computer Science, pages 87–116,
+Zagreb, Croatia, October 17–21, 2021. Springer, Heidelberg, Germany. doi:
+10.1007/978-3-030-77870-5_4.
+[ABR01] Michel Abdalla, Mihir Bellare, and Phillip Rogaway. The oracle Diffie-Hellman
+assumptions and an analysis of DHIES. In David Naccache, editor, Topics
+in Cryptology – CT-RSA 2001, volume 2020 of Lecture Notes in Computer
+Science, pages 143–158, San Francisco, CA, USA, April 8–12, 2001. Springer,
+Heidelberg, Germany. doi:10.1007/3-540-45353-9_12.
+[AHK+23] Joël Alwen, Dominik Hartmann, Eike Kiltz, Marta Mularczyk, and Peter
+Schwabe. Post-Quantum Multi-Recipient Public Key Encryption. In Proceed-
+ings of the 2023 ACM SIGSAC Conference on Computer and Communications
+Security, CCS ’23, page 1108–1122, New York, NY, USA, 2023. Association for
+Computing Machinery. doi:10.1145/3576915.3623185.
+[BBLW22] Richard Barnes, Karthikeyan Bhargavan, Benjamin Lipp, and Christopher A.
+Wood. Hybrid Public Key Encryption. RFC 9180, February 2022. URL:
+https://www.rfc-editor.org/info/RFC9180, doi:10.17487/RFC9180.
+[Ber06] Daniel J. Bernstein. Curve25519: New Diffie-Hellman speed records. In Moti
+Yung,YevgeniyDodis,AggelosKiayias,andTalMalkin,editors,PKC2006: 9th
+International Conference on Theory and Practice of Public Key Cryptography,
+volume 3958 of Lecture Notes in Computer Science, pages 207–228, New
+York, NY, USA, April 24–26, 2006. Springer, Heidelberg, Germany. doi:
+10.1007/11745853_14.
+
+PAGE 22
+22 X-Wing
+[CDM23] Cas Cremers, Alexander Dax, and Niklas Medinger. Keeping Up with the
+KEMs: Stronger Security Notions for KEMs. Cryptology ePrint Archive,
+Paper 2023/1933, 2023. https://eprint.iacr.org/2023/1933. URL:
+https://eprint.iacr.org/2023/1933.
+[CSW24] Deirdre Connolly, Peter Schwabe, and Bas Westerbaan. X-Wing: general-
+purposehybridpost-quantumKEM.draft-connolly-cfrg-xwing-kem,2024.URL:
+https://datatracker.ietf.org/doc/draft-connolly-cfrg-xwing-kem/.
+[Dwo15] MorrisJ.Dworkin. SHA-3 Standard: Permutation-Based Hash and Extendable-
+Output Functions. National Institute of Standards and Technology (NIST),
+July 2015. URL: http://dx.doi.org/10.6028/NIST.FIPS.202, doi:
+10.6028/nist.fips.202.
+[GHP18] Federico Giacon, Felix Heuer, and Bertram Poettering. KEM combiners. In
+Michel Abdalla and Ricardo Dahab, editors, PKC 2018: 21st International
+Conference on Theory and Practice of Public Key Cryptography, Part I,volume
+10769 of Lecture Notes in Computer Science, pages 190–218, Rio de Janeiro,
+Brazil, March 25–29, 2018. Springer, Heidelberg, Germany. doi:10.1007/97
+8-3-319-76578-5_7.
+[LHT16] Adam Langley, Mike Hamburg, and Sean Turner. Elliptic Curves for Security.
+RFC 7748, January 2016. URL: https://www.rfc-editor.org/info/rfc77
+48, doi:10.17487/RFC7748.
+[NIS23] NIST. Module-Lattice-Based Key-Encapsulation Mechanism Standard. FIPS
+203 (Initial Public Draft), August 2023. doi:10.6028/NIST.FIPS.203.ipd.
+[O’B23] DevonO’Brien.ProtectingChromeTrafficwithHybridKyberKEM.Chromium
+Blog, 2023. https://blog.chromium.org/2023/08/protecting-chrome-t
+raffic-with-hybrid.html.
+[OWK23] Mike Ounsworth, Aron Wussler, and Stavros Kousidis. Combiner function
+for hybrid key encapsulation mechanisms (Hybrid KEMs). Internet-Draft
+draft-ounsworth-cfrg-kem-combiners-04, Internet Engineering Task Force, July
+2023. Work in Progress. URL: https://datatracker.ietf.org/doc/draft
+-ounsworth-cfrg-kem-combiners/04/.
+[WR22] BasWesterbaanandCefanRubin. Defendingagainstfuturethreats: Cloudflare
+goes post-quantum. The Cloudflare Blog, 2022. https://blog.cloudflare.
+com/post-quantum-for-all/.
+[WS23] Bas Westerbaan and Douglas Stebila. X25519Kyber768Draft00 hybrid post-
+quantum key agreement. draft-westerbaan-cfrg-hpke-xyber768d00, 2023. URL:
+https://datatracker.ietf.org/doc/draft-tls-westerbaan-xyber768d
+00/03/.
+[WW23] Bas Westerbaan and Christopher A. Wood. X25519Kyber768Draft00 hybrid
+post-quantum KEM for HPKE. draft-westerbaan-cfrg-hpke-xyber768d00, 2023.
+URL: https://datatracker.ietf.org/doc/draft-westerbaan-cfrg-hpk
+e-xyber768d00/.

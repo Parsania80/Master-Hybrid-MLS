@@ -1,0 +1,116 @@
+FORMATTING AND VALIDATION REPORT
+Date: 14 October 2026
+
+DELIVERABLES
+paper.docx
+  Title: Adaptive Arity and TreeCover Migration in Hybrid TreeKEM
+  Authors: Mohammadreza Parsania and Hamid Mala
+  10 pages; 5,167 words according to Microsoft Word 16.0.
+  Abstract: 200 words; six keywords.
+  14 editable display equations, three editable tables, one original diagram,
+  and 11 numbered references.
+research_audit.docx
+  11 pages; 4,680 words according to Microsoft Word 16.0; four tables.
+formatting_report.txt
+  This report.
+
+SCOPE AND SOURCE AUTHORITY
+The thesis is the authoritative specification. The user clarified that all
+implementation-derived content must be excluded, including results presented
+in the thesis. Thesis Tables 5-6 and 5-7 are excluded from the paper in full.
+The five-event trace, all derived threshold calculations, the results section,
+and trace references in the abstract, introduction, membership discussion,
+limitations, conclusion, and provenance statement have been removed.
+The paper contains no code, programming-language, library, hardware, build,
+repository, execution, testing, or implementation-comparison discussion.
+Its three tables comprise one related-work comparison and two direct numerical
+evaluations of stated analytical formulas. No observed operation-cost data
+from the implementation are used. Supporting implementation findings remain
+in the separate research audit only. The revised paper is shorter than the
+original approximate 12-15-page target because the excluded material was
+removed without padding or inventing replacement results.
+The source Thesis.docx was not modified.
+Source SHA-256:
+f916f0572b73a7275db1b4441d897bcf5ddf917673b041d08baecf344f4f1146
+
+DOCUMENT DESIGN
+Both documents use a journal-neutral, single-column A4 layout (210 x 297 mm).
+Margins: top and bottom 21 mm; left and right 22 mm; footer distance 10 mm.
+Body: Times New Roman, 11 pt, 1.12 multiple line spacing, 6 pt after paragraphs.
+Title: 19 pt, black; no decorative title border.
+Heading 1: 13 pt; Heading 2: 11.5 pt, with automatic multilevel numbering.
+Abstract: 10.5 pt. References: 10 pt, single spaced, 2 pt after paragraphs.
+Tables and notes: generally 9.5 pt.
+Mathematics: native Word OMML objects using Cambria Math, generally 11 pt.
+Paragraphs are left-to-right; proofing language is English (United States).
+Page numbers use Word PAGE fields. Equation and caption numbers use SEQ fields.
+In-text equation, figure, table, and citation references are maintained text;
+they must be reviewed if subsequent editing changes the numbering or order.
+The paper's short tables remain together. Long audit tables use repeating
+header rows, light gray header shading, and restrained grid borders.
+The original migration diagram is an inline raster image with alternative
+text. Its editable generation source is retained in publication_work.
+Equations and tables are not screenshots.
+
+RENDERING AND VISUAL INSPECTION
+The prescribed render_docx.py route was attempted. It could not complete
+because the bundled LibreOffice executable was unavailable in this Windows
+runtime; its cleanup also encountered a sandbox permission error.
+The successful fallback used Microsoft Word 16.0 to update fields, repaginate,
+save each DOCX, and export a PDF. pypdfium2 rendered every PDF page to PNG for
+inspection. QA PDFs and images are retained under publication_work/qa.
+All 10 final paper pages and all 11 final audit pages were visually inspected.
+No clipped text, overlapping objects, broken table rows, visibly missing
+glyphs, or unintended blank pages were observed. Automated PDF bounds checks
+found no text outside the page. Ordinary unused space at the end of sections
+or the final reference page is intentional, not a missing-content page.
+Pagination can change on another computer with different fonts or Word
+settings. The page counts above describe the inspected Word rendering.
+
+STRUCTURAL AND CONTENT CHECKS
+Both DOCX packages reopened successfully; their XML parsed without errors.
+The paper contains 14 OMML equations, three tables, and one drawing.
+The audit contains four tables.
+The generated documents were checked for unwanted Persian script and RTL
+formatting. Every paper section was checked for implementation-derived content,
+not only implementation-related terminology. Automated checks additionally
+reject trace/observation/experiment terminology, the removed table identifier,
+and characteristic fractions from the removed operation-cost table.
+All numbered paper citations 1-11 have bibliography entries and are cited.
+Analytical table rows and the five break-even calculations were recomputed.
+The break-even results are 1, 11, 36, 73, and 147 additional healthy commits
+after the transition commit, under the stated model assumptions.
+The paper contains no reported trace, reconstructed trace reference costs, or
+experimental operation observations. Its numerical tables follow directly
+from the stated model parameters and equations.
+No experimental test suite or implementation build was run for this conversion.
+
+REFERENCE AND PUBLICATION STATUS
+The audit records verification sources and limits for every retained reference
+and the disposition of all 29 original thesis bibliography entries. It does
+not claim full verification of excluded references. Bonsai was checked at
+abstract/metadata level because the full paper could not be retrieved.
+Internet-Drafts are identified as drafts; the expired combiner draft is not
+represented as a standard. No DOI or publication details were invented.
+No target journal has been selected. This DOCX does not claim compliance with
+IEEE, Springer, Elsevier, MDPI, or another publisher's submission template.
+The audit discusses International Journal of Information Security and
+Cryptography as conditional scope matches and records template/policy limits.
+
+ITEMS REQUIRING AUTHOR REVIEW BEFORE SUBMISSION
+Complete the byte-level cryptographic profile and formal adversarial model.
+Resolve retained-key eligibility, removal, retirement, and recovery conditions.
+Strengthen the closest-work comparison and cumulative evaluation where needed.
+The paper's claims must remain within its design and analytical scope.
+Confirm author spelling/order, affiliations, corresponding author, and email.
+Supply truthful contribution, funding, conflict, and acknowledgment statements.
+Select a venue and check its current template, thesis-publication, and AI rules.
+Review the manuscript's thesis-provenance and substantive AI-assistance text.
+The documents are ready for scientific author review, not certified ready for
+submission. No submission or external communication has been performed.
+
+FINAL DOCX FILE INTEGRITY
+paper.docx: 177,242 bytes
+SHA-256: 42c15ebd364811182d2aa717b03355a6b7f23b0943b7d4aa07ea16989db1208b
+research_audit.docx: 51,220 bytes
+SHA-256: cfe3246ad204133ac8131ddd65fed75e8b69779aba725c057a7e4ad44f703488
