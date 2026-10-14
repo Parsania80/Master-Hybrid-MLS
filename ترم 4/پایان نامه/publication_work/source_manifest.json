@@ -1,0 +1,738 @@
+{
+  "sha256": "f916f0572b73a7275db1b4441d897bcf5ddf917673b041d08baecf344f4f1146",
+  "blocks": 1338,
+  "paragraphs": 2275,
+  "tables": 17,
+  "equations": 1106,
+  "images": {
+    "rId26": "media/image5.png",
+    "rId39": "media/image18.png",
+    "rId34": "media/image13.png",
+    "rId29": "media/image8.png",
+    "rId32": "media/image11.png",
+    "rId37": "media/image16.png",
+    "rId40": "media/image19.svg",
+    "rId28": "media/image7.png",
+    "rId36": "media/image15.png",
+    "rId31": "media/image10.png",
+    "rId9": "media/image2.jpeg",
+    "rId27": "media/image6.png",
+    "rId30": "media/image9.png",
+    "rId35": "media/image14.png",
+    "rId8": "media/image1.jpeg",
+    "rId12": "media/image3.png",
+    "rId25": "media/image4.png",
+    "rId33": "media/image12.png",
+    "rId38": "media/image17.svg"
+  },
+  "headings": [
+    {
+      "id": 113,
+      "type": "p",
+      "style": "Heading1",
+      "text": "فصل اول: مقدمه"
+    },
+    {
+      "id": 118,
+      "type": "p",
+      "style": "Heading2",
+      "text": "مقدمه و پیش‌زمینه"
+    },
+    {
+      "id": 123,
+      "type": "p",
+      "style": "Heading2",
+      "text": " معرفی استاندارد امنیت لایه پیام و ساختار درختی تبادل کلید"
+    },
+    {
+      "id": 133,
+      "type": "p",
+      "style": "Heading3",
+      "text": "معماری و هستارهای استاندارد امنیت لایه پیام"
+    },
+    {
+      "id": 139,
+      "type": "p",
+      "style": "Heading2",
+      "text": " رمزنگاری پساکوانتومی و رویکردهای ترکیبی"
+    },
+    {
+      "id": 145,
+      "type": "p",
+      "style": "Heading2",
+      "text": " تعریف مسئله"
+    },
+    {
+      "id": 150,
+      "type": "p",
+      "style": "Heading2",
+      "text": " اهداف تحقیق"
+    },
+    {
+      "id": 158,
+      "type": "p",
+      "style": "Heading2",
+      "text": " اهمیت و کاربرد تحقیق"
+    },
+    {
+      "id": 162,
+      "type": "p",
+      "style": "Heading2",
+      "text": " ساختار کلی پایان‌نامه"
+    },
+    {
+      "id": 171,
+      "type": "p",
+      "style": "Heading1",
+      "text": "فصل دوم: ادبیات موضوع"
+    },
+    {
+      "id": 177,
+      "type": "p",
+      "style": "Heading2",
+      "text": "مقدمه"
+    },
+    {
+      "id": 183,
+      "type": "p",
+      "style": "Heading2",
+      "text": "مفاهیم پایه در تبادل کلید گروهی"
+    },
+    {
+      "id": 185,
+      "type": "p",
+      "style": "Heading3",
+      "text": "توافق کلید"
+    },
+    {
+      "id": 201,
+      "type": "p",
+      "style": "Heading3",
+      "text": "توافق کلید گروهی مستمر"
+    },
+    {
+      "id": 217,
+      "type": "p",
+      "style": "Heading3",
+      "text": "ویژگی‌های امنیتی در توافق کلید گروهی"
+    },
+    {
+      "id": 235,
+      "type": "p",
+      "style": "Heading2",
+      "text": "سازوکارهای لفاف‌بندی کلید"
+    },
+    {
+      "id": 239,
+      "type": "p",
+      "style": "Heading3",
+      "text": "تعریف رسمی  KEM"
+    },
+    {
+      "id": 257,
+      "type": "p",
+      "style": "Heading3",
+      "text": "رمزگذاری کلید عمومی ترکیبی"
+    },
+    {
+      "id": 276,
+      "type": "p",
+      "style": "Heading2",
+      "text": "رمزنگاری پساکوانتومی و گذار ترکیبی"
+    },
+    {
+      "id": 278,
+      "type": "p",
+      "style": "Heading3",
+      "text": "رمزنگاری پساکوانتومی"
+    },
+    {
+      "id": 285,
+      "type": "p",
+      "style": "Heading3",
+      "text": " سازوکار تبادل کلید ترکیبی"
+    },
+    {
+      "id": 309,
+      "type": "p",
+      "style": "Heading2",
+      "text": "استاندارد امنیت لایه پیام"
+    },
+    {
+      "id": 311,
+      "type": "p",
+      "style": "Heading3",
+      "text": "هدف و دامنه  MLS"
+    },
+    {
+      "id": 316,
+      "type": "p",
+      "style": "Heading3",
+      "text": "معماری  MLS"
+    },
+    {
+      "id": 329,
+      "type": "p",
+      "style": "Heading3",
+      "text": "مفاهیم اصلی MLS   "
+    },
+    {
+      "id": 354,
+      "type": "p",
+      "style": "Heading2",
+      "text": "مدل امنیتی MLS و TreeKEM "
+    },
+    {
+      "id": 356,
+      "type": "p",
+      "style": "Heading3",
+      "text": " مدل مهاجم"
+    },
+    {
+      "id": 367,
+      "type": "p",
+      "style": "Heading3",
+      "text": " اهداف امنیتی"
+    },
+    {
+      "id": 398,
+      "type": "p",
+      "style": "Heading2",
+      "text": "جمع‌بندی فصل"
+    },
+    {
+      "id": 423,
+      "type": "p",
+      "style": "Heading1",
+      "text": "فصل سوم: مروری بر کارهای پیشین"
+    },
+    {
+      "id": 428,
+      "type": "p",
+      "style": "Heading2",
+      "text": "مقدمه"
+    },
+    {
+      "id": 432,
+      "type": "p",
+      "style": "Heading2",
+      "text": " مرور و تحلیل پروتکل‌های اولیه تبادل کلید گروهی"
+    },
+    {
+      "id": 433,
+      "type": "p",
+      "style": "Heading3",
+      "text": "پروتکل  CLIQUES"
+    },
+    {
+      "id": 436,
+      "type": "p",
+      "style": "Heading3",
+      "text": "پروتکل توزیع کلید کنفرانسی برمستر-دسمت"
+    },
+    {
+      "id": 440,
+      "type": "p",
+      "style": "Heading3",
+      "text": "ارتباطات گروهی امن با استفاده از گراف‌های کلید"
+    },
+    {
+      "id": 446,
+      "type": "p",
+      "style": "Heading3",
+      "text": "توافق کلید گروهی درخت‌محور: پروتکل  TGDH"
+    },
+    {
+      "id": 452,
+      "type": "p",
+      "style": "Heading2",
+      "text": "تحلیل رسمی و ماشین‌بررسی‌شده امنیت TreeKEM در استاندارد MLS "
+    },
+    {
+      "id": 460,
+      "type": "p",
+      "style": "Heading3",
+      "text": "ساختار درختی   TreeKEM"
+    },
+    {
+      "id": 493,
+      "type": "p",
+      "style": "Heading3",
+      "text": "مفهوم گره فیلترشده"
+    },
+    {
+      "id": 500,
+      "type": "p",
+      "style": "Heading3",
+      "text": "مفهوم گره‌های منتج"
+    },
+    {
+      "id": 511,
+      "type": "p",
+      "style": "Heading2",
+      "text": "لفاف‌بندی کلید چندگیرنده‌ای و نقش آن در کاهش سربار پساکوانتومی  MLS "
+    },
+    {
+      "id": 527,
+      "type": "p",
+      "style": "Heading1",
+      "text": "فصل چهارم: طرح پیشنهادی"
+    },
+    {
+      "id": 532,
+      "type": "p",
+      "style": "Heading2",
+      "text": "مقدمه"
+    },
+    {
+      "id": 536,
+      "type": "p",
+      "style": "Heading2",
+      "text": "بیان مسئله طراحی و هدف طرح پیشنهادی"
+    },
+    {
+      "id": 546,
+      "type": "p",
+      "style": "Heading2",
+      "text": "مدل سیستم، فرض‌ها و دامنه طرح"
+    },
+    {
+      "id": 561,
+      "type": "p",
+      "style": "Heading2",
+      "text": "نمادگذاری و تعاریف پایه"
+    },
+    {
+      "id": 601,
+      "type": "p",
+      "style": "Heading3",
+      "text": "گره تهی و گره مقداردهی‌شده"
+    },
+    {
+      "id": 604,
+      "type": "p",
+      "style": "Heading3",
+      "text": "تثبیت موثر"
+    },
+    {
+      "id": 607,
+      "type": "p",
+      "style": "Heading3",
+      "text": "تعریف  پوشش درخت"
+    },
+    {
+      "id": 617,
+      "type": "p",
+      "style": "Heading3",
+      "text": "حالت بازگشتی برگ‌محور"
+    },
+    {
+      "id": 619,
+      "type": "p",
+      "style": "Heading2",
+      "text": "ساختار درخت ترکیبی پیشنهادی"
+    },
+    {
+      "id": 623,
+      "type": "p",
+      "style": "Heading3",
+      "text": "ساختار گره‌ها"
+    },
+    {
+      "id": 645,
+      "type": "p",
+      "style": "Heading3",
+      "text": "مشتق‌سازی راز ترکیبی"
+    },
+    {
+      "id": 665,
+      "type": "p",
+      "style": "Heading3",
+      "text": "ارتباط با رمز دوره در  MLS"
+    },
+    {
+      "id": 689,
+      "type": "p",
+      "style": "Heading2",
+      "text": "سیاست تطبیقی انتخاب مرتبه درخت"
+    },
+    {
+      "id": 696,
+      "type": "p",
+      "style": "Heading3",
+      "text": "محدودیت درخت دودویی در گروه‌های بزرگ"
+    },
+    {
+      "id": 698,
+      "type": "p",
+      "style": "Heading3",
+      "text": "تحلیل ارتفاع و هزینه در مرتبه‌های مختلف"
+    },
+    {
+      "id": 712,
+      "type": "p",
+      "style": "Heading3",
+      "text": "نقش mKEM در عملی شدن مرتبه بالاتر"
+    },
+    {
+      "id": 722,
+      "type": "p",
+      "style": "Heading3",
+      "text": "سیاست تغییر از ۲ به ۴ و از ۴ به ۸"
+    },
+    {
+      "id": 736,
+      "type": "p",
+      "style": "Heading4",
+      "text": "سیاست گذار از مرتبه ۲ به مرتبه ۴"
+    },
+    {
+      "id": 742,
+      "type": "p",
+      "style": "Heading4",
+      "text": "سیاست گذار از مرتبه ۴ به مرتبه ۸"
+    },
+    {
+      "id": 751,
+      "type": "p",
+      "style": "Heading2",
+      "text": "فرآیند تبدیل درخت"
+    },
+    {
+      "id": 754,
+      "type": "p",
+      "style": "Heading3",
+      "text": "ایجاد درخت جدید با مرتبه بالاتر"
+    },
+    {
+      "id": 760,
+      "type": "p",
+      "style": "Heading3",
+      "text": "وضعیت هم‌زیستی درخت قدیم و جدید"
+    },
+    {
+      "id": 769,
+      "type": "p",
+      "style": "Heading3",
+      "text": "نقش پوشش درخت در دوره گذار"
+    },
+    {
+      "id": 780,
+      "type": "p",
+      "style": "Heading3",
+      "text": "فرآیند تدریجی کامل شدن درخت جدید"
+    },
+    {
+      "id": 791,
+      "type": "p",
+      "style": "Heading3",
+      "text": "پایان دوره گذار و حذف درخت قدیم"
+    },
+    {
+      "id": 801,
+      "type": "p",
+      "style": "Heading2",
+      "text": "سیاست  بازنشستگی  پوشش درخت"
+    },
+    {
+      "id": 819,
+      "type": "p",
+      "style": "Heading2",
+      "text": "عملیات اصلی پروتکل پیشنهادی"
+    },
+    {
+      "id": 824,
+      "type": "p",
+      "style": "Heading3",
+      "text": "راه‌اندازی گروه"
+    },
+    {
+      "id": 840,
+      "type": "p",
+      "style": "Heading3",
+      "text": "افزودن عضو جدید"
+    },
+    {
+      "id": 935,
+      "type": "p",
+      "style": "Heading3",
+      "text": " به‌روزرسانی یا تثبیت معمولی"
+    },
+    {
+      "id": 968,
+      "type": "p",
+      "style": "Heading3",
+      "text": " حذف عضو"
+    },
+    {
+      "id": 995,
+      "type": "p",
+      "style": "Heading3",
+      "text": "تغییر مرتبه"
+    },
+    {
+      "id": 1012,
+      "type": "p",
+      "style": "Heading3",
+      "text": " تثبیت در دوره گذار"
+    },
+    {
+      "id": 1065,
+      "type": "p",
+      "style": "Heading2",
+      "text": "جمع‌بندی"
+    },
+    {
+      "id": 1073,
+      "type": "p",
+      "style": "Heading1",
+      "text": "فصل پنجم: ارزیابی طرح پیشنهادی"
+    },
+    {
+      "id": 1078,
+      "type": "p",
+      "style": "Heading2",
+      "text": "مقدمه"
+    },
+    {
+      "id": 1081,
+      "type": "p",
+      "style": "Heading2",
+      "text": "چارچوب و معیارهای ارزیابی"
+    },
+    {
+      "id": 1083,
+      "type": "p",
+      "style": "Heading3",
+      "text": "فرضیات ارزیابی"
+    },
+    {
+      "id": 1088,
+      "type": "p",
+      "style": "Heading3",
+      "text": "معیارهای امنیتی"
+    },
+    {
+      "id": 1103,
+      "type": "p",
+      "style": "Heading2",
+      "text": "ارزیابی اهداف امنیتی طرح پیشنهادی"
+    },
+    {
+      "id": 1105,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بررسی محرمانگی پیام"
+    },
+    {
+      "id": 1111,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بررسی محرمانگی کلید دوره"
+    },
+    {
+      "id": 1116,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بررسی رسمی رازمانی پیش‌سو"
+    },
+    {
+      "id": 1122,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بررسی امنیت پس از نفوذ"
+    },
+    {
+      "id": 1129,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بررسی امنیت پس از حذف"
+    },
+    {
+      "id": 1133,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بررسی توافق بر وضعیت گروه"
+    },
+    {
+      "id": 1138,
+      "type": "p",
+      "style": "Heading2",
+      "text": "ارزیابی سازوکار تغییر مرتبه درخت و گذار پوشش درخت"
+    },
+    {
+      "id": 1146,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بررسی درستی تغییر مرتبه درخت"
+    },
+    {
+      "id": 1148,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بررسی امنیت گذار پوشش درخت"
+    },
+    {
+      "id": 1150,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بررسی محرمانگی در دوره گذار"
+    },
+    {
+      "id": 1156,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بررسی اثر تغییر مرتبه بر امنیت پس از نفوذ و امنیت پس از حذف"
+    },
+    {
+      "id": 1163,
+      "type": "p",
+      "style": "Heading2",
+      "text": "تحلیل کارایی طرح پیشنهادی"
+    },
+    {
+      "id": 1182,
+      "type": "p",
+      "style": "Heading3",
+      "text": "پیچیدگی عملیات به‌روزرسانی"
+    },
+    {
+      "id": 1209,
+      "type": "p",
+      "style": "Heading3",
+      "text": "پیچیدگی عملیات افزودن عضو"
+    },
+    {
+      "id": 1227,
+      "type": "p",
+      "style": "Heading3",
+      "text": "پیچیدگی عملیات حذف عضو"
+    },
+    {
+      "id": 1242,
+      "type": "p",
+      "style": "Heading3",
+      "text": "سربار ارتباطی ناشی از KEM ترکیبی"
+    },
+    {
+      "id": 1264,
+      "type": "p",
+      "style": "Heading3",
+      "text": "سربار ذخیره‌سازی اعضا"
+    },
+    {
+      "id": 1279,
+      "type": "p",
+      "style": "Heading3",
+      "text": "اثر مرتبه درخت و هزینه گذار"
+    },
+    {
+      "id": 1343,
+      "type": "p",
+      "style": "Heading3",
+      "text": "ارزیابی تجربی پیاده‌سازی"
+    },
+    {
+      "id": 1379,
+      "type": "p",
+      "style": "Heading2",
+      "text": "مقایسه با طرح‌های مرجع"
+    },
+    {
+      "id": 1403,
+      "type": "p",
+      "style": "Heading3",
+      "text": "مقایسهٔ پیچیدگی و هزینه با طرح‌های مرجع"
+    },
+    {
+      "id": 1461,
+      "type": "p",
+      "style": "Heading1",
+      "text": "فصل ششم: نتیجه‌گیری و پیشنهادها"
+    },
+    {
+      "id": 1466,
+      "type": "p",
+      "style": "Heading2",
+      "text": "مقدمه"
+    },
+    {
+      "id": 1473,
+      "type": "p",
+      "style": "Heading2",
+      "text": "نتایج تحقیق و نوآوری‌ها"
+    },
+    {
+      "id": 1475,
+      "type": "p",
+      "style": "Heading3",
+      "text": "جمع‌بندی مسئله و رویکرد پیشنهادی"
+    },
+    {
+      "id": 1480,
+      "type": "p",
+      "style": "Heading3",
+      "text": "نتایج امنیتی پژوهش"
+    },
+    {
+      "id": 1492,
+      "type": "p",
+      "style": "Heading3",
+      "text": "نتایج تحلیل کارایی"
+    },
+    {
+      "id": 1504,
+      "type": "p",
+      "style": "Heading3",
+      "text": "نوآوری‌های اصلی پژوهش"
+    },
+    {
+      "id": 1517,
+      "type": "p",
+      "style": "Heading3",
+      "text": "محدودیت‌های پژوهش"
+    },
+    {
+      "id": 1526,
+      "type": "p",
+      "style": "Heading2",
+      "text": "پژوهش‌های آینده"
+    },
+    {
+      "id": 1528,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بهینه‌سازی سیاست تغییر مرتبه"
+    },
+    {
+      "id": 1530,
+      "type": "p",
+      "style": "Heading3",
+      "text": "کاهش پنجره ضعف امنیت پس از نفوذ"
+    },
+    {
+      "id": 1532,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بررسی رفتار طرح در برابر تغییرات شدید عضویت"
+    },
+    {
+      "id": 1534,
+      "type": "p",
+      "style": "Heading3",
+      "text": "طراحی سازوکار جلوگیری از نوسان مرتبه"
+    },
+    {
+      "id": 1536,
+      "type": "p",
+      "style": "Heading3",
+      "text": "بررسی کاهش مرتبه درخت"
+    },
+    {
+      "id": 1558,
+      "type": "p",
+      "style": "Heading1",
+      "text": "منابع و مآخذ"
+    }
+  ]
+}

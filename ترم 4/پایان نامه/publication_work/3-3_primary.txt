@@ -1,0 +1,1456 @@
+
+PAGE 1
+TreeKEM: A Modular Machine-Checked Symbolic Security Analysis
+of Group Key Agreement in Messaging Layer Security
+The´ophile Wallez Jonathan Protzenko Karthikeyan Bhargavan
+Inria Paris Microsoft Azure Research Cryspen
+Abstract—TheMessagingLayerSecurity(MLS)protocolstan-
+dardproposesanoveltree-basedprotocolthatenablesefficient
+end-to-end encrypted messaging over large groups with thou-
+sands of members. Its functionality can be divided into three
+components: TreeSync for authenticating and synchronizing
+group state, TreeKEM for the core group key agreement, and
+TreeDEMforgroupmessageencryption.Whilepreviousworks
+have analyzed the security of abstract models of TreeKEM,
+theydonotaccountforthepreciselow-leveldetailsofthepro-
+tocol standard. This work presents the first machine-checked
+security proof for TreeKEM. Our proof is in the symbolic
+Dolev-Yaomodelandappliestoabit-levelprecise,executable,
+interoperable specification of the protocol. Furthermore, our
+security theorem for TreeKEM composes naturally with a
+Figure 1: A Modular Treatment of Messaging Layer Secu-
+previous result for TreeSync to provide a strong modular
+rity: TreeSync, TreeKEM, and TreeDEM
+security guarantee for the published MLS standard.
+1. Introduction
+by post-quantum cryptography, the improved security and
+scalability of MLS is increasingly desirable.
+TheMessagingLayerSecurity(MLS)standard[9],pub- Second, inspired by the experience of the Transport
+lishedin2023,isthefirstandtill-dateonlyInternetstandard Layer Security (TLS) working group in the standardization
+for secure end-to-end encrypted messaging. It is currently of TLS 1.3, the design of MLS was structured as a collabo-
+implemented by multiple messaging software vendors, in- rationbetweenprotocoldesignersandcryptographicexperts
+cluding Cisco, AWS, Wire, and XMTP, and several vendors with the goal of developing security proofs of the protocol
+have announced their intention to support it in the future. alongsidestandardization.Thisprocessresultedinanumber
+With the advent of new regulations that require messaging of formal security analyses of MLS (and its variants) using
+interoperability, like the EU Digital Markets Act, an open a variety of security models and techniques [3], [4], [6],
+standardlikeMLSisseenbymanyasthebasisforthenext [13], [15], [18], [21]. The current work is also a result
+generation of secure messaging applications. of this long-term collaboration, and it contributes a new
+Compared to popular and widely-deployed messaging machine-checked security proof for TreeKEM, the core key
+protocols like Signal [2] and its many variants, the design agreement component of MLS.
+of MLS distinguishes itself in two important ways.
+MLS: TreeSync, TreeKEM, and TreeDEM. In previous
+First, MLS puts group messaging front and center and
+work, Wallez et al. [21] identified a modular decomposition
+seeks to scale up to groups with thousands of members. To
+of MLS into three sub-protocols, as depicted in Figure 1:
+achieve this, MLS is built around a new tree-based protocol
+that scales logarithmically with the group size (in the ideal • TreeSync: a protocol that synchronizes the shared
+case) and linearly in the worst case. In contrast, protocols group state across group members. The shared state
+that build group messaging using two-party channels, such includes the current group membership and is struc-
+as Signal Sender Keys [7], scale linearly with group size in tured as a tree, with each occupied leaf corresponding
+the best case and quadratically in the worst. Furthermore, to a member, and each internal node representing a
+these protocols do not provide important properties like subgroup. TreeSync uses signatures and Merkle-tree
+membership agreement and post-compromise security for stylehashcomputationstoauthenticatetheinitialgroup
+groupconversations.Withthegrowthinpopularityofgroup stateprovidedtoamemberandallsubsequentchanges
+messaging, and with the increase in message sizes entailed to the state. It also ensures that the tree data structure
+
+PAGE 2
+maintains an internal integrity invariant. This authenti- the original version of TreeKEM [12] using a symbolic
+cated, synchronized state is then passed to TreeKEM. model in F∗ [20] and compares its security with alternate
+• TreeKEM: a protocol that allows each member to use designs; [18] shows how a simplified version of TreeKEM
+itsprivatekeysandthesequenceofauthenticatedstates can be analyzed in the Tamarin prover for forward secrecy
+provided by TreeSync to derive a sequence of group (but not post-compromise or post-remove security).
+keys, called epoch secrets (K n ). TreeKEM uses the Several of these works suggest improvements to MLS,
+tree structure to efficiently update the epoch secret; in some of which were incorporated into the MLS standard
+the best case, this requires only a logarithmic number before publication. Still other works present and analyze
+of public key encryptions and a single decryption at newgroupmessagingprotocolsinspiredbyMLS,butwedo
+each recipient. Furthermore, TreeKEM provides post- not consider these works here. However, none of the proofs
+compromisesecurity,andinparticular,securityagainst intheseworksappliestothepublishedMLSstandard,since
+members that have been removed. they analyze abstract models that leave out many of the
+• TreeDEM: a protocol that takes the epoch secret K n details and options that make MLS complex.
+computed by TreeKEM and uses it to derive message
+Verifying an Executable Specification of TreeKEM. In
+encryption keys for each group member. These keys
+contrast to the above works, our work is directly inspired
+are then used to encrypt and decrypt group messages
+by the work of [21], which presents a proof for a bit-level
+so that only the current members can send or receive
+precise, executable, testable specification of the TreeSync
+them.Aftereachmessage,themessageencryptionkeys
+component of MLS. The advantage of working on such
+are ratcheted forward to provide forward secrecy.
+a specification is that one can run it against protocol test
+When compared with a two-party secure channel pro-
+vectors, or test it for interoperability with other implemen-
+tocol like TLS, TreeKEM corresponds to the handshake
+tations, to gain confidence that the model we are proving
+protocol, and TreeDEM corresponds to the record layer. Of
+security for is not missing any important protocol details.
+course, the complexity of MLS is in handling the dynamic
+Handling low-level details can be crucial for security.
+group setting where the list of participants can grow and
+For example, none of the papers on MLS cited above
+change. While all three of these protocols are novel and
+precisely model the signatures used in MLS. Even the pen-
+deserve close scrutiny via formal security analyses, in this
+and-paper security proof for MLS in [6] abstracts away
+paper, we will focus on modeling and analyzing TreeKEM.
+from the formats of the signature inputs, which would have
+Security Analyses for Abstract Models of MLS. A key been tedious to handle in a manual proof, and assumes
+challenge when analyzing a protocol standard is in finding that these signatures cannot be confused for each other.
+therightlevelofabstraction.TheMLSstandardis132pages As a consequence, this proof misses an important signature
+long; it defines the high-level cryptographic constructions ambiguity attack on MLS, which was subsequently found
+and algorithms of TreeSync, TreeKEM, and TreeDEM, but in the machine-checked proof of TreeSync [21] which did
+also defines the concrete tree data structure and operations model all the low-level signature formats.
+on it, the precise low-level formats of all messages and In this paper, we present an executable, testable, in-
+cryptographicinputs,andhandlesthenegotiationofversions teroperable model of TreeKEM and a security proof for
+andciphersuites.MostpriorworksonanalyzingMLSignore this model using a symbolic proof framework called DY∗
+most of these low-level details and instead model MLS (the same methodology as [21]). Consequently, our proof
+as an abstract group key agreement protocol so that its accounts for all the low-level details of the MLS standard,
+specification can fit in a few pages and a formal proof of and our confidentiality theorem for TreeKEM composes
+its security can be feasible. with the authentication theorem for TreeSync in [21].
+Some works have analyzed the core key agreement of
+Contributions. Wepresentthefirstmachine-checkedproof
+MLS with pen-and-paper proofs: [5] defines a new security
+for the TreeKEM component of the published MLS stan-
+definition called continuous group key agreement (CGKA)
+dard. Ours is also the first proof for a bit-level precise,
+for protocols like TreeKEM; [3] presents a proof that
+executable, interoperable specification of TreeKEM, which
+TreeKEM as specified in MLS draft 7 is a CGKA; [4]
+canbeseenasareferenceimplementation.Ourproofshows
+presents a modular proof of MLS draft 11, by decomposing
+how to modularly compose the guarantees of TreeKEM
+it into a CGKA protocol (essentially TreeSync+TreeKEM)
+and TreeSync, and provides some important insights on
+andastatefulgroupAEADprotocol(i.e.TreeDEM);[6]an-
+key management and erasure for MLS implementations
+alyzesthesecurityofMLSdraft12againstmaliciousgroup
+and deployments. Finally, ours is likely the first machine-
+members, by focusing on the integrity mechanisms within
+checked symbolic security proof for group key exchange
+TreeSync. Other pen-and-paper proofs focus on aspects of
+in dynamic groups (supporting add, remove, and update),
+MLS outside the core TreeKEM component: [15] analyzes
+andthefirsttoestablishingpropertieslikepost-compromise
+the MLS key schedule, [17] studies post-compromise secu-
+security in the group setting.
+rity for group messaging protocols like MLS.
+There have also been some attempts at using (semi- Outline. We start with an informal, accessible description
+)automated tools to obtain machine-checked symbolic secu- of TreeKEM (§2); next, we show how to capture TreeKEM
+rity proofs for abstract models of TreeKEM: [13] analyzes in formal language, encoding its specification using the F∗
+2
+
+PAGE 3
+proof assistant (§3). Then, we state the security properties scope of the MLS protocol; this is a matter handled by the
+we proved (§4), with a precise and extensive discussion of untrusted delivery service, which we do not cover in the
+potential paths to compromise, followed by insights about presentpaper.MLSassumesthateachparticipantreceivesa
+our proof techniques (§5). Finally, we discuss our results sequenceofcommitsfromthedeliveryserviceandattempts
+and conclude (§6). to process them in order.
+Uponprocessingacommit,thegroupentersanewepoch
+2. The MLS TreeKEM Protocol and TreeKEM outputs an epoch secret for the group to
+use. In other words, each commit does a round of key
+We now describe TreeKEM as specified by the MLS derivation which produces a fresh epoch secret: intuitively,
+standard [9]. We start by describing the overall goals of this means that should anything change with the group (the
+TreeKEM (§2.1), then define the two main mechanisms of membership,amember’spublickey,etc.),thenanewepoch
+TreeKEM:theuseofatreetoproduceafreshcommitsecret secret will be derived for the group.
+sharedbythegroup,guaranteeingpost-compromisesecurity Crucially, a commit may apply a path update operation
+and remove-security (§2.2), and key schedule that provides on the internal state of TreeKEM (explained in §2.2) and
+forward secrecy and add-security (§2.3). outputacommitsecret,whichisusedinthecomputationof
+thenextepochsecret(explainedin§2.3).Suchpathupdates
+2.1. Goals of TreeKEM are mandatory except in add-only commits, a special flavor
+of commit that does not contain a path update operation
+The goal of TreeKEM is, at each epoch, to establish (we leave the description of add-only commits to §2.3). We
+an epoch secret that is known to exactly the participants explain path updates and commit secrets in detail in the
+currently in the group. This epoch secret is then used in remainder of this section.
+TreeDEM to derive the same message encryption keys at An additional element that flows into the construction
+eachparticipant.ThefunctionalityprovidedbyTreeKEMis of the epoch secret is the group context, which summarizes
+sometimes called continuous group key agreement [5]. informationaboutthecurrentstateofthegroup–aswewill
+see later, this is important for the security proofs.
+Design constraints. The initial design of group key estab-
+lishment in MLS was based around Asynchronous Ratchet- Security properties, informally. TreeKEM aims to offer
+ing Trees [16] which used a tree of Diffie-Hellman opera- several security guarantees on the epoch secret:
+tions to enable efficient asymmetric ratcheting for groups. • addsecurity(i.e.newparticipantsmustnotknowepoch
+TreeKEM[12]wasproposedasaKEM-basedmoreefficient secrets that predate their joining the group),
+alternative to ART. The current version of TreeKEM in • remove security (i.e. removed participants must not
+the MLS standard is the culmination of multiple revisions know epoch secrets after they have left the group),
+and extensions since these early designs. It aims to satisfy • forward secrecy (i.e. the compromise of a participant
+severalconstraints;inparticular,theprotocolmusti)handle by an attacker must not reveal past epoch secrets) and
+dynamic groups (i.e. participants can join and leave the • post-compromise security (i.e. the epoch secret can
+group over time), ii) be asynchronous, (i.e. participants are eventually heal from a past compromise).
+not required to always be online), iii) be efficient (i.e. scale These properties will be more formally studied in §4.4.
+better than linearly on the number of participants) and iv) Suffices to say, for now, that forward secrecy and add
+provide security properties like key confidentiality, forward security are achieved by judicious key erasure and that
+secrecy and post-compromise security. Goal iv) is the main post-compromise security and remove security are achieved
+topic of study in this paper. with by sharing fresh randomness (through the path update
+Additionally, TreeKEM makes certain assumptions operation). In the rest of this section, we describe the state
+about the design of the overall system, which are captured and mechanisms of the TreeKEM protocol and informally
+in the MLS architecture document [11]. Notably, TreeKEM explain how it achieves these desired security guarantees.
+relies on an untrusted Delivery Service, which is tasked
+with receiving messages from individual group participants,
+2.2. A Tree for Group Key Agreement
+and broadcasting them back to all other group participants.
+In other words, MLS is not a peer-to-peer service where
+Throughout this section, we will use uppercase letters
+messages are sent directly from one participant to another.
+to denote nodes of TreeKEM’s tree (A to H for leaves and
+TreeKEM Terminology. MLS is an asynchronous, dis- T to Z for internal nodes) and lowercase letters to denote
+tributed protocol. The TreeKEM specification therefore dis- the content stored in these nodes during the lifetime of the
+tinguishes the construction (locally, by a participant) of group (e.g. a , a , etc).
+0 1
+operations over the group (e.g. addition and removal of In TreeKEM, group participants are arranged in the
+participants), known as proposals; the bundling of possibly leaves of a complete binary tree, as depicted in Figure 2a
+many such operations into a commit; the application of this (nodesAtoH).Eachnodecontainsapublic-keyencryption
+commit to the group to reach the next epoch. keypair, whose secret key is known by (and only by) the
+The matter of how competing concurrent commits (by participantsinthesubtreerootedatthatnode(e.g.thesecret
+two different participants) are dealt with falls outside the key of v is known to c and d , and the secret key of the
+0 0 0
+3
+
+PAGE 4
+w w
+0 1
+u y u y
+0 0 1 0
+t 0 v 0 x 0 z 0 t 1 v 0 x 0 z 0
+a 0 b 0 c 0 d 0 e 0 f 0 g 0 h 0 a 1 b 0 c 0 d 0 e 0 f 0 g 0 h 0
+(a) An initial TreeKEM state. (b) A issues a path update and commits
+w w
+1 2
+u y u y
+1 0 2 0
+t 1 v 0 x 0 z 0 t 1 v 0 x 0 z 0
+a 1 b 0 c 0 d 0 e 0 f 0 g 0 h 0 a 2 b 0 c 0 d 0 e 0 f 0 g 0 h 0
+(c) B and G are removed (d) A issues a path update and commits
+w 2 b′ w 3
+ub 2 ′ y 0 ub 2 ′ y 1
+t 1 v 0 x 0 z 0 t 1 v 0 x 1 z 0
+a 2 b′ 1 c 0 d 0 e 0 f 0 g 0 h 0 a 2 b′ 1 c 0 d 0 e 1 f 0 g 0 h 0
+(e) B′ is added (f) E issues a path update and commits
+Figure 2: Evolution of a group’s tree in TreeKEM. Nodes in bold are the nodes updated by the current operation, plain
+arrow ( ) indicates hashing the path secret and dashed arrow ( ) indicates encrypting the path secret (the cryptographic
+operations are detailed in Figure 3).
+root w is known to every participant in the group). This
+0
+propertyiscalledthetreeinvariantintheMLSstandard[9].
+cs
+By relying on the tree invariant, we can efficiently
+encryptdatatospecificsub-groupsinthetree.Forexample,
+xpd
+we can perform one encryption to y instead of separate
+enc(pk ) 0
+c y
+y0
+ps w xpd ns w dkp
+p
+sk
+k
+w1 e
+e
+s
+n
+s
+c
+e
+r
+n
+y
+c
+p
+e
+tio
+o
+n
+f
+s
+Tr
+t
+e
+o
+eK
+e
+0 E
+,
+M
+f
+0 ;
+,
+w
+g
+e 0 w
+a
+i
+n
+ll
+d
+se
+h
+e 0 h
+.
+o
+T
+w
+hi
+i
+s
+tp
+o
+e
+p
+r
+t
+m
+im
+it
+i
+s
+za
+th
+ti
+e
+o
+e
+n
+ffi
+is
+ci
+t
+e
+h
+n
+e
+t
+dec(sk ) w1
+y0 creation of path updates, i.e. refreshing secrets from a leaf
+xpd
+node to the root without modifying every node in the tree.
+enc(pk )
+c v
+v0
+ps u xpd ns u dkp
+p
+sk
+k
+u1 Key
+F
+E
+o
+n
+r
+c
+e
+r
+n
+y
+c
+p
+r
+t
+y
+io
+p
+n
+ti
+(
+o
+H
+n,
+PK
+Tr
+E
+e
+)
+eK
+co
+E
+n
+M
+stru
+r
+c
+e
+t
+l
+i
+i
+o
+es
+n[
+o
+1
+n
+0]
+t
+,
+h
+w
+e
+h
+H
+ic
+y
+h
+br
+u
+i
+s
+d
+es
+P
+a
+ub
+k
+l
+e
+i
+y
+c
+dec(sk ) u1
+v0 encapsulation mechanism (KEM), a key derivation function
+xpd
+(HKDF), and an authenticated encryption (AEAD) algo-
+enc(pk )
+c b
+b0
+ps t xpd ns t dkp
+p
+sk
+k
+t1
+r
+in
+it
+t
+h
+e
+m
+gri
+t
+t
+o
+y
+b
+f
+u
+o
+i
+r
+ld
+th
+a
+e
+p
+p
+u
+la
+b
+i
+l
+n
+ic
+te
+-k
+x
+e
+t
+y
+an
+e
+d
+nc
+f
+r
+o
+y
+r
+pt
+a
+i
+d
+o
+d
+n
+it
+s
+i
+c
+o
+h
+n
+e
+a
+m
+l d
+e
+a
+t
+t
+h
+a
+a
+.
+t provides
+dec(sk ) t1
+b0 Wenowdescribehowthegroupevolvesthroughaseries
+xpd
+of updates depicted in Figure 2, and explain how each tree
+pk modification preserves the tree invariant.
+ps a xpd ns a dkp sk a1
+a1 Pathupdate. InFigure2b(andmorepreciselyinFigure3),
+Figure 3: Cryptographic operations performed during A wants to recover from a potential compromise and bene-
+A’s path update in Figure 2b. xpd is HKDF.Expand, fit from post-compromise security properties of TreeKEM.
+dkp is HPKE.DeriveKeyPair, enc is HPKE.Seal, dec is Hence, it updates any secret (potentially compromised) it
+HPKE.Open, ps is “path secret”, ns is “node secret”, cs is knowsinthetree.Todoso,AupdatestheHPKEkeypairsof
+“commit secret”, c is “ciphertext”. thenodesbetweenitsleafandtheroot(i.e.ofthenodesA,T,
+U, W, shown in bold in Figure 2b), while ensuring the new
+secret keys are known by participants in the corresponding
+4
+
+PAGE 5
+subtree(e.g.thesecretkeyofu istransmittedtob ,c and it stays blank, and what should have been its path secret
+1 0 0
+d ), and issues a new commit secret to the group. is now the path secret of U, or graphically, the path-secret
+0
+Here is how the new secrets are generated. A generates arrow ( ) goes directly from A to U.
+an initial path secret ps (at the bottom of Figure 3), from This optimization ensures that from the viewpoint of
+a
+which the new commit secret and all new keypairs will the tree invariant, there are no redundant non-blank nodes
+be derived. Here is how it happens: each updated node in the tree. Indeed, if during a path update, a bigger subtree
+is associated with a path secret (ps □ in Figure 3), from (e.g. rooted at T) covers the same set of participants as
+which two secrets are derived: the node secret for the same a smaller subtree (e.g. rooted at A), because of the tree
+node (ns□ in Figure 3), and the path secret for the node invariant their secret keys will be known by the same set of
+directly above (depicted as in Figure 2b). The node participants (e.g. {A}) hence the bigger subtree (e.g. rooted
+secret is used to derive a new HPKE keypair (pk □ , sk□ T) is redundant and its root (e.g. T) is filtered.
+in Figure 3). The commit secret (cs in Figure 3) is the path This filtering happens each time a bigger subtree covers
+secret corresponding to the node that would be above the the same set of participants as a smaller subtree. For exam-
+root. ple, if C and D were blanked, then the node U would also
+Here is how the new secrets are transmitted to the be filtered, and what should have been the path secret of T
+participants that should know them (e.g. b 0 must learn the would become the path secret of W.
+new secret key of t ). The path secret of a node can be
+1
+Path update & resolution. In Figure 2d (again), A issues
+used to compute the secret keys of this node and all the
+a path update to obtain security back after the removal of
+nodes between them and the root, and hence can be used
+B and G. It happens similarly as in Figure 2b and Figure 3,
+to compute the commit secret. Therefore, it is sufficient for
+with one difference about the encryption of the path secret
+every participant to obtain the path secret of the least com-
+of W. In Figure 2b, the path secret of W is encrypted to
+mon ancestor between them and A (the updater). We could
+Y, but in Figure 2d, Y is blank after the removal of G in
+use this criterion to encrypt one path secret to each group
+Figure 2c. Instead, we encrypt ps with the smallest set of
+participant: this requires a linear number of encryptions in w
+public keys such that all participants in the subtree rooted
+the size of the group. We can instead do a logarithmic
+at Y can decrypt, here, x and h . This set of public keys
+number of encryptions, by relying on the fact that group 0 0
+is called the resolution of the node Y. In the simplest case
+participants that obtain a given path secret are arranged in
+(asithappenedinFigure2b),theresolutionofanodeisthe
+a subtree, and benefit from the tree invariant to do only
+public key at that node (when it is not blank). In the other
+one encryption to this subtree root. Hence it is sufficient to
+cases,theresolutionofanodeiscomputedbydescendingin
+encrypt ps to b , ps to v and ps to y (depicted as
+t 0 u 0 w 0
+the tree until encountering a non-blank node and collecting
+inFigure2b).Theciphertextsobtained(c□ inFigure3)and
+the public keys of all these non-blank nodes. This is how
+the newpublic keys are then sentto every groupparticipant
+we find in Figure 2d that the resolution of Y is the set of
+through the Delivery Service.
+public keys {x ,h }.
+0 0
+Removingparticipants. InFigure2c,BandGareremoved
+from the group. This action is performed using the concept Adding participants. In Figure 2e, B′ is added to the
+ofblanknode.ToremoveBandG,thecontentsoftheirleaf group. To perform this operation, we place the keypair of
+nodes are erased: their leaf nodes are now blank. Without B′ in the left-most blank leaf. If there were no such blank
+further action, this breaks the tree invariant: for example, leaf, we would extend the tree to the right, adding a new
+B knows t although it is not in its subtree anymore. As a root whose left child is the current tree and right child is
+1
+drasticsolutiontorestorethetreeinvariant,anynodewhose anall-blanktree,therebydoublingthenumberofleafnodes
+secretvalueisknownbyB(suchast )isalsoblanked,and and creating new blank leaves.
+1
+the same is done for G (the nodes that were blanked are This operation breaks the tree invariant, which specifies
+shown in bold in Figure 2c). that the private key of u 2 is known by (and only by) a 2 ,
+In Figure 2d, A issues a path update to create a commit b′ 1 , c 0 and d 0 . This is not true, because b′ 1 doesn’t know the
+secretknownneitherbyBnorG,therebyobtainingsecurity private key of u 2 which was generated by the path update
+after their removal. Blank nodes make this operation more in Figure 2d when b′ 1 was not in the tree at that time.
+complex than in Figure 2b, we now describe how a path To account for this fact, we keep track that b′ doesn’t
+1
+update is performed in this situation and introduce two new know the private key of u 2 : we say that b′ 1 is unmerged for
+concepts: filtered nodes and resolution. u 2 .Wedothisbookkeepingforallnodesaboveb′ 1 ,andnote
+that b′ is also unmerged for w . With this new concept, we
+Path update & filtered nodes. In Figure 2d, A issues a 1 2
+now reveal the complete formulation of the tree invariant:
+path update to obtain security back after the removal of B
+the secret key of each non-blank node is known by (and
+and G. It happens similarly as in Figure 2b and Figure 3,
+only by) the merged participants in the subtree rooted at
+withonedifferenceaboutthepathsecretofT.InFigure2b,
+that node.
+thepathsecretofTisencryptedtoB,butinFigure2d,Bis
+not here because it was removed in Figure 2c. There is no Path update & unmerged leaves. In Figure 2f, E issues a
+c as in Figure 3, hence computing a path secret for T does path update. It happens similarly to Figure 2b and Figure 3,
+b
+not achieve any purpose. The node T is therefore filtered: with one difference about the encryption of the path secret
+5
+
+PAGE 6
+cs n gc n psk gc n Strongforwardsecrecy. Therefore,thecommitsecretcan-
+not be used directly for our purposes. We now explain how
+toderivetheepochsecret(§2.1)fromthecommitsecret;the
+is n xtr xpd js n xtr xpd es n xpd is n+1 epoch secret has the guarantees we desire, such as strong
+forward secrecy: a compromise of a participant should not
+xpd xpd ... reveal past epoch secrets. To obtain strong forward secrecy,
+thecommitsecretisinjectedintoakeyschedulefromwhich
+gc the epoch secret is computed. The key schedule inherits all
+ws n sig gi n ct n securitypropertiesofthecommitsecret,andfurtherprovides
+n add-security and strong forward secrecy (independently of
+aenc(sk ,□) senc(□,□) the commit secret security) because previous secrets can be
+init
+erased upon key derivation. The key schedule is depicted in
+Figure 4: Cryptographic operations performed in the key Figure 4 and is explained below. It is structured as a loop,
+schedule of TreeKEM (§2.3) and Welcome (§2.4). xtr is we present the keys in the order they are derived, starting
+HKDF.Extract, xpd is HKDF.Expand, aenc is HPKE.Seal, with the epoch secret and ending with the epoch secret of
+senc is AEAD.Seal, sig is signature, is is init secret, cs is the next epoch.
+commit secret (see §2.2), gc is group context (appears 3
+times), js is joiner secret, psk is pre-shared key, es is epoch
+secret (the output of TreeKEM), ws is welcome secret. gi is
+Key schedule. The epoch secret (es in Figure 4) is the
+groupinfo(see§2.4),ctisconfirmationtag.In“...”arethe n
+main key established by TreeKEM, which is used to derive
+various keys derived from TreeKEM. Decryption functions
+the keys used by TreeDEM (§2.1). It is also used to derive
+of the Welcome process (§2.4) are left implicit to simplify
+thenextinitsecret,whichservestoinitializethenextepoch.
+the diagram.
+The init secret (is and is in Figure 4) is combined
+n n+1
+with the commit secret and the group context to obtain the
+joinersecret.Thegroupcontextisasummaryofthecurrent
+of W: it is encrypted to the resolution of u which is the
+2
+set {u ,b′}. Indeed, recall that the resolution of u is the group state, in particular, it contains (in hashed form) the
+2 1 2 initialization keys (see §2.4) with which the joiner secret is
+smallest set of keys to cover all participants in the subtree
+of U, and b′ is unmerged for u , meaning that it does not encrypted (see below and §2.4), this will be crucial in the
+1 2 securityproofin§5.3.Thejoiner secret(js inFigure4)is
+knowtheprivatekeyatu .Hence,theresolutionofu must n
+2 2
+encrypted with the initialization key of new participants (or
+include the public key of all its unmerged leaves.
+In Figure 2e, b′ was unmerged for w . Now, the path “joiners”) in the group. (We explain initialization keys in
+secret of w has b 1 een encrypted to b′, 2 hence b′ is not §2.4.) It is then combined with the pre-shared keys and the
+3 1 1 groupcontexttoobtaintheepochsecret(therebyclosingthe
+unmerged for w : a path update clears unmerged leaves on
+3
+keyschedule loop), and is also used to derive the welcome
+the updated nodes.
+secret. The welcome secret (ws in Figure 4) produces a
+n
+symmetric key that is used to encrypt the group context to
+2.3. The MLS Key Schedule
+new participants (as we will see in §2.4). Only a minimal
+amount of information is encrypted with the initialization
+Intuitively, the tree component of TreeKEM provides
+key; the information that is the same for every joiner (such
+post-compromise security (because secrets are refreshed
+as the group context) is encrypted symmetrically via the
+upon a path update), and remove security (because a new
+welcome secret.
+commit secret is derived after removing a participant). We
+leave a precise characterization of these security guarantees
+to §4, and continue our tour of TreeKEM, now describing
+the second component of TreeKEM: its key schedule. Add-only commits. Because the key schedule provides
+Recallthatthepathsecretabovetherootofthetreeisthe forward secrecy and add-security, when the set of group
+commit secret (§2.2). This secret has add-security, remove- proposals since the last epoch only contains participant
+security and post-compromise security. We can deduce this additions (hence contains no participant removal), it is
+fromthetreeinvariant:indeed,thecommitsecretisassecret not necessary to issue a path update to obtain a commit
+as the root node secret key, hence is known by (and only secret: instead, we can move to the next epoch using an
+by) participants in the tree, because after a path update the empty commit secret. Doing such “add-only commits” still
+root has no unmerged leaves. However, this ensures only a provides forward secrecy and add-security (because we do
+weak form of forward secrecy: for example, compromising a round of key schedule) and remove-security (because
+h inFigure2fwouldallowtheattackertodecryptthepath we only do that when there were no removals). However,
+0
+secret of w in Figure 2d (because it is encrypted with a this doesn’t provide post-compromise security (because no
+2
+keynowknownbytheattackerandwesupposetheattacker new randomness was injected in the key schedule), hence
+knowstheciphertexts),hencecomputethecommitsecretof shouldn’tbeusedwhenwewanttorecoverfromapotential
+this previous epoch. compromise.
+6
+
+PAGE 7
+2.4. Welcoming New Group Members 3.1. TreeKEM’s Tree in F∗
+Earlier work [21] modularizes MLS into three sub-
+Webrieflymentionedhownewparticipantsjoinagroup protocols (TreeSync, TreeKEM and TreeDEM) and proves
+in §2.2 and §2.3, we now describe in depth how it happens. that the TreeSync sub-protocol authenticates all of the
+These explanations support the description of our security TreeKEM state. Our specification is based on their work,
+proofs in §5. and in particular, we reuse their definition of trees to define
+TreeKEM trees as follows:
+Key packages. Because participants are added asyn-
+chronously, they publish key packages on the Delivery Ser- 1 type treekem leaf = {
+vice, which can be used by any group member to add them 2 public key: bytes; }
+3
+to an MLS group. A key package contains a leaf node that
+4 type treekem node = {
+is added to the tree (§2.2), and an initialization key (sk
+init 5 public key: bytes;
+in Figure 4) that is used to encrypt the joiner secret (js in
+n 6 unmerged leaves: list nat; }
+Figure 4), which bootstraps the key schedule. Notice that
+7
+as we have described things, two asymmetric encryptions 8 type treekem public =
+are required to add a new participant to the group: the 9 tree (option treekem leaf) (option treekem node)
+joinersecretisencryptedwiththeinitializationkey(in§2.3), 10
+and the path secret is encrypted with the leaf node key 11 type treekem private = path (bytes) (option bytes)
+(described in §2.2, but omitted from Figure 4). In reality,
+To each node is associated an HPKE keypair (§2.2);
+TreeKEM features an optimization and performs only one
+since we are implementing TreeKEM from the (local) point
+asymmetric encryption: both the joiner secret and the path
+of view of a participant, we know the public HPKE keys of
+secretareencryptedwiththeinitializationkey,inapackage
+all participants; but we only know the private keys on the
+called encrypted group secret – this is the aenc node in
+pathfromtheleaf(us)totheroot.Therefore,treenodesand
+Figure 4. Our TreeKEM API (§3.2) is designed to support
+leaves contain public keys only (lines 2 and 5), and internal
+this behavior, and the fact that the path secret is encrypted
+nodes additionally contain the list of unmerged leaves (line
+with the initialization key and not the leaf node key will
+6).Anadditionaldatastructure,namedtreekem private(line
+also need to be taken into account in the security proof in
+11) contains the private keys known to us. Because nodes
+§5.4.
+can be blank, we use the option type whose empty value
+Groupinfo. Tojoinamessaginggroup,itisnotsufficientto represent blank nodes, except for the private HPKE key for
+knowthegroupsecrets.Forexample,theTreeKEMprotocol leaf nodes (second argument of path line 11), because it
+(§2.2) requires each participant to know the tree of public points to our leaf that is non-blank.
+keys,andthekeyschedulerequireseachparticipanttoknow We give an example of code that decrypts the path
+thegroupcontextwhichsummarizesthegroupstate(gc in secret in Figure 5. This function searches for the least
+n
+Figure4).Thetreemaycomefromanuntrustedsource(e.g. common ancestor between the updater and us (e.g. node
+the Delivery Service), and the group context is packaged in UforparticipantCinFigure2b),findswhichciphertextwe
+thegroupinfo(gi inFigure4),whichalsocontainsavalue must decrypt depending on our position in the resolution
+n
+derived from the current epoch secret, called confirmation (e.g. second ciphertext for participant H in Figure 2d) and
+tag (ct in Figure 4). The group info is further signed by a find for which private key it was encrypted (e.g. private
+n
+group participant, this will be crucial in the security proofs key of u 2 for participant A in Figure 2f, but private key of
+for the Welcome process (§5.2). Although the group info b′ 1 for B’ because it is unmerged for U). We remark that
+contains in principle only public data, it is opportunistically this function exhibits many different behaviors depending
+encrypted with the welcome secret (ws in Figure 4, see on the participant executing it. This level of complexity,
+n
+§2.3). combined with the asymmetry between the sets of opera-
+tions performed by different participants, is exactly why a
+mechanized proof of security is, in our opinion, necessary
+3. An executable specification of TreeKEM totrustthatMLSprovidestheexpectedsecurityguarantees.
+3.2. TreeKEM API
+In §2 we have explained at a high-level the inner work-
+ings of the TreeKEM protocol. We now describe how we Users of TreeKEM are not expected to use low-level
+specify TreeKEM in F∗ [20], a dependently-typed func- functionsasshowninFigure5.Instead,theyuseahigh-level
+tional programming language. The specification is byte- API that handles modifications to both the public state (the
+level precise, passes the published test-vectors [1], and is treeofpublickeys)andtheprivatestate(ourpathofprivate
+used in a broader MLS specification that interoperates with keys from our leaf to the root). We structure our F∗ code to
+other MLS implementations. Although the explanations in implement a high-level API that only exposes functions to
+§2 are from a global viewpoint, we here specify the local process proposals and commits, and to generate commits.
+computations performed by one TreeKEM participant. Note that the group management functions (add, remove,
+7
+
+PAGE 8
+new commits happens in two steps. In the case of a full
+val decrypt path secret: commit, the first step, which handles the refresh of the tree
+my li:leaf index →upd li:leaf index {my li ̸=upd li} →
+and the commit secret, must itself be decomposed into two
+treekem public →treekem private →update path →
+sub-steps, below.
+bytes
+let rec decrypt path secret my li upd li t p priv p upd =
+val prepare create commit:
+if leaf index same side t my li upd li then (
+treekem state →entropy →
+// The update path and the path to our leaf are on the same
+result (pending create commit & pre path)
+// side of the tree. Recurse in that subtree.
+let (child, ) = get child sibling t upd li in
+val continue create commit:
+decrypt path secret child (next p priv) (next p upd)
+pending create commit →
+) else (
+added leaves:list nat →group context →
+// We are at the least common ancestor between us and the
+entropy →
+// updater. Obtain the path secret by decryption.
+result (pending create commit 2 & path & list bytes)
+let ciphertext list = get data p upd in
+let ( , sibling) = get child sibling t upd li in
+The first function generates fresh path secrets and outputs
+// Find our ciphertext by descending in the tree until we find
+// a non-blank node, and recover the index in the resolution. the new public keys (in pre path), for nodes along the
+let my index = find resolution index sibling my li in affected path. The user can feed these new public keys into
+let my ciphertext = ciphertext list[my index] in TreeSynctocomputethenewsignatureofourleafnode(that
+// Find the corresponding decryption key. This involves authenticates these new public keys) and compute a hash of
+//checkingwhetherwewereencryptedtoasanunmergedleaf. the new tree – as mentioned earlier, we treat TreeSync as
+let private key = find private key sibling (next p priv) in
+a signature primitive for the tree itself. This new tree hash
+// With all this data gathered, we can now decrypt.
+is used within the group context, which is itself used when
+decrypt private key my ciphertext
+encrypting path secrets: this is what the second function
+)
+does.Itreturnsapendingcommitcreationobject,anupdated
+path,andthepathsecretthatwillbesentovertothejoiners
+Figure 5: Implementation of the decrypt path secret func-
+along with their welcome package to invite them into the
+tion, simplified.
+group.
+update) are part of the TreeSync API and are orthogonal to 3.3. Execution model
+TreeKEM.WefocusonthefunctionsforTreeKEMcommits
+as they are the most interesting.
+One detail we omitted from our presentation (for con-
+Processing a commit. Each participant needs to process
+ciseness and readability) is that all of those specification-
+two kinds of commits: add-only commits (without path
+levelfunctionsareactuallyparametricoverthetypeofbytes,
+update),andfullcommits(§2.3).Forthisreason,weprocess
+and over operations that operate on such bytes. We do so
+commitsintwosteps:first,weupdateourstateandcompute efficiently using the type class mechanism of F∗.
+the commit secret, second, we perform a round of key
+Thisallowsustoinstantiatethespecificationeitherwith
+schedule. Furthermore, the first step comes in two flavors,
+concrete bytes (i.e. bitstrings) or with abstract symbolic
+one for each commit type.
+bytesthatareusedinDY∗[14]proofs(see§4.1).Theformer
+val prepare process full commit: allowsustoshowthatwearebyte-for-byteconformantwith
+treekem state →path update →group context → the MLS standard, by running our specification (via F∗’s
+result pending process commit extraction mechanism to OCaml) against test vectors and
+otherimplementationsforinteroperabilitytesting.Thelatter,
+val prepare process add only commit: naturally, allows us to conduct our proof of security, in the
+treekem state →
+next section.
+result pending process commit
+Furthermore,wepointoutthatourspecificationisfreeof
+val finalize process commit: anysideeffects:thereisnomemory(weneveruseapointer
+pending process commit → orreferencetype),meaningthefunctionstake,andreturn,a
+pre shared keys →group context → state, rather than modifying a global memory. Should some
+result (treekem state & bytes) IO action (or, effect) need to happen, it suffices for the
+function to return, e.g., a list of messages to be effectively
+These functions might fail, as indicated by the fact that
+sent on the network.
+return values are wrapped in a result. Reasons for failure
+Toexecuteourspecificationandtestitforinteroperabil-
+include failed decryptions, or malformed path updates – the
+ity,wewrotesomegluecodetoallowourpurespecification
+error case of result describes the nature of the error so that
+to interact with the effectful libraries such as networking.
+the client can act accordingly.
+For proofs, we embed our specification in the trace-based
+Creating acommit. Justlikeprocessingcommits,creating semantics of DY∗, as explained next.
+8
+
+PAGE 9
+4. A security theorem for TreeKEM an honest participant, in which case the signature predicate
+holds on the message, or that it was computed by the
+4.1. Background on DY∗ attacker, in which case they know the signature key, hence
+must have performed some compromise depicted by the
+DY∗ [14] is an F∗ [20] framework to state and prove signaturekeysecuritylabel.Signaturepredicateswillalsobe
+security properties of cryptographic protocols. DY∗ uses a aworkhorseforsecurityproofsinTreeKEM,mostlythrough
+symbolic trace-based runtime model, where various partic- the work of TreeSync [21].
+ipants can participate in a cryptographic protocol by call-
+ing cryptographic functions, generating random bytestrings, 4.2. Preliminaries
+storing local state, logging events that indicate progress
+in the protocol execution, and sending messages on the
+History of a group. In our security theorem, we consider
+network.
+everything from the viewpoint of a participant p belonging
+Threat model. DY∗ considers an active attacker that con- toaTreeKEMgroupG.Thisparticipanthasseenthegroup
+trols the network (hence can intercept, replay, or modify evolve over time, resulting in several epoch secrets being
+messages) and can dynamically compromise participants to established throughout the group’s lifetime. At each epoch,
+learn the content of their private state. participant p logs an event containing the information on
+their local group state at this epoch: the epoch secret K ,
+Cryptographic assumptions. DY∗ abstracts cryptographic n
+the group roster p(n),...,p(n) (containing p), the joiners
+functions using the Dolev-Yao (or symbolic) model [19]. 1 m
+Thesymbolicmodeltreatscryptographicfunctionsasbeing j( 1 n),...,j( q n) (contained in the group roster), the tree T n
+perfect: for example, when sending a ciphertext on the (whose leaves form the group roster), and whether the
+network, the attacker learns nothing about the associated commit is add-only. For example in Figure 2, assuming we
+plaintext unless the attacker knows the corresponding de- startatepoch0,wehavep(0) =a andp(1) =a ,however,
+1 0 1 1
+cryption key (e.g. by compromising a participant), in which p(0) = p(1) = p(2) = e and p(3) = e . Participants that
+5 5 5 0 5 1
+case they also learn the content of the plaintext. didn’t update since they joined have a special tag in T .
+n
+Security theorems. DY∗ users can express security prop- When that is the case, we write stale n (p′); for example in
+erties as reachability properties, meaning that all traces Figure 2f, p( 2 3) = b′ 1 and stale n (p( 2 3)). Naturally, joiners of
+reachable through protocol execution satisfy some security this epoch didn’t update since they joined, so stale (j(n)).
+n i
+property (specific to each protocol). An example of trace If we did not create the group, we have been invited in it
+property that encodes confidentiality would be: if a partic- by participant p at epoch n . Furthermore participant p
+inv 0
+ipant finishes the key exchange protocol and the attacker records the time at which they verify signatures: we write
+knows the exchanged key, then the attacker must have T(p(n))thetimeofverificationofthesignatureofleafnode
+i
+compromised one of the participants involved in the key of p(n), and T(j(n)) the time of verification of the signature
+exchange. of k i ey package i of j(n).
+i
+Security proofs. DY∗ relies on its user to provide a
+State storage. We consider a fine-grained model, where
+traceinvariant,thenprovethateachprotocolsteppreserves
+different parts of the state may be compromised indepen-
+the invariant (hence any reachable trace satisfies the trace
+dently. For instance, to account for a deployment that may
+invariant) and prove that the trace invariant implies the
+usehigher-securitystorage(e.g.HSMs)tostore(long-term)
+desired security properties. Note that the trace invariants
+signature keys, we can let the private node keys stored by
+are not trusted, they are only a proof technique to prove
+a participant be compromised, without necessarily compro-
+properties on all reachable traces. To define the trace in-
+mising the signature keys. Furthermore, we consider that
+variant, DY∗ provides two tools. The first tool, related to
+different signature keys can themselves be compromised
+confidentiality, are security labels, which encode an over-
+independently,justlikeinitializationkeysandepochsecrets.
+approximation of the compromises for an attacker to know
+However, we consider that all nodes private keys are com-
+some given bytestring. Hence, if the attacker knows some
+promisedtogether,sincecompromisingonerevealsallnode
+bytestring (e.g. the private signature key of participant p)
+private keys on the path from the compromised participant
+then this bytestring’s label ensures that the attacker must
+to the root.
+havecompromisedsomeparticularstate(e.g.thestatewhere
+participantpstorestheirprivatesignaturekeys).Somelabels State identifiers. We write K @p to identify the state of
+n
+are more secure than others, in which case we say the less participant p that stores the epoch secret K of group G at
+n
+secure label flows to the more secure one (which we note epoch n. We write Sig(p(n)) to identify the state that stores
+l 1 ≳ l 2 ). Security labels will be the main workhorse of the signature key of p(n i ). We write Init(j(n)) to identify
+security proofs for TreeKEM (§5). The second tool, related the state that stores the i initialization key of i j(n). We write
+to authenticity, are cryptographic predicates: for example, i
+Node(p(n)) to identify the state that stores the node keys of
+every participant will only sign messages that satisfy the i
+(protocol-specific) signature predicate. When a signature
+p(n) forthecurrentversionofp(n).ForexampleinFigure2,
+i i
+verifies, we can then deduce that it was either computed by p(2) = e hence Node(p(2)) corresponds to the node keys
+5 0 5
+9
+
+PAGE 10
+of{e ,x ,y ,w ,w ,w },whileNode(p(3))correspondsto (6) Att (K ) and ∃i.Compromise (Sig(p(n))) and
+0 0 0 0 1 2 5 t n−1 T(p(n)) i
+the node keys of {e 1 ,x 1 ,y 1 ,w 3 }. Att t (psks n ): the attacker knows th i e previous epoch
+Notations. We write Att (b) when the attacker knows the secret, and has compromised the signature key of a
+t
+bytestring b at time t. We write Compromise (S) when the participant of the current group p(n), namely the one
+t i
+attacker has compromised the state identified by S before that signs their leaf node is the tree. In that case, the
+time t. compromise must have happened before we checked
+their leaf node signature. This is a variant of case (5)
+4.3. Security properties where the attacker is active.
+(7) Att (K ) and ∃i.Compromise (Init(p(n))) and
+t n−1 t i
+Wenowdescribethesecuritypropertieswehaveproved stale (p(n)) and Att (psks ): the attacker knows the
+on TreeKEM. We state confidentiality as a trace property: n i t n
+previous epoch secret, and has compromised before t
+if the attacker knows some epoch secret, then some set of the initialization keys stored by a stale participant p(n)
+states must have been compromised at some time in the i
+of the current group. This possibility of compromise
+past. In turn, we will see in §4.4 that this trace property
+exists because the path secret is encrypted using the
+implies the desired security guarantees of TreeKEM, such
+initialization keys of joiners. Note that p might not
+as add-security, remove-security, forward secrecy and post-
+know what precise initialization key was compromised
+compromise security (see §2.1). For the purpose of stating
+– it might be that p joined after p(n), meaning p never
+securitygoalsinthispaper,weassumethatsomestatestores i
+theepochsecret,butinourcode,thissecretisneveractually saw the key package of p( i n). However, p knows it
+stored since it would break forward secrecy of TreeDEM. is an initialization key of p(n) that got compromised
+i
+We consider three scenarios: in the first scenario, we (i.e., p knows i).
+consider a participant in a group that has moved into a new
+Confidentiality theorem when joining. Suppose a par-
+epoch,inthesecondscenario,weconsideraparticipantthat
+ticipant p joined a group G at epoch n with epoch secret
+has just joined a group, in the third scenario, we consider
+a participant that has just created a group. These three K n , participants p( i n), PSKs psks n . If Att t (K n ), one of the
+scenarios cover all that may happen within an MLS group; following cases hold:
+indeed, advancing an epoch in the first scenario is done via (8) Compromise (Sig(p )): the attacker has com-
+T(pinv) inv
+a commit that may contain any number of add, remove, or promised the signature key of the participant that in-
+other operations, and optionally a path update. These three vited p. In that case, the signature must have happened
+scenarios come with different security guarantees. before we checked the signature in the GroupInfo part
+of the Welcome message (as explained in §2.4).
+Confidentiality theorem for new epochs. Suppose a par-
+(9) Participantp (whoinvitedparticipantpinthegroup
+ticipant p is in a group G at epoch n with epoch secret K , inv
+n G) belongs to a group G at epoch n with epoch secret
+participants p(n), PSKs psks and joiners j(n). If Att (K ),
+i n i t n K , participants p(n), PSKs psks and joiners that are
+then one of the following cases hold: n i n
+(1) ∃i.Compromise (K @p(n)): the attacker has compro- a subset of {p i (n) | stale n (p( i n))}. In that scenario, we
+t n i have all the hypotheses required to apply this theorem
+mised before t the state containing the epoch secret of
+inductively on p .
+one of the participants p(n) in the current group. inv
+i
+(2) ∃i.Compromise (Init(j(n))) and Att (psks ): the at- Confidentiality theorem when creating. Suppose a par-
+t i t n
+tacker has compromised before t the initialization key ticipant p created a group G (hence at epoch 0) with epoch
+used to invite the joiner j(n) into the group at epoch n. key K 0 . If Att t (K 0 ), then:
+i
+(3) ∃ at i t . a C c o k m er p h ro a m s c is o e m T( p j( ir n o ) m ) (S is i e g d (j t ( i h n e ))) sig a n n a d tur A e tt k t e (p y sk o s f n o ) n : e th o e f (10) b C e o fo m re pr t om th i e se s t t ( a K te 0 c @ on p t ) a : in th in e g a t t h ta e c e k p e o r c h h a s s ec c r o e m t o p f ro p m ar is ti e c d -
+the joiners j(n) in the group at epoch n, namely the ipant p (the only participant in the group).
+i
+one that signed their initialization key. In that case, the Maliciousparticipants. InpreviousMLSdrafts,TreeKEM
+compromise must have happened before we checked was vulnerable to attacks wherein a malicious participant
+their key package signature. This is a variant of case could break the tree invariant and compute the epoch se-
+(2) where the attacker is active. crets after they are removed from the tree, hence breaking
+(4) Att t (K n−1 ) and add-only n and Att t (psks n ): the at- remove-security (e.g. “double-join attack” in [13, Fig 5 and
+tackerknowsthepreviousepochsecret,andthecommit Fig8],or“attackontree-signing”in[6,Fig8]).InDY∗,we
+thatledtoepochnisanadd-onlycommit(asexplained modelmaliciousparticipantsasparticipantswhosecomplete
+in §2.3). state is fully compromised: this has the same effect as if
+(5) Att t (K n−1 ) and ∃i.Compromise t (Node(p( i n))) and theyweretheattacker.Henceoursecuritytheoremaccounts
+Att t (psks n ): the attacker knows the previous epoch for malicious participants in its threat model, and we will
+secret, and has compromised before t the node keys see in §4.4 that it entails remove-security, making such
+stored by a participant p(n) of the current group after attacks impossible. Indeed, the “double-join attack” [13,
+i
+they last issued a path update. Fig 5] was since fixed by introducing the concept of blank
+10
+
+PAGE 11
+nodes, and the “attack on tree-signing” [6, Fig 8] was since ago if the signature key is not rotated. This highlights
+fixedbyintroducingtheconceptofparenthashandformally that signature keys must be rotated regularly (so that it
+analyzed as part of the TreeSync sub-protocol [21]. is changed before the attacker has the chance to forge a
+signature with it and perform an active attack) or stored
+4.4. Security corollaries securely e.g. in a hardware security module (HSM): this
+is recommended by the MLS architecture document. In
+cases (2) and (7), we note that to provide post-compromise
+Using the TreeKEM security theorem in §4.3, we can
+security,theinitializationkeymust not have beengenerated
+now prove as corollaries the desired TreeKEM security
+toolongago,otherwisethiscompromisemayhavehappened
+guaranteesstatedin§2.1.Whatfollowsismanualreasoning:
+far in the past. This highlights that key packages (hence
+we are auditing our theorem statement to make sure it does
+initialization keys) must expire: adding a key package that
+indeed provide the security guarantees we want.
+wascreatedtoolongagocouldunderminepost-compromise
+Add-security, remove-security. The security theorem im-
+security.WehavecommunicatedtotheMLSworkinggroup
+plies that necessarily, one of the participants in the current
+that this recommendation should be added to the MLS
+epoch must be compromised. Indeed, each of the cases (1)
+architecture document. The last case left to consider is (9),
+to (3), (5) to (8) and (10) implies the compromise of a on which we do an induction on p .
+participant of the current group, because j(n) and p are inv
+i inv Lack of epoch authentication in Welcome. Note that
+participants of the current group. By induction, (4) implies
+in case (9) our theorem do not give the guarantee to the
+a compromise of a participant in the group at epoch n−1
+invitee (p) that that the inviter (p ) did invite them at this
+which is a subset of participants at epoch n because the inv
+epoch. Indeed, in the presence of an active attacker, it may
+commitisadd-only.Incase(9),byinstantiatingthetheorem
+be possible that although the invitee successfully joined the
+inductively on p we deduce that a compromise must
+inv
+group at epoch n, they were actually invited to join the
+have happened in the current group roster. This implies that
+group in a previous epoch (say, n−1). As discussed above,
+if no group participant at epoch n is compromised, then
+this cannot be used to affect the confidentiality guarantees
+compromising any participant that was removed or that is
+of TreeKEM, hence is not a practical attack. We describe
+notyetaddedprovidesnousefulknowledgetotheattacker.
+this more thoroughly in §A.
+Forward secrecy. The security property implies that some
+compromise of keys must have happened in the past, or not
+5. Proof methodology
+too far in the future. Indeed, in the case of compromise
+of a signature (cases (3), (6) and (8)), the compromise must
+havehappenedbeforewecheckedthesignature,henceinthe We now discuss the methodology we used to prove the
+past.Incases(1)and(10),becauseparticipantsdeleteepoch securitytheoremin§4.3.Atahighlevel,wewillusesecrecy
+secrets when moving to the next epoch, the compromise labels to prove that we only encrypt messages that are less
+must happen before group participants move to the next secret than the key they are encrypted with, we will prove
+epoch. Incase(2),wenoticethatforward-secrecyrelieson how secrecy labels evolve throughout the key derivations,
+initialization keys being deleted quickly after processing a and we will rely on the signature invariant when needed.
+Welcome message. Not doing this undermines the forward- We describe our security proofs in the order keys are
+secrecyguaranteesofMLS.Wehavefoundthiswasnotpart usedinTreeKEM:westartwithproofsoninitializationkeys
+of the MLS deployment recommendations by the architec- (§5.1),thenmoveonhowtheyareusedtoencryptthejoiner
+ture document of MLS and notified the working group. In secret in the Welcome message (§5.2), then see how the
+cases (4), (5) and (7), we do an induction on epoch n−1, key schedule produces a sequence of forward secret epoch
+and in case (9) we do an induction on participant p . secrets (§5.3), and finally dive into the tree invariant proofs
+inv
+(§5.4).
+Post-compromise security. The security theorem implies
+that a compromise cannot happen too far in the past. We
+can do a case analysis again. In cases (1) and (10) the 5.1. Security lemmas for initialization keys
+compromise must have happened after p(n) has computed
+i
+the epoch secret K n . Similarly, in case (5) the compromise The first key used by a participant in a group is its
+musthavehappenedafterp(n) haslastissuedapathupdate. initializationkey(sk inFigure4),toprocesstheWelcome
+i init
+In case (4), the group cannot heal from a compromise message (§2.4). In this section, we present security lemmas
+(unless psks is unknown to the attacker), hence we rely forinitializationkeysthatwillbecrucialinproofsassociated
+n
+the healing of the previous epoch by doing an induction withtheWelcomemessage(in§5.2)andwiththekeysched-
+on epoch n−1. This means that if the group keeps doing ule (in §5.3). As with the rest of the proofs, we describe
+add-only commits, there is no opportunity to recover from security properties from the viewpoint of a participant, at a
+compromise (and implementations might need to adopt a specific time point. In what follows, a crucial design choice
+policy encouraging updates to avoid this situation). In the is that we store each key in a separate state, which allows
+cases of signature key compromise (cases (3), (6) and (8)) us to talk about the compromise of a particular key, instead
+noticethatsuchacompromisemighthavehappenedawhile of the compromise of the whole state of a participant.
+11
+
+PAGE 12
+Lemma for a participant’s own key. Each participant gc (which includes the epoch number, group identifier, a
+n
+generatesitsinitializationkeyfromfreshrandomness,stores hash of the tree, etc), and with an epoch secret es that
+n
+it in its private state and only uses it to decrypt Welcome produces the confirmation tag ct .
+n
+messages. As such, we expect the only way for the attacker
+Verifying GroupInfo. When the joiner verifies the
+toobtainthekeyistocompromisetheparticipant’sstate.We
+GroupInfo signature, they deduce that either the attacker
+formallyprovethisfact,byshowinganyreachabletracefalls
+knew the inviter signature key before they have verified the
+into two categories: (1) either the initialization private key
+GroupInfo(andtheattackerisdoinganactiveattack),orthat
+is currently unknown to the attacker (2) or the attacker has
+the inviter is in a group with the same group context and
+previously compromised the state storing the initialization
+with an epoch secret that produces the same confirmation
+private key.
+tag.Finally,bycollisionresistanceforthehashfunction,we
+Lemma for others’ initialization keys. Each participant deduce that we must have the same epoch secret. In doing
+receivestheinitializationpublickeyofeachotherparticipant so, we have proved the cases (8) and (9) of the security
+inakeypackage(describedin§2.4).Topreventtheattacker theorem in §4.3.
+from tampering with keys, the key package is signed by the
+corresponding participant. We expect that if the signature 5.3. Security lemmas for the key schedule
+was computed by a honest participant, they have honestly
+computedtheirinitializationkey,otherwisetheattackermust
+The key schedule (Figure 4) derives a stream of secrets
+have compromised the signature key before we verified the
+through extraction (xtr)and expansion (xpd). Weprove two
+key package. We formally prove this fact, by showing any
+thingsaboutthekeyschedule.First,weprovethattheepoch
+reachable trace falls into three categories: (1) (2) as in the
+secret(es )combinesthesecurityofthecommitsecret(cs )
+paragraph above or (3) the attacker has compromised the n n
+andthepreviousepochsecret(es ).Second,weprovethat
+other participant’s signature key before we verified the key n−1
+thejoinersecretislesssecretthantheprivatekeyofjoiners
+package.
+(sk ). The first goal is easily proved using the semantics
+init
+Usingsecuritylabels. Weencodethetracepropertiesabove ofextractioninDY∗,wethereforefocusonthejoinersecret.
+using security labels, namely we prove that if we have ver-
+Labeling of the joiner secret. The joiner secret can be
+ified a key package, then Init(j(n))⊔Sig(j(n)) ≳ L(sk )
+where j( i n) is the joiner we are c i onsidering i and L(sk ini i t n ) it is n tr o iv t, ia t l h ly e a c t o t m ac p k r e o r m c i a s n ed ga if in th a e cc a e t s ta s c t k o er js k n n i o f w th s e i y s n co an m d pr c o s m n . is I e f
+thelabeloftheinitializationprivatekeyintheirkeypackage. theinitializationkeysk ofajoineratepochn.Thejoiner
+init
+Thislabelingpropertyallowsustoprovethatanyreachable secret js is thus the first secret in the key schedule that
+n
+trace falls into one of the three categories mentioned above, is revealed to the attacker when they compromise sk .
+init
+and is composable with rest of the security proofs. This fact means that the joiner secret is less secret than the
+secret that directly precedes it in the key schedule, hence
+5.2. Security lemmas for Welcome thatinterestingproofsmusthappenintheexpansionwiththe
+groupcontextthatproducedjs .InDY∗ thesecuritylabelof
+n
+the output of KDF.expand may be weaker than the label of
+The Welcome message consists of two parts: first, the
+itsinput,anditmaydependonadditionalinputsoftheKDF
+GroupInfo object (gi in Figure 4) is signed, and the joiner
+n
+(here,thegroupcontext).Indeed,thegroupcontextcontains
+secret (js in Figure 4) is encrypted with the initialization
+n
+the transcript hash, which contains the proposals adding the
+keysofjoiners(sk inFigure4).Wenowseethesecurity
+init
+key packages of joiners in the group. This allows us to say
+proofs related to these two cryptographic computations.
+thatthelabelofthejoinersecretisweakenedusingthelabel
+Encrypting the joiner secret. To prove that it is safe of the joiners’ initialization keys. More precisely, we prove
+to encrypt the joiner secret with the initialization keys that L(js ) ≳ Init(j(n))⊔Sig(j(n)) which is then used in
+of joiners, we must prove that the joiner secret is less n i i
+§5.2 to prove that it is safe to encrypt the joiner secret to
+secret than the initialization private key (as explained in
+each new joiner.
+§4.1). We prove this by combining the theorem on secrecy
+Note that the use of group context in the key derivation
+label of initialization keys in §5.1 and the theorem on
+hereisimportantforsecurity,withoutititwouldbepossible
+key schedule that we will prove in §5.3. Formally, we
+that two group participants who don’t agree on the key
+prove that L(js ) ≳ L(sk ) by transitivity using the
+n init packages added at this epoch still compute the same joiner
+chain L(js n ) ≳ Init(j( i n))⊔Sig(j( i n)) (proved in §5.3) and secret, which would break the security theorem.
+Init(j(n))⊔Sig(j(n))≳L(sk ) (proved in §5.1).
+i i init
+Signing GroupInfo. We use the epoch secret (es in 5.4. Formally proving the tree invariant
+n
+Figure 4) to derive the confirmation tag (ct in Figure 4)
+n
+and combine it with the group context (gc in Figure 4) The tree invariant follows the same principle as earlier
+n
+to form the GroupInfo object (gi in Figure 4). Further, (§5.1):first,weconsiderthesecurityinvariantfromourown
+n
+the GroupInfo is signed by the inviter. In doing so, the point of view, then when receiving an update from another
+inviter attests that they are in a group with group context participant, we consider the possibility that their signature
+12
+
+PAGE 13
+keymighthavebeencompromised.Toestablishoursecurity with one signature in their leaf node.
+lemma, we rely on a tree invariant. The authentication covers the entire subtree, that is, the
+new node public keys, and all of their intended recipients,
+Thetreeinvariant. Thetreeinvariantcapturesthesecurity
+as they appear in the tree invariant. Using the semantics of
+guaranteesofferedbyTreeKEM;weshowthatthisinvariant
+DY∗, we know that if the participant is honest, then the
+is preserved through every step of the protocol, which
+tree invariant is guaranteed by the signature (there was no
+ultimately allows us to conclude that the cryptographic
+compromise). If there is a compromise, it must be the case
+tree state of TreeKEM (§2.2) is secure. The tree invariant
+that the signature key was compromised before we checked
+is a disjunction that captures the two points of view we
+the signature. This is one of the cases accounted for by the
+mentioned earlier, and states that if the private key of a
+tree invariant, meaning that the invariant is re-established.
+(possibly internal) node n is known by the attacker, then
+either Compromise (Node(p)) or Compromise (Sig(p)),
+t T(p) 6. Discussion
+where p belongs to the subtree rooted at n and is not an
+unmerged leaf for n. The former disjunct captures the fact
+Wehavepresentedamachine-checkedsecurityprooffor
+that a participant may simply have been compromised; the
+a bit-level precise, executable, interoperable specification of
+latter disjunct captures that we may have been the victim
+TreeKEM. The specification is written in 1.5k lines of F∗
+of an active attack, in which the attacker injects a mali-
+code, and our security proofs are in 4k lines of F∗, relying
+cious path update that is signed with another participant’s
+on the DY∗ framework. The full development is available
+compromised signature key. Note that the T(p) in subscript
+at the URL below, along with instructions for running the
+indicates a temporal relation: the signature key must have
+code and verifying the proofs:
+been compromised before we verified that participant’s leaf
+https://github.com/Inria-Prosecco/treekem-artifact
+node.
+Concretely, we prove this invariant by relying on DY∗ Benefits of Machine-Checked Proofs. MLS is a large
+secrecy labels, described below. protocolandevenitsTreeKEMcomponentisquitecomplex.
+Itmaintainsadynamictreedatastructurewithsomeunusual
+Lemma on the sender side. We use labels to track
+features such as unoccupied leaves, blank nodes, filtered
+the usage of path secrets throughout the specification of
+nodes, unmerged leaves, etc. It defines novel cryptographic
+a commit. Every base cryptographic operation in DY∗ is
+mechanismsforencapsulatingsecretstotreesofpublickeys.
+annotated with labels in its type; this means that every
+It defines new serialization formats for trees, paths, and
+usage of the path secret forces us to reason about the set of
+various messages and cryptographic inputs.
+compromises by the attacker that would lead to knowledge
+Ensuring that a formal specification of TreeKEM cap-
+of this path secret.
+tures all these notions correctly can be hard and is greatly
+The label of each refreshed path secret (i.e., the output aided by being able to execute and test the specification.
+of the KDF) flows towards all of the sub nodes secrets. Furthermore, when proving properties about the protocol,
+Looking back at Figure 2b, performing a KDF expansion it is easy to forget various corner cases, but a machine-
+with the path secret of t 1 produces the path secret of u 1 . checked proof keeps us honest and ensures that we account
+Because the label of u 1 covers participants a 1 ,b 0 ,c 0 ,d 0 , it for anything that may arise in an execution of TreeKEM.
+isweakerthanthelabeloft 1 thatcoversparticipantsa 1 and Indeed, we believe that a pen-and-paper proof for the full
+b 0 only. The path secret of u 1 is encrypted with v 0 ’s node TreeKEM protocol at this level of detail would be hard to
+secret – this is a safe thing to do, because the label of u 1 is write and even harder to check for correctness.
+weaker than the label of v (that covers c and d ), which
+0 0 0
+is imposed by encryption in DY∗: the label of the key must Symbolic vs. Computational Proofs. Our proofs in this
+paper rely on a symbolic (i.e. Dolev-Yao) model of cryp-
+be stronger than the label of the message.
+tography, where the public key encryption is treated as a
+Atthisstage,wehavealmostobtainedthetreeinvariant:
+perfect black-box that can only be broken if the attacker
+if the attacker knows the path secret of u , it must have
+1 knowstheprivatekey.Incontrast,theclassicpen-and-paper
+compromised a participant p that is one of a , b , c or d .
+1 0 0 0 proofs of TreeKEM in prior work [3], [4], [6] operate in a
+Becausewechosethelabelofpathsecretstobethesameas
+computationalmodelofcryptography,wherepublickeyen-
+that of node secrets, and combined with the tree invariant
+cryption is modeled in terms of a probabilistic polynomial-
+that previously held upon entering the function, it means
+time adversary. Both symbolic and computational models
+that Compromise (Node(p)) or Compromise (Sig(p)),
+t T(p) have their strengths and weaknesses [8]. Computational
+and the invariant is re-established.
+cryptographic assumptions are more precise, but symbolic
+Lemma on the receiver side. We reuse an earlier for- models yield better proof tools and hence can handle more
+malization (and proofs) of TreeSync [21], in order to protocol details and finer-grained key compromise.
+use TreeSync as a signature mechanism specialized for Forexample,letuscompareourworktothemostrecent
+TreeKEM. This follows the same logic as with signing the pen-and-paper proof for TreeKEM [6]. This paper proves
+initialization key, except this time the committer authenti- a computational security theorem for an abstract model of
+cateseverysubtreerootedatnodestheyhavemodified(from TreeKEM draft 12, expressed as pseudocode. Like us, they
+their leaf up to the root), using TreeSync to do it efficiently consideranactiveattackerthatcandynamicallycompromise
+13
+
+PAGE 14
+participants, and consider malicious participants. However, FutureWork. Twonaturaldirectionsforfutureworkwould
+theyonlyallowcoarse-grainedcompromise:theattackercan be to develop a machine-checked proof of TreeDEM (and
+only compromise all keys held by a participant, unlike our hencecompletetheverificationeffortfortheMLSstandard)
+work where the attacker can compromise the node secret and to investigate the post-quantum security of TreeKEM.
+keys stored by a participant without compromising their
+signature keys. Another difference is that they consider bad Acknowledgments
+randomness as part of the threat model, which we do not.
+WealsonotethatinMLSdraft12,thereisnodistinction We are indebted to Franziskus Kiefer and Raphael
+between the initialization key and the leaf node key. This Robert for proofreading a draft of this paper and providing
+hurts forward-secrecy in their theorem since new partici- precious feedback.
+pants need to hold on to this medium-term key even after This work received funding from the French Govern-
+joiningagroup.TheTreeKEMdesigninthepublishedMLS ment, managed by the ANR under grant agreements ANR-
+standard was updated to separate the initialization key and 22-PECY-0006 and ANR-19-P3IA-0001.
+leaf node key, which yields a stronger theorem in our case.
+The main proof in [6] shows that the attacker cannot References
+distinguish the epoch secret from fresh randomness when a
+safety predicate (i.e. a trace invariant) holds. Much of the [1] MLS test vectors. https://github.com/mlswg/mls-implementations/
+high-level logic in their proof and ours is the same; the blob/main/test-vectors.md.
+main differences arise in the different treatment of public- [2] Signalspecifications,2016. https://signal.org/docs/.
+key encryption, in our handling of low-level cryptographic [3] Joe¨lAlwen,SandroCoretti,YevgeniyDodis,andYiannisTselekou-
+formats (ignored in their proofs), and in our proofs being nis. SecurityanalysisandimprovementsfortheIETFMLSstandard
+forgroupmessaging. InDanieleMicciancioandThomasRistenpart,
+oriented towards being machine checkable.
+editors, Advances in Cryptology - CRYPTO 2020 - 40th Annual
+Guidance for Erasing Keys, Removing Members. Our InternationalCryptologyConference,CRYPTO2020,SantaBarbara,
+CA,USA,August17-21,2020,Proceedings,PartI,volume12170of
+security theorem clearly specifies which key compromises
+LectureNotesinComputerScience,pages248–277.Springer,2020.
+could affect the confidentiality guarantees of TreeKEM.
+[4] Joe¨lAlwen,SandroCoretti,YevgeniyDodis,andYiannisTselekou-
+This provides useful guidance for MLS implementations
+nis. Modular design of secure group messaging protocols and the
+and deployments. For example, initialization keys must be security of MLS. In Yongdae Kim, Jong Kim, Giovanni Vigna,
+deleted after a Welcome message is decrypted or when and Elaine Shi, editors, CCS ’21: 2021 ACM SIGSAC Conference
+onComputerandCommunicationsSecurity,VirtualEvent,Republic
+they expire, and this is important for both forward and
+ofKorea,November15-19,2021,pages1463–1483.ACM,2021.
+post-compromise security. Our theorem also includes cases
+[5] Joe¨l Alwen, Sandro Coretti, Daniel Jost, and Marta Mularczyk.
+for participants that have joined the group but not yet
+Continuous group key agreement with active security. In Theory of
+updated their encryption keys. Such stale participants affect Cryptography: 18th International Conference, TCC 2020, Durham,
+the security of the whole group. They could be identified NC, USA, November 16–19, 2020, Proceedings, Part II 18, pages
+and potentially removed from the group after a period of 261–290.Springer,2020.
+inactivity. We have proposed to add these recommendations [6] Joe¨lAlwen,DanielJost,andMartaMularczyk.Ontheinsidersecurity
+to the MLS architecture document. ofMLS. CryptologyePrintArchive,Paper2020/1327,2020.
+[7] David Balba´s, Daniel Collins, and Phillip Gajland. Whatsupp with
+Experimenting with Protocol Improvements. TreeKEM senderkeys?analysis,improvementsandsecurityproofs.InAdvances
+is designed with many defense-in-depth mechanisms; some inCryptology–ASIACRYPT2023:29thInternationalConferenceon
+were needed for our proofs (e.g. the use of group context), theTheoryandApplicationofCryptologyandInformationSecurity,
+Guangzhou,China,December4–8,2023,Proceedings,PartV,page
+and some made our proofs simpler (e.g. the authentication
+307–341.Springer-Verlag,2023.
+of subtrees in TreeSync). Others we did not need (e.g. the
+[8] ManuelBarbosa,GillesBarthe,KarthikBhargavan,BrunoBlanchet,
+use of group context in HPKE encryption), and this may
+Cas Cremers, Kevin Liao, and Bryan Parno. Sok: Computer-aided
+indicate potential future optimizations in the protocol. cryptography. In 42nd IEEE Symposium on Security and Privacy,
+Some changes to the protocol would have simplified SP2021,SanFrancisco,CA,USA,24-27May2021,pages777–795.
+IEEE,2021.
+our proofs. For example, the transcript hash input format is
+defined as a concatenation, which makes it harder to prove [9] RichardBarnes,BenjaminBeurdouche,RaphaelRobert,JonMillican,
+Emad Omara, and Katriel Cohn-Gordon. The Messaging Layer
+thatitisunambiguous.Usingalength-prefixedformatwould
+Security(MLS)Protocol. RFC9420,July2023.
+have simplified this proof. As another example, our proofs
+[10] RichardBarnes,KarthikeyanBhargavan,BenjaminLipp,andChristo-
+for path secret derivation would have been much simpler if
+pherA.Wood. HybridPublicKeyEncryption. RFC9180,February
+the sibling tree hash were used in the key derivation. 2022.
+Our executable specification and machine-checked [11] BenjaminBeurdouche,EricRescorla,EmadOmara,SrinivasInguva,
+proofsprovideagoodbasisforexperimentingwithdifferent and Alan Duric. The Messaging Layer Security (MLS) Architec-
+optimizationsandvariationsofMLS.Runningthespecifica- ture. Internet-Draft draft-ietf-mls-architecture-15, Internet Engineer-
+ingTaskForce,August2024. WorkinProgress.
+tionmakesiteasytocomparetheimpactofoptimizationson
+[12] Karthikeyan Bhargavan, Richard Barnes, and Eric Rescorla.
+message size and computation time. Rerunning the proofs
+TreeKEM:AsynchronousDecentralizedKeyManagementforLarge
+ensures that the new protocol satisfies the same properties
+DynamicGroupsAprotocolproposalforMessagingLayerSecurity
+as MLS, and maybe provides new security guarantees. (MLS). Researchreport,InriaParis,May2018.
+14
+
+PAGE 15
+[13] KarthikeyanBhargavan,BenjaminBeurdouche,andPrasadNaldurg. joiner secret of epoch n+2 and path secret of node
+FormalModelsandVerifiedProtocolsforGroupMessaging:Attacks X).
+and Proofs for IETF MLS. Research report, Inria Paris, December • The attacker re-encrypts the group secrets with the
+2019.
+initialization key of E.
+[14] KarthikeyanBhargavan,AbhishekBichhawat,QuocHuyDo,Pedram • TheattackersendsaWelcomemessagetoE,containing
+Hosseyni, Ralf Ku¨sters, Guido Schmitz, and Tim Wu¨rtele. DY*:
+this re-encrypted group secrets and signed GroupInfo
+A modular symbolic verification framework for executable crypto-
+graphic protocol code. In IEEE European Symposium on Security for epoch n+2 (obtained when inviting F).
+andPrivacy(EuroS&P),pages523–542.IEEE,2021. • E successfully joins at epoch n + 2 although it was
+[15] Chris Brzuska, Eric Cornelissen, and Konrad Kohbrok. Security invited at epoch n+1.
+analysis of the mls key derivation. In 2022 IEEE Symposium on This works by compromising an initialization key, but
+SecurityandPrivacy(SP),pages2535–2553,2022.
+it works the same if F is a malicious participant (recall that
+[16] KatrielCohn-Gordon,CasCremers,LukeGarratt,JonMillican,and we model malicious participants as participants whose state
+Kevin Milner. On ends-to-ends encryption: Asynchronous group
+is fully compromised, see last paragraph of §4.3).
+messaging with strong security guarantees. In Proceedings of the
+2018 ACM SIGSAC Conference on Computer and Communications As explained in §4.4, this cannot be used to attack
+Security, page 1802–1819. Association for Computing Machinery, confidentiality guarantees of TreeKEM.
+2018.
+[17] CasCremers,BrittaHale,andKonradKohbrok. Thecomplexitiesof
+healinginsecuregroupmessaging:Whycross-groupeffectsmatter.
+In Michael D. Bailey and Rachel Greenstadt, editors, 30th USENIX
+Security Symposium, USENIX Security 2021, August 11-13, 2021,
+pages1847–1864.USENIXAssociation,2021.
+[18] CasCremers,CharlieJacomme,andPhilipLukert. Subterm-Based
+Proof Techniques for Improving the Automation and Scope of Se-
+curity Protocol Analysis . In 2023 IEEE 36th Computer Security
+FoundationsSymposium(CSF),pages200–213.IEEEComputerSo-
+ciety,July2023.
+[19] DannyDolevandAndrewChi-ChihYao. Onthesecurityofpublic
+keyprotocols. IEEETrans.Inf.Theory,29(2):198–207,1983.
+[20] Nikhil Swamy, Ca˘ta˘lin Hri¸tcu, Chantal Keller, Aseem Rastogi, An-
+toineDelignat-Lavaud,SimonForest,KarthikeyanBhargavan,Ce´dric
+Fournet,Pierre-Yves Strub,MarkulfKohlweiss,Jean-KarimZinzin-
+dohoue,andSantiagoZanella-Be´guelin. Dependenttypesandmulti-
+monadic effects in F*. In ACM SIGPLAN-SIGACT Symposium
+on Principles of Programming Languages (POPL), pages 256–270,
+2016.
+[21] The´ophile Wallez, Jonathan Protzenko, Benjamin Beurdouche, and
+KarthikeyanBhargavan.TreeSync:Authenticatedgroupmanagement
+for messaging layer security. In 32nd USENIX Security Symposium
+(USENIXSecurity23),pages1217–1233,August2023.
+Appendix A.
+Lack of epoch authentication in Welcome
+InTreeKEM(henceMLS),whenaninviteejoinsagroup
+through the Welcome procedure (§2.4), they do not have
+the guarantee that they were invited at this epoch: they may
+have been invited in a previous epoch. Indeed, an attacker
+can exploit the fact that during the Welcome process, only
+theGroupInfoissigned,buttheencryptedgroupsecretsare
+not signed, hence not bound to any epoch.
+The attacker must be active, hence we suppose they
+control the network. The group is at epoch n, with a tree
+similar to Figure 2a, with E and F blanked. The attacker
+proceeds as follows:
+• A invites E in the group and commits to epoch n+1.
+The attacker do not transmit the Welcome message to
+E.
+• A invites F in the group and commits to epoch n+2.
+• The attacker compromises the initialization key of F,
+and use it to decrypt the encrypted group secrets (i.e.
+15

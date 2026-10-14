@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "source_and_deliverable_hashes_match": true,
+  "unresolved_tracked_changes_or_comments": false,
+  "audit_only_trace_fractions_recomputed": true,
+  "implementation_derived_content_removed_from_paper": true,
+  "final_visual_pages_inspected": {
+    "paper": 10,
+    "research_audit": 11
+  },
+  "deliverables": [
+    "D:\\Github\\Master-Hybrid-MLS\\\u062a\u0631\u0645 4\\\u067e\u0627\u06cc\u0627\u0646 \u0646\u0627\u0645\u0647\\paper.docx",
+    "D:\\Github\\Master-Hybrid-MLS\\\u062a\u0631\u0645 4\\\u067e\u0627\u06cc\u0627\u0646 \u0646\u0627\u0645\u0647\\research_audit.docx",
+    "D:\\Github\\Master-Hybrid-MLS\\\u062a\u0631\u0645 4\\\u067e\u0627\u06cc\u0627\u0646 \u0646\u0627\u0645\u0647\\formatting_report.txt"
+  ]
+}
