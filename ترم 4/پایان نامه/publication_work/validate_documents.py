@@ -23,10 +23,13 @@ for stem in ['paper','research_audit']:
             assert eq==14 and len(doc.tables)==3 and imgs==1
             assert not re.search(r'\b(?:implementation|implemented|prototype|Rust|OpenMLS|MinGW|benchmark\w*|CSV|JSON|trace|observations?|experiment\w*|runtime|hardware)\b|5[–-]7|C_real|40/57|77/114|0\.701754',text,re.I)
             assert 'Hamid Mala' in text
+            assert 'Established KEM security and protocol scope' in text
+            assert 'Theorem 5' in text and 'recipient-local C2PRI' in text
+            assert 'mKyber enjoys standard non-adaptive multi-user IND-CCA security' in text
             before=text.split('References')[0].replace('[0,1]','')
             cited=set()
             for x in re.findall(r'\[([0-9, ]+)\]',before):cited.update(int(y.strip()) for y in x.split(','))
-            assert cited==set(range(1,12)),cited
+            assert cited==set(range(1,13)),cited
         sec=doc.sections[0]
         data={'file':stem,'valid_xml':True,'size_bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'paragraphs':len(doc.paragraphs),'tables':len(doc.tables),'omml_equations':eq,'drawings':imgs,'words_xml_regex':len(re.findall(r'\b\S+\b',text)), 'a4_mm':[round(sec.page_width.mm,1),round(sec.page_height.mm,1)],'margins_mm':[sec.top_margin.mm,sec.bottom_margin.mm,sec.left_margin.mm,sec.right_margin.mm]}
     pdf=O/'qa'/(stem+'.pdf');d=pdfium.PdfDocument(str(pdf));out=O/'qa'/stem;out.mkdir(exist_ok=True)
@@ -60,6 +63,6 @@ for a,b,n in [(2,4,129),(2,4,1024),(4,8,1025),(4,8,2048),(4,8,4096)]:
 assert q==[1,11,36,73,147]
 abstract=(O/'paper.md').read_text(encoding='utf8').split('@abstract\n')[1].split('@keywords')[0].strip()
 assert 180<=len(abstract.split())<=250
-result={'documents':meta,'source_unchanged':True,'abstract_words':len(abstract.split()),'analytical_rows':analytical,'break_even':q,'citation_ids':list(range(1,12))}
+result={'documents':meta,'source_unchanged':True,'abstract_words':len(abstract.split()),'analytical_rows':analytical,'break_even':q,'citation_ids':list(range(1,13))}
 (O/'qa'/'validation.json').write_text(json.dumps(result,indent=2),encoding='utf8')
 print(json.dumps(result,indent=2))

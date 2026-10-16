@@ -1,7 +1,7 @@
 PAGE 1
 Research Audit for Adaptive Hybrid TreeKEM
 Scientific evidence and submission decisions
-Prepared 14 October 2026
+Prepared 14 October 2026; security revision 16 October 2026
 This audit accompanies the English article Adaptive Arity and TreeCover Migration in Hybrid TreeKEM.
 The defensible contribution is a policy for gradually changing tree arity while temporarily using old-tree
 nodes to deliver secrets belonging to the new tree. The contribution is architectural and analytical. A
@@ -30,9 +30,10 @@ extraction locators, not Word page numbers. No source page number is inferred fr
 The English title is Hybrid Group Key Exchange based on TreeKEM. The thesis identifies
 Mohammadreza Parsania, the Faculty of Computer Engineering, University of Isfahan, and supervisor Dr.
 Hamid Mala. The supplied examination table identifies the supervisor's institution as University of
-Isfahan. The manuscript lists Mohammadreza Parsania and Hamid Mala in that order, without an
-academic honorific, as requested. A corresponding author, email addresses, ORCIDs, individual
-contributions, and funding or competing-interest declarations have not been supplied.
+Isfahan. The current manuscript lists Mohammadreza Parsania and Dr Hamid Mala in that order. The
+professor's honorific was added in the user's Word file and preserved during this revision. A
+corresponding author, email addresses, ORCIDs, individual contributions, and funding or competing-
+interest declarations have not been supplied.
 Some thesis closing sections contain instructional drafting language, and the cover/front matter contains
 inconsistent month labels. These are not scientific evidence. The paper uses the verified thesis year 2026,
 removes university ceremonial material, and does not reproduce incomplete front-matter fields.
@@ -215,10 +216,20 @@ recorded migration ciphertexts addressed to it potentially decryptable after lat
 affected epochs depend on other key-schedule secrets. Deleting local retained keys cannot delete copies
 already recorded by an attacker. The paper neither asserts a practical attack on a deployed product nor
 repeats an unconditional preservation claim.
-The mKyber source distinguishes its non-adaptive multi-user treatment from amKyber's adaptive-
-corruption setting. This is a limitation of known proof techniques, not a demonstrated break. The thesis-
-specific combiner requires its own argument. Classical authentication remains conceptually distinct from
-post-quantum confidentiality; replacing a KEM does not make classical signatures quantum resistant.
+The supplied six-page proof note, mkyber_ciphertext_resistance_proof.pdf, dated 15 October 2026, was
+read in full. It correctly directs attention to the established FO collision-resistance theorem. The author
+PDF of Alwen et al., Post-Quantum Multi-Recipient Public Key Encryption, was checked at Definition 8,
+Theorems 4–5, and Appendix B.3. The manuscript now explicitly recognizes standard mKyber IND-CCA
+security and the FO recipient-local ciphertext-resistance result. X-Wing's general QSF framework is
+described as applicable when its C2PRI and Diffie–Hellman hypotheses hold. Adaptive-corruption
+confidentiality is identified as a separate security question.
+The supplied note is supplementary AI-assisted technical analysis, not a peer-reviewed publication; the
+paper cites the verified primary research instead. Its explicit-rejection argument uses deterministic
+reconstruction, full canonical recipient-ciphertext comparison, and an accepted output derived through a
+collision-resistant hash. Its implicit-rejection extensions have additional stated hash or oracle assumptions.
+No theorem for every algorithm bearing the mKyber name is inferred. The same-recipient property does
+not authenticate unused components of a full multi-recipient vector. These distinctions concern
+mathematical algorithms and do not add implementation material to the paper.
 5 Numerical audit
 5.1 Recomputed analytical values
 The key-and-KEM model is B = 800h + 704L + 80R, with R the sum of recipient endpoints over
@@ -295,10 +306,11 @@ for the seed-42 Table 5–6/5–7 observations. Neither the source trace nor the
 in the paper.
 6 Reference verification report
 6.1 Sources retained in the manuscript
-Verification date is 14 October 2026. Every manuscript reference is cited in the text, and every numbered
-text citation has a bibliography entry. References use full author lists in verified order. No DOI is invented
-for a conference presentation, thesis, Internet-Draft, or cited ePrint version. Preprint references are labeled
-as such even when their records identify later conference publication.
+The initial bibliography verification date is 14 October 2026; reference 12 and the ciphertext-resistance
+claims were verified on 16 October 2026. Every manuscript reference is cited in the text, and every
+numbered text citation has a bibliography entry. References use full author lists in verified order. No DOI
+is invented for a conference presentation, thesis, Internet-Draft, or cited ePrint version. Preprint references
+are labeled as such even when their records identify later conference publication.
 Table 3. Verification record for the final bibliography
 Verified metadata and claim
 Paper ref Primary verification location
@@ -336,18 +348,21 @@ Three authors, title, ePrint 2025/410, ePrint record, author site twal.org/resea
 NIST corporate author, title, FIPS 203,
 11 csrc.nist.gov/pubs/fips/203/final
 13 August 2024, DOI
+Five authors; CCS 2023, pp. 1108– ACM DOI 10.1145/3576915.3623185; author
+12 1122; FO collision resistance and PDF cryptojedi.org/papers/mkem-20220812.pdf,
+mKEM combiner theorem Definition 8, Theorems 4–5, Appendix B.3
 RFC 9420's thesis bibliography author list was incorrect. The final entry uses Richard Barnes, Benjamin
 Beurdouche, Raphael Robert, Jon Millican, Emad Omara, and Katriel Cohn-Gordon. The NIST mKEM
 paper had only two authors in the thesis entry; all ten appear in the final reference. KEM Combiners had
 malformed author formatting, now corrected. X-Wing's 2024 volume and issue were confirmed through its
 DOI; its 22-page extent was checked in the supplied PDF. The TreeKEM reference cites the verified
 ePrint rather than adding unconfirmed proceedings pages.
-The two MLS drafts are dated snapshots as of the verification date. The hybrid-suite revision is work in
-progress, and the amortized-combiner revision is expired. These are not normative standards. The FIPS
-reference is the final 2024 standard, not the 2023 initial public draft cited in the older X-Wing PDF.
 7
 
 PAGE 8
+The two MLS drafts are dated snapshots as of the verification date. The hybrid-suite revision is work in
+progress, and the amortized-combiner revision is expired. These are not normative standards. The FIPS
+reference is the final 2024 standard, not the 2023 initial public draft cited in the older X-Wing PDF.
 6.2 Disposition of all thesis bibliography entries
 The table below is a disposition audit, not a declaration that every excluded reference has been verified.
 Unused historical background was removed to keep the article focused. Suspect entries were excluded
@@ -362,9 +377,11 @@ needed claim
 Continuous Group Key Agreement
 3 Omitted; supplied metadata not verified
 with Active Security
-Post-Quantum Multi-Recipient Public Omitted from final paper; thesis author list
-4
-Key Encryption truncated
+Retained as paper reference 12; five authors, CCS
+Post-Quantum Multi-Recipient Public
+4 metadata, and FO collision-resistance theorem
+Key Encryption
+verified
 Security Analysis and Improvements Omitted; supplied author metadata requires
 5
 for IETF MLS checking
@@ -396,14 +413,14 @@ Exchange
 Scalable Ciphertext Compression
 19 Omitted; supplied author list requires verification
 Techniques
-20 Tree-Based Group Key Agreement Omitted; historical source has multiple authors
-Hybrid KEMs and Authenticated Key Omitted from focused treatment; not
-21
-Exchange independently verified here
 8
 
 PAGE 9
 Entry Short source identifier Disposition
+20 Tree-Based Group Key Agreement Omitted; historical source has multiple authors
+Hybrid KEMs and Authenticated Key Omitted from focused treatment; not
+21
+Exchange independently verified here
 Retained; author order and bibliographic
 22 KEM Combiners
 formatting corrected
@@ -446,14 +463,14 @@ No venue has been selected. The manuscript uses a journal-neutral A4 layout with
 equations, and numerical references. It is not labeled compliant with IEEE, Springer, Elsevier, or any
 other publisher template. The two options below are conditional scope recommendations, not acceptance
 predictions.
+9
+
+PAGE 10
 International Journal of Information Security is a plausible option after the protocol and security model are
 strengthened. Its official scope includes theoretical, applied, and implementation work in information
 security. Its current instructions call for a 150–250-word abstract and 4–6 keywords. The journal-specific
 text-format section requests Springer's two-column LaTeX package, despite a general paragraph
 mentioning editable DOCX sources. The present Word file therefore does not satisfy a claim of template
-9
-
-PAGE 10
 compliance. A future conversion or editorial clarification would be required. Official scope:
 https://link.springer.com/journal/10207/aims-and-scope. Instructions:
 https://link.springer.com/journal/10207/submission-guidelines.
@@ -493,14 +510,14 @@ Include transition and retirement bytes. Test candidate arities beyond 2/4/8, or
 restriction. Keep analytical values and observations separate.
 6. Obtain the full Bonsai paper and compare its algorithms directly with the final migration specification.
 The present account uses verified abstract-level scope and cannot rule out closer overlap in the full work.
+10
+
+PAGE 11
 9.2 Authorship and publication decisions
 The named authors should confirm spelling and order, their final affiliations, the corresponding author and
 email, ORCIDs if desired, and individual contributions. The user authorized Hamid Mala's inclusion; this
 is not evidence of the professor's completed review or consent to a particular submission. No email or
 approval was invented.
-10
-
-PAGE 11
 Select one venue and verify its latest article-type, template, length, reference, data, thesis-disclosure, and
 AI-use rules. Supply truthful funding, competing-interest, acknowledgment, and contribution statements;
 the current manuscript intentionally does not invent negative declarations. Confirm that the work is not

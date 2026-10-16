@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-16",
+  "supplied_proof_pages": 6,
+  "proof_sha256": "61bc56c653e79297a1ac426a960d441de32f0ef83c074284da917fc447b9641d",
+  "primary_source": "https://cryptojedi.org/papers/mkem-20220812.pdf",
+  "checked": [
+    "Definition 8",
+    "Theorem 4",
+    "Theorem 5",
+    "Appendix B.3",
+    "X-Wing Definition 7 and Section 6",
+    "NIST overview Sections 2.3 and 3.1"
+  ],
+  "user_honorific_preserved": true,
+  "implementation_content_added_to_paper": false
+}

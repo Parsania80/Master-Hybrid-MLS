@@ -1,16 +1,16 @@
 FORMATTING AND VALIDATION REPORT
-Date: 14 October 2026
+Date: 16 October 2026 (security-section revision)
 
 DELIVERABLES
 paper.docx
   Title: Adaptive Arity and TreeCover Migration in Hybrid TreeKEM
-  Authors: Mohammadreza Parsania and Hamid Mala
-  10 pages; 5,167 words according to Microsoft Word 16.0.
+  Authors: Mohammadreza Parsania and Dr Hamid Mala
+  11 pages; 5,374 words according to Microsoft Word 16.0.
   Abstract: 200 words; six keywords.
   14 editable display equations, three editable tables, one original diagram,
-  and 11 numbered references.
+  and 12 numbered references.
 research_audit.docx
-  11 pages; 4,680 words according to Microsoft Word 16.0; four tables.
+  11 pages; 4,870 words according to Microsoft Word 16.0; four tables.
 formatting_report.txt
   This report.
 
@@ -59,7 +59,7 @@ runtime; its cleanup also encountered a sandbox permission error.
 The successful fallback used Microsoft Word 16.0 to update fields, repaginate,
 save each DOCX, and export a PDF. pypdfium2 rendered every PDF page to PNG for
 inspection. QA PDFs and images are retained under publication_work/qa.
-All 10 final paper pages and all 11 final audit pages were visually inspected.
+All 11 final paper pages and all 11 final audit pages were visually inspected.
 No clipped text, overlapping objects, broken table rows, visibly missing
 glyphs, or unintended blank pages were observed. Automated PDF bounds checks
 found no text outside the page. Ordinary unused space at the end of sections
@@ -76,7 +76,7 @@ formatting. Every paper section was checked for implementation-derived content,
 not only implementation-related terminology. Automated checks additionally
 reject trace/observation/experiment terminology, the removed table identifier,
 and characteristic fractions from the removed operation-cost table.
-All numbered paper citations 1-11 have bibliography entries and are cited.
+All numbered paper citations 1-12 have bibliography entries and are cited.
 Analytical table rows and the five break-even calculations were recomputed.
 The break-even results are 1, 11, 36, 73, and 147 additional healthy commits
 after the transition commit, under the stated model assumptions.
@@ -84,6 +84,25 @@ The paper contains no reported trace, reconstructed trace reference costs, or
 experimental operation observations. Its numerical tables follow directly
 from the stated model parameters and equations.
 No experimental test suite or implementation build was run for this conversion.
+
+SECURITY SECTION CORRECTION ON 16 OCTOBER 2026
+The six-page proof note supplied in Downloads was read in full and visually
+inspected. Its main explicit-rejection argument was checked against the
+primary author PDF of Alwen et al., Post-Quantum Multi-Recipient Public Key
+Encryption, especially Definition 8, Theorems 4-5, and Appendix B.3. X-Wing's
+C2PRI definition and complementary QSF confidentiality reductions were also
+checked, along with the NIST overview's mKyber security-model discussion.
+Section 2.3 is now titled Established KEM security and protocol scope.
+It explicitly recognizes standard non-adaptive multi-user IND-CCA security
+for mKyber and collision resistance of the specified explicit-rejection FO
+mKEM under the output-hash assumption. It explains the recipient-local C2PRI
+consequence and distinguishes it from adaptive-corruption confidentiality and
+group recovery. The related paragraphs on the hybrid derivation and composed
+protocol security were corrected. Verified primary reference 12 was added.
+The supplementary proof note is not presented as a peer-reviewed publication.
+No implementation material was introduced. The user's addition of Dr to the
+professor's name was preserved. Copies of the pre-edit files are retained in
+publication_work/security_revision_2026-10-16.
 
 REFERENCE AND PUBLICATION STATUS
 The audit records verification sources and limits for every retained reference
@@ -110,7 +129,7 @@ The documents are ready for scientific author review, not certified ready for
 submission. No submission or external communication has been performed.
 
 FINAL DOCX FILE INTEGRITY
-paper.docx: 177,242 bytes
-SHA-256: 42c15ebd364811182d2aa717b03355a6b7f23b0943b7d4aa07ea16989db1208b
-research_audit.docx: 51,220 bytes
-SHA-256: cfe3246ad204133ac8131ddd65fed75e8b69779aba725c057a7e4ad44f703488
+paper.docx: 178,768 bytes
+SHA-256: 54981fffc18d3ad5001f25b03ad4a6082c59816aeafe181160eea09a7bb04851
+research_audit.docx: 51,740 bytes
+SHA-256: 79e55f912599f39b54b73b2647ecaa57740692f789a693952032a77ede94f334

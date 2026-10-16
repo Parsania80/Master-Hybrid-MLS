@@ -4,8 +4,10 @@
   "unresolved_tracked_changes_or_comments": false,
   "audit_only_trace_fractions_recomputed": true,
   "implementation_derived_content_removed_from_paper": true,
+  "unrelated_paper_text_and_user_author_edit_preserved": true,
+  "security_source_and_primary_theorem_checked": true,
   "final_visual_pages_inspected": {
-    "paper": 10,
+    "paper": 11,
     "research_audit": 11
   },
   "deliverables": [

@@ -1,5 +1,5 @@
 @title Adaptive Arity and TreeCover Migration in Hybrid TreeKEM
-@authors Mohammadreza Parsania and Hamid Mala
+@authors Mohammadreza Parsania and Dr Hamid Mala
 @affiliation Faculty of Computer Engineering, University of Isfahan, Isfahan, Iran
 
 @abstract
@@ -41,11 +41,13 @@ Chevalier et al. [3] | Tree evolution and degree optimization | Tree degree is a
 MLS drafts [6, 7] | Hybrid suites or two-session amortization | Different hybridization and update mechanisms
 Present study | Lazy arity migration with an old-tree cover | Analyzes migration cost and retained-key exposure
 
-## Security results that do not transfer automatically
+## Established KEM security and protocol scope
 
-KEM combiners require explicit assumptions and constructions to preserve security when one component fails [8]. X-Wing provides a concrete example using X25519, ML-KEM-768, and SHA3-256, with proofs tied to that construction [9]. Its proof cannot justify replacing ML-KEM-768 with an mKEM or changing the key derivation inputs. Likewise, the machine-checked symbolic TreeKEM analysis of Wallez et al. concerns a precise specification of MLS [10]; it does not automatically cover new arities, retained TreeCover keys, or a custom hybrid wrapper.
+KEM combiners have established security guarantees under precise component assumptions [8]. The QSF framework underlying X-Wing gives complementary confidentiality reductions: one relies on KEM IND-CCA security; the other on KEM ciphertext second-preimage resistance (C2PRI) together with the stated Diffie–Hellman assumption [9, Section 6]. It provides a framework for analyzing other KEM components when those hypotheses hold. Similarly, the symbolic TreeKEM proof establishes guarantees for its specified MLS protocol [10]. FIPS 203 specifies ML-KEM [11]; mKyber has its own construction and security analysis [2].
 
-The distinction between mKyber and amKyber also matters. The mKyber source discusses a non-adaptive multi-user security treatment and a limitation of known reductions under adaptive corruptions; amKyber addresses the stronger setting with different costs [2]. This is a proof limitation, not evidence of a practical adaptive attack. Nevertheless, long-lived retained node keys make it inappropriate to assume that an adaptive group-security theorem follows from the smaller mKyber parameters. FIPS 203 standardizes ML-KEM, not this mKyber profile [11].
+mKyber enjoys standard non-adaptive multi-user IND-CCA security [2, Sections 2.3 and 3.1]. For ciphertext binding, Alwen et al. prove that their explicit-rejection Fujisaki–Okamoto (FO) mKEM is collision resistant whenever its output hash is collision resistant [12, Theorem 5]. In the corresponding accepted-key profile, deterministic re-encryption fixes the recipient ciphertext for each recovered message. A different accepted ciphertext matching an honest target key must therefore yield a different message with the same output hash. This gives recipient-local C2PRI even with the recipient secret key exposed, under the corresponding classical or quantum hash assumption. The property concerns the complete canonical recipient ciphertext; it does not assert that a recipient detects changes to other recipients’ ciphertext components.
+
+Adaptive-corruption confidentiality is a separate property. The distinction between mKyber and amKyber concerns that stronger multi-user model and the available reduction bounds [2]; it does not negate mKyber’s standard IND-CCA guarantee or the FO ciphertext-resistance result. For this article, the remaining task is to match the selected rejection and output rules and the hybrid derivation in Equation (3) to the applicable theorem, then analyze recipient eligibility and state evolution during migration. Primitive security results provide the basis for this protocol analysis; they do not alone establish group recovery with retained historical keys.
 
 # Model and cryptographic specification
 
@@ -72,7 +74,7 @@ The authoritative thesis combiner, with the source's ambiguous symbol ct_xe repl
 
 @eq hs_{v} = KDF(ss_{v}^{C} || ss_{v}^{PQ} || ct_{v}^{C} || Encode(pk_{v}^{C}) || label_{v})
 
-Here label_v binds the string “HybridTreeKEM-Node” to the group identifier, epoch, tree version, arity, and recipient-node index. Encode(pk_v^C) denotes the canonical classical recipient public key. It is not a post-quantum ciphertext. The omission of raw post-quantum ciphertext from (3) is part of the thesis design, not a security result. The ciphertext still has to be transmitted, associated with the intended recipient, and authenticated as protocol data.
+Here label_v binds the string “HybridTreeKEM-Node” to the group identifier, epoch, tree version, arity, and recipient-node index. Encode(pk_v^C) denotes the canonical classical recipient public key. It is not a post-quantum ciphertext. Recipient-local C2PRI is the relevant ciphertext-binding property when a hybrid derivation omits a separate copy of the post-quantum ciphertext [9, 12]. Applying that argument to (3) requires matching the selected FO rejection and output rules and the remaining combiner assumptions. The delivery context must still bind the intended recipient and be authenticated as protocol data.
 
 @eq (k_{v}, nonce_{v}) = KDFExpand(hs_{v}, "path-encryption" || ctx_{v,e})
 @eq c_{v}^{path} = AEAD.Seal(k_{v}, nonce_{v}, aad_{v}, ps_{target})
@@ -138,7 +140,7 @@ Retirement must be an authenticated state change accepted consistently by remain
 
 ## Confidentiality and authentication obligations
 
-The intended hybrid property is that path-secret confidentiality survives failure of one key-establishment component. Establishing that property for (3) requires a precise adversarial game and a reduction for the actual KDF, encapsulation mechanisms, encodings, and validity checks. A suitable robust combiner, correct authenticated encryption, authenticated public keys, and independent component randomness are assumptions for the argument here. They are not consequences of concatenation alone [8, 9]. The thesis provides no construction-specific computational proof.
+The intended hybrid property is that path-secret confidentiality survives failure of one key-establishment component. Published KEM and combiner theorems provide the relevant primitive guarantees, including the FO ciphertext-resistance result discussed in Section 2.3 [8, 9, 12]. Applying them to (3) requires a precise adversarial game and a correspondence between its KDF, encapsulation mechanisms, encodings, and validity checks and those of the selected theorem. Correct authenticated encryption, authenticated public keys, and independent component randomness are additional obligations. A complete computational proof for the composed migration protocol remains to be supplied.
 
 The transition adds an authentication obligation beyond encapsulation. Members must agree on the active arity, root authority, tree version, frozen mapping, and applicable old keys. Otherwise, even an honestly encrypted path secret could be interpreted in different trees. A receiver should accept state changes only after validating the commit and its bound transition context. A precise proof would have to connect these checks to a group-state agreement invariant across adds, removals, updates, and retirement. The existing symbolic proof for standard TreeKEM cannot simply be reused [10].
 
@@ -253,3 +255,5 @@ OpenAI Codex assisted with Persian-to-English synthesis, manuscript organization
 @ref 9|Manuel Barbosa, Deirdre Connolly, João Diogo Duarte, Aaron Kaiser, Peter Schwabe, Karolin Varner, and Bas Westerbaan. X-Wing: The Hybrid KEM You've Been Looking For. IACR Communications in Cryptology 1(1), 2024, 22 pages.|https://doi.org/10.62056/a3qj89n4e
 @ref 10|Théophile Wallez, Jonathan Protzenko, and Karthikeyan Bhargavan. TreeKEM: A Modular Machine-Checked Symbolic Security Analysis of Group Key Agreement in Messaging Layer Security. Cryptology ePrint Archive, Paper 2025/410, 2025. Author version of the IEEE Symposium on Security and Privacy paper.|https://eprint.iacr.org/2025/410
 @ref 11|National Institute of Standards and Technology. Module-Lattice-Based Key-Encapsulation Mechanism Standard. FIPS 203, 13 August 2024.|https://doi.org/10.6028/NIST.FIPS.203
+
+@ref 12|Joël Alwen, Dominik Hartmann, Eike Kiltz, Marta Mularczyk, and Peter Schwabe. Post-Quantum Multi-Recipient Public Key Encryption. In Proceedings of the 2023 ACM SIGSAC Conference on Computer and Communications Security, pp. 1108–1122. ACM, 2023.|https://doi.org/10.1145/3576915.3623185

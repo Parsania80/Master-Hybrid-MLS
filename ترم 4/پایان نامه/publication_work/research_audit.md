@@ -1,6 +1,6 @@
 @title Research Audit for Adaptive Hybrid TreeKEM
 @subtitle Scientific evidence and submission decisions
-@date Prepared 14 October 2026
+@date Prepared 14 October 2026; security revision 16 October 2026
 
 This audit accompanies the English article Adaptive Arity and TreeCover Migration in Hybrid TreeKEM. The defensible contribution is a policy for gradually changing tree arity while temporarily using old-tree nodes to deliver secrets belonging to the new tree. The contribution is architectural and analytical. A formal proof of the custom hybrid construction, an adaptive-corruption theorem, and a fully reproducible evaluation are not established by the supplied materials.
 
@@ -14,7 +14,7 @@ The supplied Thesis.docx was inspected across its front matter, Persian and Engl
 
 The current source was preserved. Its SHA-256 is f916f0572b73a7275db1b4441d897bcf5ddf917673b041d08baecf344f4f1146. Source locations below use chapter, equation, or table identifiers where available. “Block” refers to the zero-based direct child position in word/document.xml, preserved in publication_work/thesis_blocks.json. These identifiers are extraction locators, not Word page numbers. No source page number is inferred from an older PDF.
 
-The English title is Hybrid Group Key Exchange based on TreeKEM. The thesis identifies Mohammadreza Parsania, the Faculty of Computer Engineering, University of Isfahan, and supervisor Dr. Hamid Mala. The supplied examination table identifies the supervisor's institution as University of Isfahan. The manuscript lists Mohammadreza Parsania and Hamid Mala in that order, without an academic honorific, as requested. A corresponding author, email addresses, ORCIDs, individual contributions, and funding or competing-interest declarations have not been supplied.
+The English title is Hybrid Group Key Exchange based on TreeKEM. The thesis identifies Mohammadreza Parsania, the Faculty of Computer Engineering, University of Isfahan, and supervisor Dr. Hamid Mala. The supplied examination table identifies the supervisor's institution as University of Isfahan. The current manuscript lists Mohammadreza Parsania and Dr Hamid Mala in that order. The professor's honorific was added in the user's Word file and preserved during this revision. A corresponding author, email addresses, ORCIDs, individual contributions, and funding or competing-interest declarations have not been supplied.
 
 Some thesis closing sections contain instructional drafting language, and the cover/front matter contains inconsistent month labels. These are not scientific evidence. The paper uses the verified thesis year 2026, removes university ceremonial material, and does not reproduce incomplete front-matter fields.
 
@@ -91,7 +91,9 @@ The thesis's suggestion that an old compromised cover route delays recovery only
 
 Forward secrecy is also conditional on key lifetimes and erasure. Retaining an old private key makes recorded migration ciphertexts addressed to it potentially decryptable after later compromise. The exact affected epochs depend on other key-schedule secrets. Deleting local retained keys cannot delete copies already recorded by an attacker. The paper neither asserts a practical attack on a deployed product nor repeats an unconditional preservation claim.
 
-The mKyber source distinguishes its non-adaptive multi-user treatment from amKyber's adaptive-corruption setting. This is a limitation of known proof techniques, not a demonstrated break. The thesis-specific combiner requires its own argument. Classical authentication remains conceptually distinct from post-quantum confidentiality; replacing a KEM does not make classical signatures quantum resistant.
+The supplied six-page proof note, mkyber_ciphertext_resistance_proof.pdf, dated 15 October 2026, was read in full. It correctly directs attention to the established FO collision-resistance theorem. The author PDF of Alwen et al., Post-Quantum Multi-Recipient Public Key Encryption, was checked at Definition 8, Theorems 4–5, and Appendix B.3. The manuscript now explicitly recognizes standard mKyber IND-CCA security and the FO recipient-local ciphertext-resistance result. X-Wing's general QSF framework is described as applicable when its C2PRI and Diffie–Hellman hypotheses hold. Adaptive-corruption confidentiality is identified as a separate security question.
+
+The supplied note is supplementary AI-assisted technical analysis, not a peer-reviewed publication; the paper cites the verified primary research instead. Its explicit-rejection argument uses deterministic reconstruction, full canonical recipient-ciphertext comparison, and an accepted output derived through a collision-resistant hash. Its implicit-rejection extensions have additional stated hash or oracle assumptions. No theorem for every algorithm bearing the mKyber name is inferred. The same-recipient property does not authenticate unused components of a full multi-recipient vector. These distinctions concern mathematical algorithms and do not add implementation material to the paper.
 
 # Numerical audit
 
@@ -138,7 +140,7 @@ The earlier FINAL-EXPERIMENT-MANIFEST concerns a different seed-62, three-operat
 
 ## Sources retained in the manuscript
 
-Verification date is 14 October 2026. Every manuscript reference is cited in the text, and every numbered text citation has a bibliography entry. References use full author lists in verified order. No DOI is invented for a conference presentation, thesis, Internet-Draft, or cited ePrint version. Preprint references are labeled as such even when their records identify later conference publication.
+The initial bibliography verification date is 14 October 2026; reference 12 and the ciphertext-resistance claims were verified on 16 October 2026. Every manuscript reference is cited in the text, and every numbered text citation has a bibliography entry. References use full author lists in verified order. No DOI is invented for a conference presentation, thesis, Internet-Draft, or cited ePrint version. Preprint references are labeled as such even when their records identify later conference publication.
 
 @table Verification record for the final bibliography
 Paper ref | Verified metadata and claim boundary | Primary verification location
@@ -153,6 +155,7 @@ Paper ref | Verified metadata and claim boundary | Primary verification location
 9 | Seven authors, CiC 1(1), 2024, 22 pages, DOI | DOI resolves to cic.iacr.org/p/1/1/21; supplied PDF
 10 | Three authors, title, ePrint 2025/410, 2025; symbolic model | ePrint record, author site twal.org/research, supplied PDF
 11 | NIST corporate author, title, FIPS 203, 13 August 2024, DOI | csrc.nist.gov/pubs/fips/203/final
+12 | Five authors; CCS 2023, pp. 1108–1122; FO collision resistance and mKEM combiner theorem | ACM DOI 10.1145/3576915.3623185; author PDF cryptojedi.org/papers/mkem-20220812.pdf, Definition 8, Theorems 4–5, Appendix B.3
 
 RFC 9420's thesis bibliography author list was incorrect. The final entry uses Richard Barnes, Benjamin Beurdouche, Raphael Robert, Jon Millican, Emad Omara, and Katriel Cohn-Gordon. The NIST mKEM paper had only two authors in the thesis entry; all ten appear in the final reference. KEM Combiners had malformed author formatting, now corrected. X-Wing's 2024 volume and issue were confirmed through its DOI; its 22-page extent was checked in the supplied PDF. The TreeKEM reference cites the verified ePrint rather than adding unconfirmed proceedings pages.
 
@@ -167,7 +170,7 @@ Entry | Short source identifier | Disposition
 1 | NIST PQC project 2016 | Omitted; replaced by final FIPS 203 for the needed claim
 2 | How Multi-Recipient KEMs 2024 | Retained; all ten authors restored
 3 | Continuous Group Key Agreement with Active Security | Omitted; supplied metadata not verified
-4 | Post-Quantum Multi-Recipient Public Key Encryption | Omitted from final paper; thesis author list truncated
+4 | Post-Quantum Multi-Recipient Public Key Encryption | Retained as paper reference 12; five authors, CCS metadata, and FO collision-resistance theorem verified
 5 | Security Analysis and Improvements for IETF MLS | Omitted; supplied author metadata requires checking
 6 | Multi-Recipient KEMs and Their Applications | Omitted; exact supplied entry not verified
 7 | Keep the Dirt | Omitted; malformed/truncated author attribution not verified

@@ -3,49 +3,13 @@
     {
       "file": "paper",
       "valid_xml": true,
-      "size_bytes": 177242,
-      "sha256": "42c15ebd364811182d2aa717b03355a6b7f23b0943b7d4aa07ea16989db1208b",
-      "paragraphs": 130,
+      "size_bytes": 178768,
+      "sha256": "54981fffc18d3ad5001f25b03ad4a6082c59816aeafe181160eea09a7bb04851",
+      "paragraphs": 132,
       "tables": 3,
       "omml_equations": 14,
       "drawings": 1,
-      "words_xml_regex": 5222,
-      "a4_mm": [
-        210.0,
-        297.0
-      ],
-      "margins_mm": [
-        21.007916666666667,
-        21.007916666666667,
-        21.995694444444446,
-        21.995694444444446
-      ],
-      "pdf_pages": 10,
-      "page_words": [
-        594,
-        478,
-        585,
-        554,
-        473,
-        547,
-        575,
-        409,
-        565,
-        527
-      ],
-      "blank_pages": [],
-      "out_of_page_text": []
-    },
-    {
-      "file": "research_audit",
-      "valid_xml": true,
-      "size_bytes": 51220,
-      "sha256": "cfe3246ad204133ac8131ddd65fed75e8b69779aba725c057a7e4ad44f703488",
-      "paragraphs": 91,
-      "tables": 4,
-      "omml_equations": 0,
-      "drawings": 0,
-      "words_xml_regex": 4659,
+      "words_xml_regex": 5410,
       "a4_mm": [
         210.0,
         297.0
@@ -58,17 +22,54 @@
       ],
       "pdf_pages": 11,
       "page_words": [
-        488,
+        595,
+        478,
+        580,
+        573,
+        470,
+        578,
+        567,
+        466,
+        510,
+        511,
+        186
+      ],
+      "blank_pages": [],
+      "out_of_page_text": []
+    },
+    {
+      "file": "research_audit",
+      "valid_xml": true,
+      "size_bytes": 51740,
+      "sha256": "79e55f912599f39b54b73b2647ecaa57740692f789a693952032a77ede94f334",
+      "paragraphs": 92,
+      "tables": 4,
+      "omml_equations": 0,
+      "drawings": 0,
+      "words_xml_regex": 4834,
+      "a4_mm": [
+        210.0,
+        297.0
+      ],
+      "margins_mm": [
+        21.007916666666667,
+        21.007916666666667,
+        21.995694444444446,
+        21.995694444444446
+      ],
+      "pdf_pages": 11,
+      "page_words": [
+        505,
         421,
         451,
         596,
-        480,
+        601,
         484,
-        400,
-        301,
-        424,
-        499,
-        191
+        392,
+        331,
+        381,
+        514,
+        245
       ],
       "blank_pages": [],
       "out_of_page_text": []
@@ -138,6 +139,7 @@
     8,
     9,
     10,
-    11
+    11,
+    12
   ]
 }
