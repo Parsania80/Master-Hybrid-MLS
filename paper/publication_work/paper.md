@@ -1,23 +1,37 @@
-@title Adaptive Arity and TreeCover Migration in Hybrid TreeKEM
-@authors Mohammadreza Parsania and Dr Hamid Mala
+@title Adaptive Arity and Tree Migration in Hybrid TreeKEM
+@authors Mohammadreza Parsania and Hamid Mala
 @affiliation Faculty of Computer Engineering, University of Isfahan, Isfahan, Iran
 
 @abstract
-In this work, hybrid key establishment combines classical and post-quantum cryptographic mechanisms to reduce reliance on either component alone during the transition to quantum-resistant security. This combination increases the communication cost of tree-based group messaging, while changing the tree arity introduces a separate cost of rebuilding shared state. This paper investigates a migration policy for hybrid TreeKEM that increases arity from two to four and, conceptually, from four to eight. Each valid node carries classical and post-quantum key material. During migration, the new tree becomes the sole source of the group commit secret, while an authenticated cover of eligible old-tree nodes temporarily delivers new path secrets. Subsequent commits populate the new tree, and normalized delivery costs guide retirement of the old cover. An analytical model accounts for public-key and encapsulation payload separately from other protocol fields. Under its healthy-tree approximation, increasing arity from two to four at 129 members reduces the modeled payload from 12,672 to 6,976 bytes, a 44.9% reduction. A leaf-only initial transition at 1,024 members instead requires eleven additional healthy commits to recover its modeled excess cost. Security is examined through conditional arguments rather than a formal proof. Retained old keys can prolong group-wide exposure after compromise, so a communication-cost threshold does not establish cryptographic recovery. The contribution is a migration design and explicit accounting of its efficiency and security tradeoffs.
+Hybrid key establishment combines classical and post-quantum cryptography to reduce reliance on either component alone during the transition to quantum-resistant communication. TreeKEM is the tree-based group key establishment mechanism used by Messaging Layer Security (MLS) to refresh shared keys as group membership changes. Combining both types of cryptography increases the size of key updates. We propose a migration mechanism that changes the number of children per internal node from two to four and considers a later change to eight. During a transition, members use suitable keys from the old tree to encrypt the secret values needed to establish keys in the new tree. Subsequent updates establish additional internal keys, and a communication-cost criterion determines when to discard the old tree. For a balanced tree with all required internal keys available, our analysis estimates that changing from two to four children at 129 members reduces the public-key and encapsulation data per update by 44.9%, from 12,672 to 6,976 bytes. These figures exclude other message fields. In the 1,024-member example, the first update in the new four-ary tree encrypts separately for each of the other 1,023 members and costs more than a binary-tree update. Eleven subsequent updates offset this extra cost, assuming each immediately achieves the lower cost of a fully populated four-ary tree. The security evaluation explains why retaining old keys can delay recovery after compromise and states the assumptions behind the security argument.
 
-@keywords TreeKEM; Messaging Layer Security; hybrid key establishment; multi-recipient KEM; adaptive tree arity; TreeCover
+@keywords TreeKEM; Messaging Layer Security; hybrid key establishment; multi-recipient KEM; adaptive tree arity; tree migration
 
 # Introduction
 
-Messaging Layer Security (MLS) establishes shared cryptographic state for dynamic groups through authenticated membership changes and tree-based key updates [1]. A commit can refresh a path toward the root and distribute the necessary path secrets to other members. When usable internal keys exist, several members can receive a secret through one subtree key. Blank or invalidated nodes require a finer recipient resolution and can increase communication. Hybrid classical and post-quantum key establishment makes the cost of these public keys and encapsulations particularly relevant.
+Group key exchange allows the members of a messaging group to establish the shared secrets needed to protect their communication. When members join or leave, the group must update these secrets so that new members cannot read earlier messages and removed members cannot read later ones. Efficient updates matter when groups are large or their membership changes frequently [1].
 
-Multi-recipient key encapsulation mechanisms (mKEMs) reduce repeated ciphertext material when the same secret is sent to several recipients. Their application to TreeKEM, including trees of degree greater than two, is established prior work [2]. Tree shape and degree have also been studied as optimization parameters for MLS [3]. These results motivate a different operational question: how can a group change its tree arity without immediately rebuilding every shared internal key, and how should it decide when the retained old structure is no longer useful?
+Messaging Layer Security (MLS) provides asynchronous key establishment for dynamic groups [1]. Its TreeKEM mechanism represents members as leaves of a binary tree. Each nonblank node contains a public encryption key. A shared internal private key allows several members of a subtree to decrypt the same update.
 
-We investigate the adaptive design developed in the first author's master's thesis [4]. A transition introduces a new tree whose internal state is initially sparse. Eligible nodes of the old tree form a temporary TreeCover for delivering path secrets belonging to the new tree. Only the new root supplies the commit secret. As commits populate the new tree, delivery becomes less dependent on the old cover. A retirement policy compares the new and old structures against leaf-only and idealized delivery costs.
+An epoch is a numbered stage of the group's shared cryptographic state, with its own membership and message-protection keys. A member called the committer sends an authenticated control message, called a Commit, to start the next epoch. It applies proposed changes, such as adding or removing a member or updating a key [1, Sections 3 and 12.4]. When it includes an update path, the Commit carries fresh public keys and encrypted path secrets. These secrets are derived from fresh randomness chosen by the committer and determine updated node keys and a fresh contribution to the next epoch's secrets. This supports post-compromise security (PCS), meaning recovery after earlier key exposure, provided the attacker can no longer access the affected member's current state and cannot recover the fresh secrets [1, Sections 7.4-7.6 and 16.6].
 
-The contribution is the combination of an explicit migration lifecycle, temporary old-tree delivery, and a cost-based retirement rule. It is not a new KEM, the first use of hybrid cryptography in MLS, or the first proposal for higher-arity TreeKEM. We present the thesis construction as the authoritative design and derive its communication tradeoffs under explicit assumptions. The numerical examples are direct evaluations of the analytical formulas. The scope is protocol design, cost analysis, and conditional security reasoning.
+A key encapsulation mechanism (KEM) lets a sender use a recipient's public key to generate a shared secret and a ciphertext; the recipient recovers that secret using its private key [11]. A multi-recipient KEM (mKEM) establishes the same secret with several recipients while sharing part of the ciphertext [2]. This can reduce the communication needed to encrypt a path secret for several subtrees. In hybrid TreeKEM, each usable node carries both classical and post-quantum key material. Publishing both public keys and transmitting both encapsulation components increases the communication cost of a key update.
 
-Three distinctions organize the analysis. First, a healthy-tree byte formula accounts for selected cryptographic components rather than every protocol field. Second, lower costs for a mature tree do not imply that a migration has repaid its setup cost. Third, a reduction in delivery endpoints does not demonstrate post-compromise recovery. A complete computational security proof remains an open obligation.
+Alwen et al. study mKyber, a post-quantum mKEM, in TreeKEM and in a variant with more than two children per internal node [2]. A larger number of children reduces tree depth, so an update publishes fewer node public keys and fewer common ciphertext components. It also increases the number of sibling subtrees that must receive a secret at each level. Because mKyber shares a large ciphertext component, the reduction in depth can outweigh the cost of these additional recipients. Keeping a binary tree can therefore require more communication for the parameter sets considered here. Chevalier et al. also examine tree shape and degree as ways to reduce MLS communication [3].
+
+These results motivate changing the tree degree as the group grows. The transition itself, however, has a cost. The new internal nodes initially lack shared keys, and rebuilding every internal key immediately can require many separate encryptions. The problem addressed in this paper is how to change the tree degree while distributing the required secrets during this initial period, and how to decide when the old tree can be discarded.
+
+We retain the old tree temporarily while establishing a new tree. Only the new tree determines the fresh contribution used to derive the group's next keys. If a required internal key in the new tree is unavailable, the sender encrypts the path secret using suitable nodes of the old tree, or separately for individual current members. A retained node may be used only if its key is authenticated, its intended recipients possess the private key, and removed members cannot use it to obtain the new secret. Later Commit messages establish more internal keys in the new tree.
+
+## Our Contribution
+
+We propose a migration mechanism for hybrid TreeKEM that combines an increase in tree degree with gradual establishment of internal keys. It specifies how members agree on the new tree, use keys from the old tree to distribute new path secrets, and eventually discard the old tree. The retirement rule measures each tree's savings relative to encrypting separately for individual members, normalized against a fully populated target tree. The old tree is discarded when the new tree provides sufficient savings or when the old tree provides too little saving, according to stated thresholds.
+
+We evaluate the public-key and encapsulation communication costs, including the initial transition cost and the number of subsequent updates needed to offset it under explicit assumptions. The examples show a 44.9% reduction in these components for a four-ary tree at 129 members, while the 1,024-member transition example requires eleven further updates to offset its initial extra cost if each immediately achieves the cost of a fully populated four-ary tree. Our security analysis examines recipient selection and retention of old keys. It shows why a cost threshold alone cannot establish recovery after compromise; a complete computational proof for the migration protocol remains future work.
+
+## Paper Organisation
+
+Section 2 reviews TreeKEM, hybrid key establishment, and related work. Section 3 defines the group state and cryptographic construction. Section 4 presents the migration mechanism and the rule for discarding the old tree. Section 5 analyzes its security conditions. Section 6 evaluates communication and storage costs. Section 7 discusses limitations and future work, and Section 8 concludes the paper.
 
 # Background and related work
 
@@ -31,7 +45,7 @@ The IETF work on ML-KEM and hybrid MLS cipher suites provides a separate route t
 
 Alwen et al. explicitly analyze mKyber for TreeKEM and for an m-ary variant [2, Section 4]. Sharing a large common ciphertext component makes additional recipients comparatively inexpensive. Consequently, a reduction in path depth may compensate for the greater number of siblings at each level. Their treatment already establishes the architectural motivation for higher arity. Our remaining question concerns migration between arities and management of the old keys during that process.
 
-Chevalier et al. study tree evolution and degree selection for MLS [3]. Their reported preference for ternary trees under some post-quantum parameter sets reinforces that the useful degree depends on the cost model. The thesis restricts its candidate degrees to two, four, and eight; this restriction does not establish global optimality. Table 1 positions the present work relative to the closest approaches. A broader comparison should use the same topology assumptions and cost model across several candidate degrees.
+Chevalier et al. study tree evolution and degree selection for MLS [3]. Their reported preference for ternary trees under some post-quantum parameter sets reinforces that the useful degree depends on the cost model. We restrict the candidate degrees to two, four, and eight; this restriction does not establish global optimality. Table 1 positions the present work relative to the closest approaches. A broader comparison should use the same topology assumptions and cost model across several candidate degrees.
 
 @table Closest related approaches and the scope of the present contribution
 Work | Main mechanism | Relationship to this study
@@ -39,7 +53,7 @@ MLS [1] | Standard ratchet-tree state and key schedule | Baseline architecture; 
 Alwen et al. [2] | mKyber and m-ary TreeKEM | Establishes multi-recipient and higher-arity motivation
 Chevalier et al. [3] | Tree evolution and degree optimization | Tree degree is a pre-existing optimization variable
 MLS drafts [6, 7] | Hybrid suites or two-session amortization | Different hybridization and update mechanisms
-Present study | Lazy arity migration with an old-tree cover | Analyzes migration cost and retained-key exposure
+This work | Gradual migration using keys from the old tree | Analyzes migration cost and retained-key exposure
 
 ## Established KEM security and protocol scope
 
@@ -61,16 +75,16 @@ The adversary may observe, delay, reorder, replay, or modify delivery traffic an
 
 ## Node derivation and encapsulation
 
-For node v, ps_v denotes a path secret and ns_v a node secret. Context ctx_(v,e) identifies the relevant group, epoch, tree version, arity, and node. The thesis uses separate labels for node derivation and upward path derivation:
+For node v, ps_v denotes a path secret and ns_v a node secret. Context ctx_(v,e) identifies the relevant group, epoch, tree version, arity, and node. We use separate labels for node derivation and upward path derivation:
 
 @eq ns_{v} = KDFExpand(ps_{v}, "node" || ctx_{v,e})
 @eq ps_{parent(v)} = KDFExpand(ps_{v}, "path" || ctx_{v,e})
 
-The node secret feeds separately labeled classical-key and pq-key derivations. Their outputs seed the corresponding key-generation procedures. Domain separation is essential because the two key families and the upward path must not reuse a derivation purpose. Equations (1) and (2) express the thesis's design interface; they do not supply the missing byte-level choice of every KDF and encoding.
+The node secret feeds separately labeled classical-key and pq-key derivations. Their outputs seed the corresponding key-generation procedures. Domain separation is essential because the two key families and the upward path must not reuse a derivation purpose. Equations (1) and (2) express the proposed design interface; they do not supply the missing byte-level choice of every KDF and encoding.
 
 For a recipient node v, classical encapsulation yields a shared secret ss_v^C and ciphertext ct_v^C. The post-quantum component yields ss_v^PQ and recipient ciphertext material. In the multi-recipient case, a path level uses a shared mKyber component u_j and recipient components w_(j,v). The latter notation avoids confusing the recipient node v with the original mKyber ciphertext symbol v_i. Every key in an encapsulation set must belong to the same public mKyber parameter domain.
 
-The authoritative thesis combiner, with the source's ambiguous symbol ct_xe replaced by its explicitly defined meaning, is
+The hybrid shared secret for recipient node v is
 
 @eq hs_{v} = KDF(ss_{v}^{C} || ss_{v}^{PQ} || ct_{v}^{C} || Encode(pk_{v}^{C}) || label_{v})
 
@@ -79,32 +93,32 @@ Here label_v binds the string “HybridTreeKEM-Node” to the group identifier, 
 @eq (k_{v}, nonce_{v}) = KDFExpand(hs_{v}, "path-encryption" || ctx_{v,e})
 @eq c_{v}^{path} = AEAD.Seal(k_{v}, nonce_{v}, aad_{v}, ps_{target})
 
-The associated data binds delivery to the intended group and transition state. A receiver decapsulates both components, reconstructs (3) and (4), and authenticates (5). A failure rejects the delivery. The recovered path secret is propagated upward to the new root and then to the commit secret. That secret enters the MLS key-schedule interface; the abbreviated schedule equations in the thesis are not a substitute for the full labeled RFC derivations.
+The associated data binds delivery to the intended group and transition state. A receiver decapsulates both components, reconstructs (3) and (4), and authenticates (5). A failure rejects the delivery. The recovered path secret is propagated upward to the new root and then to the commit secret. That secret enters the MLS key-schedule interface; the abbreviated schedule equations used here are not a substitute for the full labeled RFC derivations.
 
-The thesis does not fully fix canonical encodings, KDF instantiation, output partitioning, associated-data serialization, or nonce management for every repeated delivery. Equations (1)–(5) therefore describe a proposed construction rather than an interoperable cryptographic specification. Fresh encapsulations and unique, authenticated delivery context are necessary obligations; their adequacy needs a construction-specific analysis. These unresolved choices limit the security conclusions that can be drawn from the design.
+The present specification does not fully fix canonical encodings, KDF instantiation, output partitioning, associated-data serialization, or nonce management for every repeated delivery. Equations (1)–(5) therefore describe a proposed construction rather than an interoperable cryptographic specification. Fresh encapsulations and unique, authenticated delivery context are necessary obligations; their adequacy needs a construction-specific analysis. These unresolved choices limit the security conclusions that can be drawn from the design.
 
-# Adaptive migration and TreeCover
+# Adaptive tree migration
 
 ## Starting and executing a transition
 
-The thesis proposes increasing arity only after the group remains sufficiently large and an estimated saving exceeds a margin. Its illustrative settings require at least 128 members for five epochs for a 2-to-4 transition, and at least 2,048 members for ten epochs for a 4-to-8 transition. These settings are policy choices, not empirically optimized constants. Let q_e be a forecast number of future commits, B_d and B_dprime their modeled steady costs, B_tr the charged transition cost, and Δ a safety margin. The proposed economic condition is
+We propose increasing arity only after the group remains sufficiently large and an estimated saving exceeds a margin. Its illustrative settings require at least 128 members for five epochs for a 2-to-4 transition, and at least 2,048 members for ten epochs for a 4-to-8 transition. These settings are policy choices, not empirically optimized constants. Let q_e be a forecast number of future commits, B_d and B_dprime their modeled steady costs, B_tr the charged transition cost, and Δ a safety margin. The proposed economic condition is
 
 @eq q_{e}(B_{d} - B_{dprime}) - B_{tr} > Delta
 
 The cost convention must specify whether B_tr means total transition cost or only excess over staying in the old tree. Mixing the conventions changes the trigger. The group-size condition alone is insufficient: a group that soon shrinks or stops updating may never recover the setup cost. The forecast horizon and the safety margin require workload-specific justification before this rule can be treated as an operational recommendation.
 
-On accepting a transition commit, members agree on the target arity, tree version, leaf mapping, and transition state. The new internal nodes begin blank; the initiating commit materializes its direct path. For every recipient subset needing a particular new-tree path secret, delivery first uses eligible new-tree nodes, then eligible old-tree cover nodes, and finally individual current leaves. The choice operates over subsets, not as a global minimum between two scalar cost totals.
+On accepting a transition commit, members agree on the target arity, tree version, leaf mapping, and transition state. The new internal nodes begin blank; the initiating commit materializes its direct path. For every recipient subset needing a particular new-tree path secret, delivery first uses eligible new-tree nodes, then suitable nodes of the old tree, and finally individual current leaves. The choice operates over subsets, not as a global minimum between two scalar cost totals.
 
 @algorithm Starting and advancing a migration
 > 1. Check the authenticated current state, policy conditions, and absence of another active transition.
 > 2. Fix the target arity and identity-to-leaf mapping; bind them to the next accepted group state.
 > 3. Initialize the new tree and derive fresh secrets on the committer's new direct path.
-> 4. Partition each intended recipient set using eligible new nodes, eligible old cover nodes, then current leaves.
-> 5. Encapsulate per nonempty level and encrypt each required path secret under the thesis hybrid construction.
+> 4. Partition each intended recipient set using eligible new nodes, suitable nodes of the old tree, then current leaves.
+> 5. Encapsulate per nonempty level and encrypt each required path secret under the hybrid construction.
 > 6. Authenticate and process the commit; reject inconsistent versions, mappings, recipients, or derivations.
-> 7. Continue deriving group state from the new root and reevaluate cover costs after accepted changes.
+> 7. Continue deriving group state from the new root and reevaluate delivery costs after accepted changes.
 
-Algorithm 1 summarizes the thesis lifecycle at the design level. The precise cryptographic encodings remain to be specified. Figure 1 illustrates the distinct functions of the two tree versions: an old subtree key can deliver a new root path secret without becoming a second root authority.
+Algorithm 1 summarizes the migration lifecycle at the design level. The precise cryptographic encodings remain to be specified. Figure 1 illustrates the distinct functions of the two tree versions: an old subtree key can deliver a new root path secret without becoming a second root authority.
 
 @figure migration.png|Old tree delivery during lazy migration. For eight members, the new four-ary structure has a populated left path and a blank right internal node. An eligible old node covering members 5–8 can deliver the new root path secret. The old root does not derive the new epoch state.
 
@@ -126,15 +140,15 @@ For the same target set, let C_leaf count leaf-only delivery endpoints, C_ideal 
 
 @eq H_{new} = \frac{C_{leaf} - C_{new}}{C_{leaf} - C_{ideal}},   H_{old} = \frac{C_{leaf} - C_{old}}{C_{leaf} - C_{ideal}}
 
-The thesis retirement policy is
+The retirement rule is
 
 @eq retire ⇐ (H_{new} ≥ theta_{new}) ∨ (H_{old} < theta_{old})
 
-For 2-to-4 migration it proposes theta_new = 0.70 and theta_old = 0.50; for 4-to-8 migration the new-tree threshold becomes 0.80. The disjunction permits retirement either because the new tree is sufficiently useful or because the old cover has become comparatively unhelpful. It does not require both conditions.
+For 2-to-4 migration it proposes theta_new = 0.70 and theta_old = 0.50; for 4-to-8 migration the new-tree threshold becomes 0.80. The disjunction permits retirement either because the new tree is sufficiently useful or because the old tree provides too little communication saving. It does not require both conditions.
 
-These ratios are cost measures, despite the thesis's “health” terminology. Their range is not automatically [0,1]: for example, an old cover cheaper than the selected ideal new-tree reference produces H_old greater than one. Equal leaf and ideal costs make the denominator zero. A complete policy must define what happens for zero denominators and out-of-range values. Equation (8) defines unmodified ratios on the stated domain, and Equation (9) preserves the thesis's inequality.
+These ratios measure communication savings. Their range is not automatically [0,1]: for example, delivery through the old tree at a lower cost than the selected ideal new-tree reference produces H_old greater than one. Equal leaf and ideal costs make the denominator zero. A complete policy must define what happens for zero denominators and out-of-range values. Equation (8) defines unmodified ratios on the stated domain, and Equation (9) specifies the retirement condition.
 
-Retirement must be an authenticated state change accepted consistently by remaining members, followed by removal of the retained old-key envelope. Cost authorization alone cannot perform this change. Nor does local erasure delete copies obtained by an adversary. The informal update windows in the thesis are planning heuristics and do not establish a fixed number of commits for either retirement or security recovery.
+Retirement must be an authenticated state change accepted consistently by remaining members, followed by removal of the retained old-key envelope. Cost authorization alone cannot perform this change. Nor does local erasure delete copies obtained by an adversary. The illustrative update windows are planning heuristics and do not establish a fixed number of commits for either retirement or security recovery.
 
 # Conditional security analysis
 
@@ -148,15 +162,15 @@ The hybrid encapsulation design does not itself specify a post-quantum replaceme
 
 ## Forward secrecy and retained state
 
-Forward secrecy requires protection of earlier traffic after later state compromise. One-way path derivation and erasure of obsolete state support this goal only under an appropriate key-evolution argument. TreeCover deliberately extends the lifetime of some old private keys. A later compromise of a retained key may expose recorded migration ciphertexts addressed to that key. Whether those recovered path secrets expose a particular earlier epoch additionally depends on the key-schedule state available to the adversary. Retention therefore changes the relevant exposure window and cannot be dismissed as a harmless storage optimization.
+Forward secrecy requires protection of earlier traffic after later state compromise. One-way path derivation and erasure of obsolete state support this goal only under an appropriate key-evolution argument. Retaining the old tree deliberately extends the lifetime of some old private keys. A later compromise of a retained key may expose recorded migration ciphertexts addressed to that key. Whether those recovered path secrets expose a particular earlier epoch additionally depends on the key-schedule state available to the adversary. Retention therefore changes the relevant exposure window and cannot be dismissed as a harmless storage optimization.
 
 A complete protocol needs explicit key lifetimes and a record of which key generations were available to which members. It must invalidate removed-member knowledge, erase superseded state when no longer needed, and reject reuse of a retired version. Removing retained state does not establish that no earlier copies exist. The available evidence does not provide a general secure-erasure theorem.
 
 ## Post compromise recovery can be group wide
 
-Consider an attacker that copied a member's state, including an old cover private key and the relevant preceding epoch state. If a later commit still encrypts a useful new-tree path secret to that old key, the attacker can recover it and derive upward to the new root. With the necessary previous key-schedule inputs, the attacker can continue deriving group epoch state. The disclosure is not confined to the leaves below that old node: the recovered root contribution affects the group's common secret.
+Consider an attacker that copied a member's state, including a private key from the old tree and the relevant preceding epoch state. If a later commit still encrypts a useful new-tree path secret to that old key, the attacker can recover it and derive upward to the new root. With the necessary previous key-schedule inputs, the attacker can continue deriving group epoch state. The disclosure is not confined to the leaves below that old node: the recovered root contribution affects the group's common secret.
 
-Consequently, recovery requires that the attacker lose access to every delivery route capable of revealing the fresh contribution, under the relevant compromise scenario. An honest update is insufficient if the same contribution remains accessible through an attacker-known cover key. Continued compromise or an authorized malicious recipient prevents the desired recovery regardless of arity. This is a conditional argument about secret dependencies.
+Consequently, recovery requires that the attacker lose access to every delivery route capable of revealing the fresh contribution, under the relevant compromise scenario. An honest update is insufficient if the same contribution remains accessible through a key from the old tree already known to the attacker. Continued compromise or an authorized malicious recipient prevents the desired recovery regardless of arity. This is a conditional argument about secret dependencies.
 
 Neither H_new nor H_old measures adversarial knowledge. A high H_new can coexist with one unsafe retained route, and a low H_old says little about the confidentiality of the routes still used. A security-driven retirement policy would need additional freshness and knowledge conditions. Without assumptions about update scheduling, honest entropy injection, and elimination of compromised routes, no finite bound on post-compromise recovery follows from the proposed cost thresholds.
 
@@ -178,7 +192,7 @@ For a fully populated balanced reference, approximate h by the rounded height h_
 
 The resulting per-level coefficients are 1,584, 1,744, and 2,064 bytes for degrees two, four, and eight. A partially filled tree need not have d − 1 occupied siblings at every level. Equation (11) is therefore an idealized reference approximation, not the exact cost for every population or tree shape. In particular, its ceiling-induced jumps arise from rounding the reference height.
 
-@table Recalculated healthy reference payload in bytes under Equation 11
+@table Public key and encapsulation bytes for the fully populated reference in Equation 11
 Members | Binary | Four ary | Eight ary
 128 | 11,088 | 6,976 | 6,192
 129 | 12,672 | 6,976 | 6,192
@@ -188,21 +202,21 @@ Members | Binary | Four ary | Eight ary
 2,048 | 17,424 | 10,464 | 8,256
 4,096 | 19,008 | 10,464 | 8,256
 
-Table 2 evaluates Equation (11) directly for the listed group sizes. At n = 129 the binary-to-four-ary reduction is 5,696/12,672 = 44.95%. At n = 1,025 the four-to-eight-ary reduction is 2,208/10,464 = 21.10%. These are reductions in the modeled components only. The latter mathematical opportunity also occurs below the thesis's proposed 2,048-member transition threshold, illustrating the difference between a cost curve and an operational policy.
+Table 2 evaluates Equation (11) directly for the listed group sizes. At n = 129 the binary-to-four-ary reduction is 5,696/12,672 = 44.95%. At n = 1,025 the four-to-eight-ary reduction is 2,208/10,464 = 21.10%. These are reductions in the modeled components only. The latter mathematical opportunity also occurs below the proposed 2,048-member transition threshold, illustrating the difference between a cost curve and an operational policy.
 
 ## Initial cost and amortization
 
-If no usable internal cover exists, a transition may deliver to n − 1 leaves. A simplified first-commit model for target arity d′ is
+If no usable internal node key exists, a transition may deliver to n − 1 leaves. A simplified first-commit model for target arity d′ is
 
 @eq B_{first} ≈ 1504h_{dprime}(n) + 80(n - 1)
 
-Assume for this calculation that every subsequent commit immediately achieves the healthy target-tree cost. Let B_old and B_new be the reference costs of remaining in the old tree and operating in the new tree. When B_old > B_new, the additional number of healthy commits needed after the first transition commit is
+Assume for this calculation that every subsequent commit immediately achieves the cost of the fully populated target tree. Let B_old and B_new be the reference costs of remaining in the old tree and operating in the new tree. When B_old > B_new, the additional number of commits at that cost needed after the first transition commit is
 
 @eq Q = ⌈max(0, \frac{B_{first} - B_{old}}{B_{old} - B_{new}})⌉
 
 Equation (13) compares the transition with an old-tree commit in the same first position. It consequently charges only the excess B_first − B_old. Table 3 evaluates Equations (11)–(13) for illustrative group sizes, using the displayed model inputs. When the denominator is nonpositive, this steady-cost model gives no positive amortization benefit.
 
-@table Illustrative break even under immediate healthy follow up commits
+@table Illustrative break even with subsequent updates at the fully populated tree cost
 Transition | Members | B_old | B_first | B_new | Q
 2 to 4 | 129 | 12,672 | 16,256 | 6,976 | 1
 2 to 4 | 1,024 | 15,840 | 89,360 | 8,720 | 11
@@ -210,11 +224,11 @@ Transition | Members | B_old | B_first | B_new | Q
 4 to 8 | 2,048 | 10,464 | 169,776 | 8,256 | 73
 4 to 8 | 4,096 | 10,464 | 333,616 | 8,256 | 147
 
-The assumptions pull in different directions. Leaf-only delivery can overstate the first cost when TreeCover is useful, whereas immediate maturity understates later costs when the new tree remains sparse. The table is therefore a scenario calculation, not a guaranteed upper or lower bound for complete migration. A complete analytical comparison must instead sum the costs for the same sequence of group changes, including the transition, subsequent delivery, retirement, and any additional setup or Welcome traffic.
+The assumptions pull in different directions. Leaf-only delivery can overstate the first cost when keys from the old tree can be used, whereas immediate maturity understates later costs when the new tree remains sparse. The table is therefore a scenario calculation, not a guaranteed upper or lower bound for complete migration. A complete analytical comparison must instead sum the costs for the same sequence of group changes, including the transition, subsequent delivery, retirement, and any additional setup or Welcome traffic.
 
 ## Occupancy and asymptotic limits
 
-The thesis also considers a simplified occupancy argument. For a fixed subtree of s members in a static group of n, after t independent uniformly chosen member updates, the probability of at least one update in that subtree and its associated one-node-versus-leaves cost are
+We also consider a simplified occupancy argument. For a fixed subtree of s members in a static group of n, after t independent uniformly chosen member updates, the probability of at least one update in that subtree and its associated one-node-versus-leaves cost are
 
 @eq p_{s}(t) = 1 - (1 - s/n)^{t},   E[c_{s}(t)] = 1 + (s - 1)(1 - s/n)^{t}
 
@@ -224,23 +238,21 @@ For fixed arity, storing the public tree takes O(n) space and a member's path pr
 
 # Discussion and limitations
 
-The design shifts part of an arity change from an immediate rebuild into subsequent ordinary commits. TreeCover provides a concrete way to make that shift: old internal keys can reduce leaf-level delivery while the new tree acquires usable internal state. The same retained keys prolong dependencies on historical secrets. Communication efficiency and compromise recovery must therefore be treated as separate objectives, even when both motivate refreshing tree state.
+The design shifts part of an arity change from an immediate rebuild into subsequent ordinary commits. Retaining the old tree provides a way to make that shift: old internal keys can reduce leaf-level delivery while the new tree acquires usable internal state. The same retained keys prolong dependencies on historical secrets. Communication efficiency and compromise recovery must therefore be treated as separate objectives, even when both motivate refreshing tree state.
 
-The analytical savings show where the chosen parameter dimensions can make a higher arity attractive. They do not determine the best arity or threshold. A broader analytical treatment should include ternary and other degrees, exact occupied topology, heterogeneous update frequencies, repeated removals, and cumulative costs over both growing and shrinking groups. Fixed-degree, immediate-rebuild, and TreeCover policies should be compared for the same mathematical sequence of group changes, with setup, Welcome, and retirement costs included.
+The analytical savings show where the chosen parameter dimensions can make a higher arity attractive. They do not determine the best arity or threshold. A broader analytical treatment should include ternary and other degrees, exact occupied topology, heterogeneous update frequencies, repeated removals, and cumulative costs over both growing and shrinking groups. Fixed-degree policies, immediate rebuilding, and policies that temporarily retain the old tree should be compared for the same mathematical sequence of group changes, with setup, Welcome, and retirement costs included.
 
-The most urgent protocol work is to finalize the thesis combiner, its encodings, and the state-transition rules. A security model must track historical node-key knowledge during migration, distinguish passive post-quantum confidentiality from active authentication, and define the conditions for recovery. A formal treatment should include authenticated tree-version agreement, removal eligibility, and atomic retirement at each receiver. The present conditional analysis identifies these obligations without claiming that they have been discharged.
+The most urgent protocol work is to finalize the hybrid combiner, its encodings, and the state-transition rules. A security model must track historical node-key knowledge during migration, distinguish passive post-quantum confidentiality from active authentication, and define the conditions for recovery. A formal treatment should include authenticated tree-version agreement, removal eligibility, and atomic retirement at each receiver. The present conditional analysis identifies these obligations without claiming that they have been discharged.
 
-The analytical scope also has limits. The healthy reference replaces exact occupied topology by a rounded-height approximation, while the break-even examples assume immediate healthy operation after transition. A tighter analysis would bound the cumulative delivery cost while the new tree remains sparse and would specify how changes in membership affect those bounds. Such a result is not supplied by the present examples.
+The analytical scope also has limits. The fully populated reference replaces exact occupied topology by a rounded-height approximation, while the break-even examples assume that the new tree immediately operates at the fully populated reference cost. A tighter analysis would bound the cumulative delivery cost while the new tree remains sparse and would specify how changes in membership affect those bounds. Such a result is not supplied by the present examples.
 
 # Conclusion
 
-Adaptive arity in hybrid TreeKEM is useful only if the costs and security consequences of changing the tree are included. The thesis design makes the new root authoritative immediately and uses an old-tree TreeCover to deliver new path secrets during gradual population. Its reference model exhibits lower mature-tree key-and-KEM payload at selected larger arities, while the transition examples show that repaying initial cost can require many later commits. These analytical examples do not prove the construction secure or establish that one migration policy has lower cumulative cost for every sequence of group changes. TreeCover is therefore best understood as a migration mechanism whose efficiency policy must be complemented by explicit key-freshness, authentication, and recovery conditions.
+Adaptive arity in hybrid TreeKEM is useful only if the costs and security consequences of changing the tree are included. The proposed mechanism uses the new root to determine the group's fresh secret contribution and temporarily retains keys from the old tree to encrypt new path secrets while internal keys are established. Its reference model exhibits lower mature-tree key-and-KEM payload at selected larger arities, while the transition examples show that repaying initial cost can require many later commits. These analytical examples do not prove the construction secure or establish that one migration policy has lower cumulative cost for every sequence of group changes. Its communication savings must therefore be evaluated together with key freshness, authentication, and the conditions for recovery.
 
 # Research provenance and availability
 
 This article derives from Mohammadreza Parsania's Persian master's thesis, Hybrid Group Key Exchange based on TreeKEM, University of Isfahan, 2026 [4]. All numerical examples in this article are calculated from the equations and parameter lengths stated in the text.
-
-OpenAI Codex assisted with Persian-to-English synthesis, manuscript organization, literature checking, consistency analysis, and document preparation. This assistance also contributed to the explicit qualification of security and analytical claims. Scientific assessment and responsibility for the final text remain with the authors.
 
 # References
 

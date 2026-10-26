@@ -22,7 +22,7 @@ def el(tag,**attrs):
 def diagram():
     p=O/'migration_figure.pdf'
     c=canvas.Canvas(str(p),pagesize=(660,250))
-    c.setTitle('TreeCover migration schematic')
+    c.setTitle('Gradual tree migration schematic')
     def text(x,y,t,size=10):
         c.setFillColorRGB(0,0,0);c.setFont('Helvetica',size);c.drawCentredString(x,y,t)
     def edge(a,b,dashed=False):
@@ -54,7 +54,7 @@ def diagram():
     c.line(470,190,463,184);c.line(470,190,462,194)
     text(353,207,'R delivers the new root path secret',9)
     text(150,40,'R covers members 5-8',10)
-    text(510,40,'Blank node: use eligible old cover',10)
+    text(510,40,'Blank node: use a suitable old node',10)
     text(510,20,'Only the new root drives group state',10)
     c.save()
     d=pdfium.PdfDocument(str(p));im=d[0].render(scale=3.2).to_pil();im.save(O/'migration.png')
@@ -161,8 +161,8 @@ def setup(doc,is_audit):
     footer=sec.footer.paragraphs[0];footer.alignment=WD_ALIGN_PARAGRAPH.CENTER;footer.style='Note';field(footer,'PAGE',1)
     settings=doc.settings.element;settings.append(el('w:updateFields',**{'w:val':'true'}))
     doc.core_properties.author='Mohammadreza Parsania; Hamid Mala' if not is_audit else 'Research audit'
-    doc.core_properties.subject='Adaptive arity and TreeCover migration in hybrid TreeKEM'
-    doc.core_properties.keywords='TreeKEM; MLS; hybrid cryptography; TreeCover'
+    doc.core_properties.subject='Adaptive arity and gradual tree migration in hybrid TreeKEM'
+    doc.core_properties.keywords='TreeKEM; MLS; hybrid cryptography; tree migration'
 
 def caption(doc,kind,num,title):
     p=doc.add_paragraph(style='Caption');p.add_run(kind+' ');field(p,'SEQ '+kind+' \\* ARABIC',num);p.add_run('. '+title);return p

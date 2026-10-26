@@ -1,0 +1,36 @@
+{
+  "pages": 12,
+  "highlight_annotations": 126,
+  "highlights_by_page": {
+    "1": 37,
+    "2": 36,
+    "3": 3,
+    "4": 2,
+    "5": 7,
+    "6": 5,
+    "7": 8,
+    "8": 4,
+    "9": 4,
+    "10": 9,
+    "11": 11
+  },
+  "changed_tokens": 1273,
+  "deletion_notes": 2,
+  "identical_clean_and_highlighted_text": true,
+  "review_original_sha256": "dbd809a48dec8c5b58ae5d56e22b826d689ede53a149768fdd1154ced22b426e",
+  "diff_operations": {
+    "equal": 158,
+    "replace": 110,
+    "delete": 33,
+    "insert": 14
+  },
+  "image_bounds": [
+    [
+      6,
+      62.375,
+      426.6199951171875,
+      532.8250122070312,
+      604.8200073242188
+    ]
+  ]
+}

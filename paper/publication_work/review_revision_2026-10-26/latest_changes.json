@@ -1,0 +1,99 @@
+{
+  "changes": [
+    {
+      "before": "Adaptive Arity and Gradual Tree Migration in Hybrid TreeKEM",
+      "after": "Adaptive Arity and Tree Migration in Hybrid TreeKEM"
+    },
+    {
+      "before": "Hybrid key establishment combines classical and post-quantum cryptography to reduce reliance on either component alone during the transition to quantum-resistant communication. TreeKEM is the tree-based group key establishment mechanism used by Messaging Layer Security (MLS) to refresh shared keys as group membership changes. Combining both types of cryptography increases the size of key updates. We propose a migration mechanism that changes the number of children per internal node from two to four and considers a later change to eight. During a transition, members use suitable keys from the old tree to encrypt the secret values needed to establish keys in the new tree. Subsequent updates establish additional internal keys, and a communication-cost criterion determines when to discard the old tree. For a balanced tree with all required internal keys available, our analysis estimates that changing from two to four children at 129 members reduces the public-key and encapsulation data per update from 12,672 to 6,976 bytes, or 44.9%. These figures exclude other message fields. In a separate example with 1,024 members, a transition that encrypts separately for every other member requires eleven later updates at the assumed steady cost to recover its additional cost. The security evaluation explains why retaining old keys can delay recovery after compromise and states the assumptions behind the security argument.",
+      "after": "Hybrid key establishment combines classical and post-quantum cryptography to reduce reliance on either component alone during the transition to quantum-resistant communication. TreeKEM is the tree-based group key establishment mechanism used by Messaging Layer Security (MLS) to refresh shared keys as group membership changes. Combining both types of cryptography increases the size of key updates. We propose a migration mechanism that changes the number of children per internal node from two to four and considers a later change to eight. During a transition, members use suitable keys from the old tree to encrypt the secret values needed to establish keys in the new tree. Subsequent updates establish additional internal keys, and a communication-cost criterion determines when to discard the old tree. For a balanced tree with all required internal keys available, our analysis estimates that changing from two to four children at 129 members reduces the public-key and encapsulation data per update by 44.9%, from 12,672 to 6,976 bytes. These figures exclude other message fields. In the 1,024-member example, the first update in the new four-ary tree encrypts separately for each of the other 1,023 members and costs more than a binary-tree update. Eleven subsequent updates offset this extra cost, assuming each immediately achieves the lower cost of a fully populated four-ary tree. The security evaluation explains why retaining old keys can delay recovery after compromise and states the assumptions behind the security argument."
+    },
+    {
+      "before": "Long-term confidentiality also requires attention to quantum attacks on classical public-key mechanisms. Post-quantum cryptography addresses this threat using problems believed to remain difficult for quantum computers [11]. Here, hybrid key establishment means combining a classical mechanism with a post-quantum mechanism. With an appropriate combiner and its required assumptions, the resulting secret can remain confidential if one component remains secure. This reduces reliance on either component alone during migration to post-quantum cryptography [8, 9].",
+      "after": ""
+    },
+    {
+      "before": "Messaging Layer Security (MLS) provides asynchronous key establishment for dynamic groups [1]. Its TreeKEM mechanism represents members as leaves of a binary tree. Each nonblank node contains a public encryption key. A shared internal private key allows several members of a subtree to decrypt the same update. A member acting as the committer creates and broadcasts a Commit message to advance the group to a new epoch, meaning a new cryptographic state. When the Commit contains an update path, it publishes fresh public keys and encrypted path secrets. A path secret is a secret value from which recipients derive updated node keys and the fresh contribution to the next group secret [1, Sections 7.5 and 12.4].",
+      "after": "Messaging Layer Security (MLS) provides asynchronous key establishment for dynamic groups [1]. Its TreeKEM mechanism represents members as leaves of a binary tree. Each nonblank node contains a public encryption key. A shared internal private key allows several members of a subtree to decrypt the same update. An epoch is a numbered stage of the group's shared cryptographic state, with its own membership and message-protection keys. A member called the committer sends an authenticated control message, called a Commit, to start the next epoch. It applies proposed changes, such as adding or removing a member or updating a key [1, Sections 3 and 12.4]. When it includes an update path, the Commit carries fresh public keys and encrypted path secrets. These secrets are derived from fresh randomness chosen by the committer and determine updated node keys and a fresh contribution to the next epoch's secrets. This supports post-compromise security (PCS), meaning recovery after earlier key exposure, provided the attacker can no longer access the affected member's current state and cannot recover the fresh secrets [1, Sections 7.4-7.6 and 16.6]."
+    },
+    {
+      "before": "We evaluate the public-key and encapsulation communication costs, including the initial transition cost and the number of subsequent updates needed to offset it under explicit assumptions. The examples show a 44.9% reduction in these components for a four-ary tree at 129 members, while a transition at 1,024 members can require eleven further updates at the assumed steady cost to break even. Our security analysis examines recipient selection and retention of old keys. It shows why a cost threshold alone cannot establish recovery after compromise; a complete computational proof for the migration protocol remains future work.",
+      "after": "We evaluate the public-key and encapsulation communication costs, including the initial transition cost and the number of subsequent updates needed to offset it under explicit assumptions. The examples show a 44.9% reduction in these components for a four-ary tree at 129 members, while the 1,024-member transition example requires eleven further updates to offset its initial extra cost if each immediately achieves the cost of a fully populated four-ary tree. Our security analysis examines recipient selection and retention of old keys. It shows why a cost threshold alone cannot establish recovery after compromise; a complete computational proof for the migration protocol remains future work."
+    }
+  ],
+  "abstract_words": 233,
+  "equations_unchanged": 14,
+  "tables_unchanged": 3,
+  "references_unchanged": true,
+  "original_professor_review_preserved": true,
+  "citation_verification": {
+    "source": "https://www.rfc-editor.org/rfc/rfc9420.html",
+    "3": "Groups, epochs and MLS message types",
+    "7.4-7.6": "Fresh path secrets, tree synchronization and update paths",
+    "12.4": "Commit definition and epoch transition",
+    "16.6": "Forward secrecy and post-compromise security"
+  },
+  "break_even_check": {
+    "initial_extra_bytes": 73520,
+    "subsequent_saving_bytes": 7120,
+    "updates": 11
+  },
+  "pages": 12,
+  "highlight_annotations": 199,
+  "highlighted_words": 1175,
+  "comment_annotations": 0,
+  "highlight_baseline": "Preserved professor original review",
+  "clean_and_highlighted_text_identical": true,
+  "render_engine": "Microsoft Word",
+  "visual_review": "All 12 Word-rendered pages inspected; no clipping, overlap or broken tables. Highlighted pages inspected and all 12 checked pixelwise: only yellow was added; text rendering is unchanged.",
+  "highlight_render_checks": [
+    {
+      "page": 1,
+      "only_yellow_added": true
+    },
+    {
+      "page": 2,
+      "only_yellow_added": true
+    },
+    {
+      "page": 3,
+      "only_yellow_added": true
+    },
+    {
+      "page": 4,
+      "only_yellow_added": true
+    },
+    {
+      "page": 5,
+      "only_yellow_added": true
+    },
+    {
+      "page": 6,
+      "only_yellow_added": true
+    },
+    {
+      "page": 7,
+      "only_yellow_added": true
+    },
+    {
+      "page": 8,
+      "only_yellow_added": true
+    },
+    {
+      "page": 9,
+      "only_yellow_added": true
+    },
+    {
+      "page": 10,
+      "only_yellow_added": true
+    },
+    {
+      "page": 11,
+      "only_yellow_added": true
+    },
+    {
+      "page": 12,
+      "only_yellow_added": true
+    }
+  ]
+}

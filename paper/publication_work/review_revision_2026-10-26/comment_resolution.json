@@ -1,0 +1,219 @@
+[
+  {
+    "id": 1,
+    "page": 1,
+    "comment": "حذف",
+    "resolution": "Removed the honorific Dr from the author line in the clean manuscript and synchronized source.",
+    "status": "applied"
+  },
+  {
+    "id": 2,
+    "page": 1,
+    "comment": "حذف",
+    "resolution": "Replaced the coined title with Adaptive Arity and Gradual Tree Migration in Hybrid TreeKEM.",
+    "status": "applied"
+  },
+  {
+    "id": 3,
+    "page": 1,
+    "comment": "ابتدا یک جمله بیاورید که منظور از طرحهای هایبرید و مزایای آنها را بیان کند و سپس این جمله را بیاورید.",
+    "resolution": "Abstract opens by defining classical/post-quantum hybridization and its motivation.",
+    "status": "applied"
+  },
+  {
+    "id": 4,
+    "page": 1,
+    "comment": "قبل از این یک جمله بیاورید و TreeKEM را معرقی کنید.",
+    "resolution": "Abstract introduces TreeKEM and its role in MLS before describing the mechanism.",
+    "status": "applied"
+  },
+  {
+    "id": 5,
+    "page": 1,
+    "comment": "خواننده نمیداند که چیست. بیان را تغییر دهید.",
+    "resolution": "Replaced commit secret in the abstract with a plain description; introduction explains the fresh contribution to the group secret.",
+    "status": "applied"
+  },
+  {
+    "id": 6,
+    "page": 1,
+    "comment": "خواننده نمیداند که چیست.",
+    "resolution": "Replaced path secrets in the abstract with secret values needed to establish new keys; introduction defines path secret.",
+    "status": "applied"
+  },
+  {
+    "id": 7,
+    "page": 1,
+    "comment": "يعنی چه؟ قبلا توضیحی داده نشده!",
+    "resolution": "Replaced healthy-tree approximation with a balanced tree whose required internal keys are available.",
+    "status": "applied"
+  },
+  {
+    "id": 8,
+    "page": 1,
+    "comment": "؟؟؟؟؟",
+    "resolution": "Replaced modeled payload with public-key and encapsulation data per update and stated exclusions.",
+    "status": "applied"
+  },
+  {
+    "id": 9,
+    "page": 1,
+    "comment": "؟؟؟؟",
+    "resolution": "Replaced unexplained modeled cost wording with an explicitly conditional transition example.",
+    "status": "applied"
+  },
+  {
+    "id": 10,
+    "page": 1,
+    "comment": "evaluation",
+    "resolution": "Abstract now uses security evaluation and describes communication analysis directly.",
+    "status": "applied"
+  },
+  {
+    "id": 11,
+    "page": 1,
+    "comment": "جنس این کامیت چیست؟ از جنس يک پیام است؟ چه کسی تولید و ارسال میکند؟ خود MLS چگونه از آن یاد میکند؟",
+    "resolution": "Introduction identifies a Commit as an MLS message created and broadcast by a member acting as committer, initiating an epoch; cites RFC 9420 Sections 7.5 and 12.4.",
+    "status": "applied"
+  },
+  {
+    "id": 12,
+    "page": 1,
+    "comment": "کدام کلیدهای عمومی؟؟؟؟ در جملات قبل حرفی از کلید عمومی نبود که الان در این جمله به آنها ارجاع میدهید!",
+    "resolution": "Introduction explains the public encryption keys at tree nodes before discussing transmission cost.",
+    "status": "applied"
+  },
+  {
+    "id": 13,
+    "page": 1,
+    "comment": "به نظرم مقدمه نباید مستقیما با MLS شروع شود. بلکه باید با اهمیت تبادل کلید گروهی شروع شود بعد هم با مفاهیم امنیت پساکوانتومی و هیبریدی ادامه یابد و بعد به MLS پرداخته شود.",
+    "resolution": "Introduction starts with group key exchange, then quantum and hybrid security, then MLS.",
+    "status": "applied"
+  },
+  {
+    "id": 14,
+    "page": 1,
+    "comment": "يعنی چی \rmakes the cost relevant؟؟؟\r",
+    "resolution": "Replaced makes the cost relevant with an explicit explanation that two key/ciphertext components increase update communication.",
+    "status": "applied"
+  },
+  {
+    "id": 15,
+    "page": 1,
+    "comment": "in a ",
+    "resolution": "Rewrote the prior-work sentence with Alwen et al. as subject, removing the ungrammatical phrase.",
+    "status": "applied"
+  },
+  {
+    "id": 16,
+    "page": 1,
+    "comment": "حذف ",
+    "resolution": "Deleted the first-author thesis phrase and its citation from the introduction; retained source provenance in its own section.",
+    "status": "applied"
+  },
+  {
+    "id": 17,
+    "page": 1,
+    "comment": "یه جوری نوشتین که انگار یک اصطلاح کاملا یونیورسال است. این اصطلاح خودنان است؟ اگر بله اصلا جالب نیست. از نام معمولی استفاده کنید.",
+    "resolution": "Removed TreeCover from manuscript, metadata, headings, and keywords; uses ordinary descriptions of retaining the old tree.",
+    "status": "applied"
+  },
+  {
+    "id": 18,
+    "page": 1,
+    "comment": "يعنی چه گره هایی؟؟؟؟ نامفهوم و غیر دقیق است.",
+    "resolution": "Introduction states key authentication, private-key availability, and exclusion of removed members for a retained node.",
+    "status": "applied"
+  },
+  {
+    "id": 19,
+    "page": 1,
+    "comment": "اینجا هنوز مسئله برای خواننده روشن نیست. باید توضیح دهید که اگر درخت همچنان باینری بماند چه عیبی حادث میشود.",
+    "resolution": "Explains why a binary tree can transmit more public keys and common ciphertext components than a shallower tree.",
+    "status": "applied"
+  },
+  {
+    "id": 20,
+    "page": 1,
+    "comment": "اول بگویید که KEM چیست و بعد بروید سراغ mKEM.",
+    "resolution": "Defines KEM before introducing multi-recipient KEM.",
+    "status": "applied"
+  },
+  {
+    "id": 21,
+    "page": 1,
+    "comment": "برای خواننده بگویید که چرا و با چه هدفی این طرحها به سراغ تغییر درخت رفته اند.",
+    "resolution": "Explains the depth-versus-recipient tradeoff that motivates changing the tree degree.",
+    "status": "applied"
+  },
+  {
+    "id": 22,
+    "page": 1,
+    "comment": "کاور دیگه چيه؟ اگر منظورتون درخت قدیمیه خب نویسین old tree.",
+    "resolution": "Uses old tree in the introduction; reserves the mathematical set-cover term for its formal definition in Section 4.2.",
+    "status": "applied"
+  },
+  {
+    "id": 23,
+    "page": 1,
+    "comment": "قشنگ مسئله رو باز کنید و ساده بنویسید که معیار مورد نظر برای بازنشسته کردن (کنار گذاشتن) درخت قدیمی چیه؟",
+    "resolution": "Our Contribution explains both threshold alternatives for discarding the old tree and the normalization baseline.",
+    "status": "applied"
+  },
+  {
+    "id": 24,
+    "page": 1,
+    "comment": "بیان من در آوردی است (old-tree را به عنوان صفت بکار برده اید). بعد delivery به چه چیزی برمیگردد؟ چه چیزی باید deliver شود؟ ساده و دقیق بنویسید نه تلگرافی و مبهم. introduction باید مسئله را روشن و دقیق بیان کند. بعد هم نوآوریها و نتایج حاصل را بدون ذکر جزئیات بیان کند.",
+    "resolution": "Describes who encrypts and distributes which new path secrets using keys from the old tree in complete sentences.",
+    "status": "applied"
+  },
+  {
+    "id": 25,
+    "page": 1,
+    "comment": "نباید بگویید نوآوری شما چه چیزهایی نیست. بلکه بگویید چه چیزی هست.",
+    "resolution": "States positive contributions and deletes the list of what is not claimed as novel.",
+    "status": "applied"
+  },
+  {
+    "id": 26,
+    "page": 1,
+    "comment": "تز؟؟؟؟\r\rدقیق بگویید چیزی که در این مقاله ارایه میشود چیست؟ یک طرح است یا یک چارچوب یا یک مکانیزم یا یک الگوریتم یا یک سیاست؟ چیست؟",
+    "resolution": "Identifies the contribution consistently as a migration mechanism and removes authoritative thesis framing.",
+    "status": "applied"
+  },
+  {
+    "id": 27,
+    "page": 1,
+    "comment": "این بیان غیر مرسوم است",
+    "resolution": "Replaces the scope sentence with concrete design, evaluation, and security contributions.",
+    "status": "applied"
+  },
+  {
+    "id": 28,
+    "page": 1,
+    "comment": "اصطلاح غیر مرسوم. بیان را ساده و دقیق کنید.",
+    "resolution": "Replaces the healthy-tree byte formula label with plain descriptions of the counted components and reference tree.",
+    "status": "applied"
+  },
+  {
+    "id": 29,
+    "page": 1,
+    "comment": "این پاراگراف را تخت یک زیربخش با عنوان Our Contribution  بازنویسی کنید",
+    "resolution": "Adds an automatically numbered Our Contribution subsection with the mechanism and findings.",
+    "status": "applied"
+  },
+  {
+    "id": 30,
+    "page": 2,
+    "comment": "يک زیربخش با عنوان Paper Organisation بیاورید و در آن بگویید بخشهای بعدی شامل چه هستند.",
+    "resolution": "Adds an automatically numbered Paper Organisation subsection describing Sections 2 through 8.",
+    "status": "applied"
+  },
+  {
+    "id": 31,
+    "page": 2,
+    "comment": "This work",
+    "resolution": "Changes the Table 1 row label from Present study to This work.",
+    "status": "applied"
+  }
+]
