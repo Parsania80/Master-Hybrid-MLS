@@ -1,0 +1,14 @@
+{
+  "changed_paragraphs": [
+    4
+  ],
+  "changed_package_parts": [
+    "word/document.xml"
+  ],
+  "abstract_word_count": 224,
+  "new_opening": "In this work, hybrid key establishment combines classical and post-quantum cryptographic mechanisms to reduce reliance on either component alone during the transition to quantum-resistant security. This combination increases the communication cost",
+  "render_engine": "Microsoft Word",
+  "pages": 11,
+  "visual_review": "All 11 rendered pages reviewed; no clipping or overlap.",
+  "pdf_refreshed": true
+}
