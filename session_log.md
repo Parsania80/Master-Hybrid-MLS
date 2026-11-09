@@ -1,6 +1,6 @@
 # Session log and Codex onboarding
 
-Last updated: 2026-11-05, Asia/Tehran.
+Last updated: 2026-11-09, Asia/Tehran.
 
 ## Start here in a new chat
 
@@ -18,9 +18,9 @@ Current work: an English research article derived from Mohammadreza Parsania's P
 - Manuscript title: **Adaptive Arity and Tree Migration in Hybrid TreeKEM**.
 - Authors: **Mohammadreza Parsania and Hamid Mala**. The professor requested removal of the honorific `Dr` from the author line.
 - Latest existing commit when this log was started: `0a406e1` — `docs: clarify MLS epoch definition using RFC 9420`.
-- Git working tree was clean before creating this log. The user subsequently requested committing the November 5 review-round revisions, Ver2 review PDF, and this session log together. See the latest Git commit for its identifier; no push was requested.
-- Word and both current PDFs include the approved epoch-definition correction and the November 5 MLS/communication wording corrections in the abstract. Both PDFs have 12 pages; the current abstract has 241 words.
-- Frozen `ParsaniaPaper-Ver1.pdf` has 187 historical yellow highlights and 13 links. The current review-round PDF is `ParsaniaPaper-Ver2.pdf`, with 37 highlight annotations marking the new-round abstract wording, eight simplified citations, the hybrid TreeKEM attribution/definition, expanded results from reference [3], parallel wording for communication costs, and the explanation of path-secret encryption and recovery, plus 13 links. Both have no comment text. The clean PDF has 13 links and no highlights/comments.
+- The November 5 revisions, Ver2 and the original handoff log are in commit ca494c1. The November 9 review commit records Ver3, the synchronized manuscript sources, and this log.
+- The current Word, Markdown and clean PDF match Ver3. The clean PDF and Ver3 each have 12 pages. The abstract has 241 words.
+- Ver1 and Ver2 are frozen review baselines. The current professor-facing PDF is `ParsaniaPaper-Ver3.pdf` with 36 yellow annotations on pages 2–4 and 13 links. It highlights only this round’s edits relative to Ver2. The clean PDF has 13 links and no highlights.
 - No manuscript change remains pending from the specific editing requests in these chats. Scientific strengthening discussed later remains proposed work, not completed results or an instruction to implement experiments automatically.
 
 ## Files and source hierarchy
@@ -32,7 +32,8 @@ Paths below are relative to the repository root unless explicitly absolute.
 | `paper/paper.docx` | Current editable manuscript; preserve formatting, equations, tables, fields, and references. |
 | `paper/paper.pdf` | Current clean PDF corresponding to Word. |
 | `paper/ParsaniaPaper-Ver1.pdf` | FROZEN prior-round comparison, restored byte-for-byte to commit 0a406e1 after the user corrected the output version. Do not modify for new feedback. This is distinct from the untouched professor review in reviews/. |
-| `paper/ParsaniaPaper-Ver2.pdf` | Current professor-facing review PDF. Highlight only changes since the frozen Ver1 baseline, without carrying the previous round's highlights or adding comments. |
+| `paper/ParsaniaPaper-Ver2.pdf` | Frozen second-round review copy. Use it as the text baseline for Ver3. |
+| `paper/ParsaniaPaper-Ver3.pdf` | Current professor-facing review copy. Yellow highlights mark November 9 edits relative to Ver2. |
 | `paper/reviews/ParsaniaPaper-Ver1.pdf` | Preserved original professor-annotated review. Read this to see original annotations and their highlighted anchors. Do not overwrite it with revised output. |
 | `paper/publication_work/paper.md` | Synchronized manuscript text/source with custom directives such as `@title`, `@eq`, `@table`, and `@ref`. Keep it aligned with Word. |
 | `paper/publication_work/build_documents.py` | Existing DOCX/figure builder. Its main entry point builds BOTH paper and research audit and regenerates the figure. Do not run it blindly for a sentence edit. |
@@ -820,3 +821,177 @@ The user approved the simpler Persian explanation and requested a commit with a 
 > منظورم این بود که فرستنده راز مسیر را با کلید عمومی گره مربوطه رمز می‌کند و گیرنده‌ها با کلید خصوصی آن را به دست می‌آورند. این عبارت واضح نبود، برای همین حذفش کردم و به جایش همین مراحل را توضیح دادم.
 
 Commit scope: current Word, clean PDF, synchronized Markdown, new highlighted Ver2 review PDF, and this onboarding log. The manuscript revisions address professor feedback on the abstract, reference-number-only citations, hybrid TreeKEM attribution, the summary of Chevalier et al., parallel communication-cost terminology, and explicit path-secret encryption/recovery. The preserved Ver1 baseline is excluded and unchanged. The earlier recorded document/text/layout checks remain applicable; a final Git whitespace check passed. No push was requested.
+
+## November 9: green comments on Ver2
+
+The professor's review copy is C:/Users/parsa/Downloads/2ParsaniaPaper-Ver2-commented.pdf. Its page text matches the committed Ver2 PDF. Fifteen green annotations on pages 2–4 are mapped below. The 37 yellow annotations in the input describe the earlier revision round.
+
+Used the Kalaris Labs scientific-writing and rebuttal-and-response-to-reviewers skills to tie each comment to a concrete change. Grouped neighboring notes when they concern the same sentence or paragraph. The two annotations whose comment is a dash fall at the hyphens in “re-encryption” and “explicit-rejection.” Interpreted them as punctuation notes and revised both phrases into explicit actions.
+
+Evidence checked locally or from primary sources:
+- The retained-key example restates the manuscript's Section 5.3 scenario. The communication thresholds say nothing about whether the attacker still holds the matching private key.
+- Reference [6], https://www.ietf.org/archive/id/draft-ietf-mls-pq-ciphersuites-06.html , describes hybrid cipher suites. Reference [7], https://datatracker.ietf.org/doc/html/draft-ietf-mls-combiner-02#section-4 , describes using a secret exported from the PQ session as a pre-shared key in the classical session. The cited draft versions remain in the bibliography.
+- Reference [9], https://cic.iacr.org/p/1/1/21/pdf , Section 6 and Definition 7, supports the two sets of assumptions and the C2PRI terminology.
+- Reference [11], https://csrc.nist.gov/pubs/fips/203/final , identifies the standardized ML-KEM. Reference [2], https://csrc.nist.gov/csrc/media/Events/2024/fifth-pqc-standardization-conference/documents/papers/how-multi-recipient-kems.pdf , gives the mKyber cost parameters and defines amKyber and adaptive corruption in Sections 2 and 3.2.
+- Reference [12], https://cryptojedi.org/papers/mkem-20220812.pdf , Figure 6, Theorem 5 and Appendix B.3, supports the FO ciphertext rejection check and the conditional collision resistance argument. The explanation is about the construction proved in [12] and describes the ciphertext that a particular recipient processes.
+
+### Revision 1
+
+Original wording
+
+> It shows why a cost threshold alone cannot establish recovery after compromise; a
+
+Green comments
+
+- Ver2 page 2, annotation 159. “قبل و بعد از آن هر کدام یک جمله کاملا مستقل است. پس این باید نقطه باشد.”
+- Ver2 page 2, annotation 161. “خب الان خواننده منتظر است که به او دلیل این "چرا" را بگویید. اما نمیگویید.”
+
+Revised wording
+
+> If the committer uses a public key from the old tree to encrypt a fresh path secret, an attacker who copied the matching private key can recover that secret. The retirement thresholds measure communication savings, so meeting them gives no assurance that the attacker has lost access to fresh path secrets. A
+
+Changed the semicolon to a sentence boundary and gave the concrete case of a copied old private key revealing a fresh path secret. The sentence beginning “A complete computational proof” still records the proof limitation.
+
+### Revision 2
+
+Original wording
+
+> proposed design.
+
+Green comments
+
+- Ver2 page 3, annotation 168. “scheme”
+
+Revised wording
+
+> proposed scheme.
+
+Used the professor’s preferred term “scheme” in the marked sentence.
+
+### Revision 3
+
+Original wording
+
+> The IETF work on ML-KEM and hybrid MLS cipher suites provides a separate route to post-quantum deployment. Revision 06, dated 21 July 2026, specifies cipher-suite choices and remains an Internet-Draft [6]. The Amortized PQ MLS Combiner instead couples two MLS sessions and imports exported post-quantum material into the traditional session [7]. Revision 02 is an expired draft, dated 20 October 2025. Neither draft is an RFC. Our migration retains two structural versions temporarily, but does not run distinct classical and post-quantum MLS sessions.
+
+Green comments
+
+- Ver2 page 3, annotation 170. “يعنی کدام نشست؟ نشست کلاسیک؟ خب بگویید کلاسیک”
+- Ver2 page 3, annotation 172. “چه گفتنی دارد؟! بخصوص که قبلتر در مورد نسخه 6 صحبت شده و الان به نسخه 2 برمیگردید!”
+- Ver2 page 3, annotation 174. “دو نسخه ساختاری یعنی چه؟ يعنی نسخه 2 و نسخه 6؟ منطقی نیست. نامفهوم است.”
+
+Revised wording
+
+> One IETF draft proposes MLS cipher suites that combine classical and post-quantum key establishment within a single MLS session [6]. A separate draft, the Amortized PQ MLS Combiner, uses a secret exported from a post-quantum MLS session as a pre-shared key in a classical MLS session [7]. During an arity change, our scheme temporarily keeps the old and new ratchet trees in the same MLS session.
+
+Identified the two documents as separate drafts, described the transfer to the classical MLS session, and specified that our migration temporarily keeps the old and new ratchet trees in a single session. Removed the draft revision dates and numbers from this paragraph.
+
+### Revision 4
+
+Original wording
+
+> Different hybridization and update mechanisms
+
+Green comments
+
+- Ver2 page 3, annotation 176. “يعنی چه؟ خب معلومه مکانیزم بروزرسانی و مکنیزم ترکیب دو چیز متفاوت هستند!”
+
+Revised wording
+
+> Combine algorithms within a cipher suite [6] or link two MLS sessions [7]
+
+Identified the mechanism of each draft in the marked Table 1 cell.
+
+### Revision 5
+
+Original wording
+
+> The QSF framework underlying X-Wing gives complementary confidentiality reductions: one relies on KEM IND-CCA security; the other on KEM ciphertext second-preimage resistance (C2PRI) together with the stated Diffie–Hellman assumption [9]. It provides a framework for analyzing other KEM components when those hypotheses hold.
+
+Green comments
+
+- Ver2 page 3, annotation 178. “يعنی چه؟”
+
+Revised wording
+
+> Barbosa et al. analyze the combiner used by X-Wing under two sets of assumptions [9]. One analysis relies on the underlying KEM’s security against chosen-ciphertext attacks (IND-CCA) and assumes the hash function behaves as a pseudorandom function. The other relies on the strong Diffie–Hellman assumption, ciphertext second-preimage resistance (C2PRI) of the KEM, and a hash function modeled as a random oracle. These results guide the analysis of other KEMs that satisfy the same assumptions.
+
+Replaced “complementary confidentiality reductions” with a description of the two security analyses and their assumptions.
+
+### Revision 6
+
+Original wording
+
+> FIPS 203 specifies ML-KEM [11]; mKyber has its own construction and security analysis [2].
+
+Green comments
+
+- Ver2 page 4, annotation 183. “بازهم ارتباط منطقی بین جمله قبل از ; و بعد از آن را نمیفهمم.”
+
+Revised wording
+
+> FIPS 203 standardizes the single-recipient KEM ML-KEM [11]. The multi-recipient scheme used in our cost analysis is mKyber, which Alwen et al. specify and analyze separately [2].
+
+Separated the clauses into two sentences that identify standardized ML-KEM and the distinct multi-recipient scheme used for the cost estimates.
+
+### Revision 7
+
+Original wording
+
+> For ciphertext binding, Alwen et al. prove that their explicit-rejection Fujisaki–Okamoto (FO) mKEM is collision resistant whenever its output hash is collision resistant [12]. In the corresponding accepted-key profile, deterministic re-encryption fixes the recipient ciphertext for each recovered message. A different accepted ciphertext matching an honest target key must therefore yield a different message with the same output hash. This gives recipient-local C2PRI even with the recipient secret key exposed, under the corresponding classical or quantum hash assumption. The property concerns the complete canonical recipient ciphertext; it does not assert that a recipient detects changes to other recipients’ ciphertext components.
+
+Green comments
+
+- Ver2 page 4, annotation 185. “-”
+- Ver2 page 4, annotation 187. “-”
+- Ver2 page 4, annotation 189. “نامفهوم”
+- Ver2 page 4, annotation 191. “ثقیل است. ساده تر بنویسید.”
+
+Revised wording
+
+> For ciphertext binding, Alwen et al. show that their Fujisaki–Okamoto (FO) construction is collision resistant if the hash function used to derive the shared key is collision resistant [12]. During decapsulation, the recipient decrypts the ciphertext and uses the recovered message and the recipient’s public key to recreate the expected ciphertext. If the two ciphertexts differ, the recipient rejects the received ciphertext. For a fixed recipient key, each recovered message yields one ciphertext that passes this check. Two different ciphertexts that pass the check and yield the same shared key must therefore come from two different messages with the same hash. This gives C2PRI for that recipient even if the attacker knows the recipient’s private key, under the corresponding classical or quantum hash assumption. The guarantee covers the shared ciphertext component and the component addressed to that recipient.
+
+Explained the rejection check, the reason a matching shared key would imply a hash collision, and which ciphertext components the guarantee covers. The revised wording resolves the two dash notes.
+
+### Revision 8
+
+Original wording
+
+> Adaptive-corruption confidentiality is a separate property. The distinction between mKyber and amKyber concerns that stronger multi-user model and the available reduction bounds [2]; it does not negate mKyber’s standard IND-CCA guarantee or the FO ciphertext-resistance result.
+
+Green comments
+
+- Ver2 page 4, annotation 193. “هنوز نگفته اید که چیست.”
+
+Revised wording
+
+> Alwen et al. also describe amKyber, a variant of mKyber with a stronger security guarantee. In its security model, an attacker can choose which recipients’ private keys to obtain as the attack proceeds. This is known as adaptive corruption [2].
+
+Defined amKyber on first use and explained what an adaptive corruption allows the attacker to do.
+
+### Revision 9
+
+Original wording
+
+> Primitive security results provide the basis for this protocol analysis; they do not alone establish group recovery with retained historical keys.
+
+Green comments
+
+- Ver2 page 4, annotation 195. “يعنی چه؟”
+
+Revised wording
+
+> These results describe the security of the cryptographic components. To establish recovery for the group, we also need to check whether later Commit messages still encrypt fresh path secrets using public keys whose matching private keys the attacker already holds.
+
+Explained the additional protocol-level recovery check in terms of later Commits and private keys the attacker already holds.
+
+Exported the revised DOCX via Microsoft Word and visually inspected the four affected pages. Ver3 has 12 pages, 36 new yellow annotations on pages 2–4, and 13 links. Reflow affects page 5. Extracted text matches the clean PDF and the planned changes. Equations, bibliography, and all other table cells were verified against Ver2. The downloaded PDF, frozen Ver1 and Ver2, and original annotated review matched their pre-edit hashes.
+
+Files delivered and SHA-256 fingerprints
+
+- paper/paper.docx  c12c689cab2deab1074fbeee54fdeb32a00aa9878c50ffd23d333d2179dc347b
+- paper/publication_work/paper.md  f55a665e4491b3ed624f0cd6ba6d3d65c572817b8e0e10899c7d71abedd02eb5
+- paper/paper.pdf  0e0da3203d0621e20de014be25d4692496e5965f39e81c2802cecec344062b6e
+- paper/ParsaniaPaper-Ver3.pdf  64ae7c8f7a58dc85fdaef1e528ce85eaf673330f2d2810f4af22fd0da44ae0a4
+
+Professor’s input SHA-256  6cd4e4a398677b188adbc4145ed42f2b18dd17bed94effef84ad61f5f4f101ad
