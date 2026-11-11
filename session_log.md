@@ -18,9 +18,9 @@ Current work: an English research article derived from Mohammadreza Parsania's P
 - Manuscript title: **Adaptive Arity and Tree Migration in Hybrid TreeKEM**.
 - Authors: **Mohammadreza Parsania and Hamid Mala**. The professor requested removal of the honorific `Dr` from the author line.
 - Latest existing commit when this log was started: `0a406e1` — `docs: clarify MLS epoch definition using RFC 9420`.
-- The November 5 round is in commit ca494c1. The November 9 round and Ver3 are in commit cb05abb. The November 11 Ver4 revisions are uncommitted.
+- The November 5 round is in commit ca494c1. The November 9 round and Ver3 are in commit cb05abb. Commit 4cdfe7d records the November 11 Ver4 text revisions. The variable typography follow-up is uncommitted.
 - The current Word, Markdown and clean PDF reflect Ver4. The clean PDF and Ver4 each have 12 pages. The abstract has 241 words.
-- Ver1 through Ver3 are frozen review copies. The current review PDF is ParsaniaPaper-Ver4.pdf. It has 174 yellow annotations across pages 4–10 and 13 links. The clean PDF has 13 links.
+- Ver1 through Ver3 are frozen review copies. The current review PDF is ParsaniaPaper-Ver4.pdf. It has 296 yellow annotations across pages 4–10 and 13 links. The clean PDF has 13 links.
 - No manuscript change remains pending from the specific editing requests in these chats. Scientific strengthening discussed later remains proposed work, not completed results or an instruction to implement experiments automatically.
 
 ## Files and source hierarchy
@@ -1194,3 +1194,15 @@ Current SHA-256 fingerprints
 - paper/publication_work/paper.md  25b7fe80cc4bc7d85d284db6d25c7680ae34723b9b811edcdf935ae46c188cbf
 - paper/paper.pdf  387e363391ffec0f6f1aee9e2014b1ffa755cde4229cc5902400a20016c6ca60
 - paper/ParsaniaPaper-Ver4.pdf  8c96a7624a0191e91a388e091d12f3bc75e8ab36ef09d77d0437f3d3904d003a
+
+## November 11: mathematical variable typography
+
+The user noticed that symbols such as n and v still looked like ordinary letters. Inspection showed native Word equations in Cambria Math with upright math styling. Applied math italics to variables and variable indices in the inline notation and displayed equations. Operators, function names and descriptive labels retain their upright styling. The source notation and manuscript prose are unchanged. See the NIST typesetting convention at https://www.nist.gov/pml/special-publication-811/nist-guide-si-chapter-10-more-printing-and-using-symbols-and-numbers .
+
+Checked all 95 Word math objects against the previous symbols and verified the rendered 12-page review PDF. The highlights include the revised variable styling.
+
+Current SHA-256 fingerprints
+
+- paper/paper.docx  70715fc7289271e715da3cf7ca1c3ef7babeb2b6fe4e5e44b8a11a0380c08778
+- paper/paper.pdf  a809ff878157bacdb34a0490436fff9b20db4d5ee3a8012803ec5ef8075c7261
+- paper/ParsaniaPaper-Ver4.pdf  cc65f715cf5fe08d1ebc9cc0dea953d09d4416714569c2ee91df0c7c9e629ea1
