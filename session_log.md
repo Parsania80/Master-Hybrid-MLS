@@ -1,6 +1,6 @@
 # Session log and Codex onboarding
 
-Last updated: 2026-11-09, Asia/Tehran.
+Last updated: 2026-11-11, Asia/Tehran.
 
 ## Start here in a new chat
 
@@ -18,9 +18,9 @@ Current work: an English research article derived from Mohammadreza Parsania's P
 - Manuscript title: **Adaptive Arity and Tree Migration in Hybrid TreeKEM**.
 - Authors: **Mohammadreza Parsania and Hamid Mala**. The professor requested removal of the honorific `Dr` from the author line.
 - Latest existing commit when this log was started: `0a406e1` — `docs: clarify MLS epoch definition using RFC 9420`.
-- The November 5 revisions, Ver2 and the original handoff log are in commit ca494c1. The November 9 review commit records Ver3, the synchronized manuscript sources, and this log.
-- The current Word, Markdown and clean PDF match Ver3. The clean PDF and Ver3 each have 12 pages. The abstract has 241 words.
-- Ver1 and Ver2 are frozen review baselines. The current professor-facing PDF is `ParsaniaPaper-Ver3.pdf` with 36 yellow annotations on pages 2–4 and 13 links. It highlights only this round’s edits relative to Ver2. The clean PDF has 13 links and no highlights.
+- The November 5 round is in commit ca494c1. The November 9 round and Ver3 are in commit cb05abb. The November 11 Ver4 revisions are uncommitted.
+- The current Word, Markdown and clean PDF reflect Ver4. The clean PDF and Ver4 each have 12 pages. The abstract has 241 words.
+- Ver1 through Ver3 are frozen review copies. The current review PDF is ParsaniaPaper-Ver4.pdf. It has 174 yellow annotations across pages 4–10 and 13 links. The clean PDF has 13 links.
 - No manuscript change remains pending from the specific editing requests in these chats. Scientific strengthening discussed later remains proposed work, not completed results or an instruction to implement experiments automatically.
 
 ## Files and source hierarchy
@@ -33,7 +33,8 @@ Paths below are relative to the repository root unless explicitly absolute.
 | `paper/paper.pdf` | Current clean PDF corresponding to Word. |
 | `paper/ParsaniaPaper-Ver1.pdf` | FROZEN prior-round comparison, restored byte-for-byte to commit 0a406e1 after the user corrected the output version. Do not modify for new feedback. This is distinct from the untouched professor review in reviews/. |
 | `paper/ParsaniaPaper-Ver2.pdf` | Frozen second-round review copy. Use it as the text baseline for Ver3. |
-| `paper/ParsaniaPaper-Ver3.pdf` | Current professor-facing review copy. Yellow highlights mark November 9 edits relative to Ver2. |
+| `paper/ParsaniaPaper-Ver3.pdf` | Frozen November 9 review copy and text baseline for Ver4. |
+| `paper/ParsaniaPaper-Ver4.pdf` | Current professor-facing review copy. Yellow highlights mark November 11 changes relative to Ver3. |
 | `paper/reviews/ParsaniaPaper-Ver1.pdf` | Preserved original professor-annotated review. Read this to see original annotations and their highlighted anchors. Do not overwrite it with revised output. |
 | `paper/publication_work/paper.md` | Synchronized manuscript text/source with custom directives such as `@title`, `@eq`, `@table`, and `@ref`. Keep it aligned with Word. |
 | `paper/publication_work/build_documents.py` | Existing DOCX/figure builder. Its main entry point builds BOTH paper and research audit and regenerates the figure. Do not run it blindly for a sentence edit. |
@@ -995,3 +996,201 @@ Files delivered and SHA-256 fingerprints
 - paper/ParsaniaPaper-Ver3.pdf  64ae7c8f7a58dc85fdaef1e528ce85eaf673330f2d2810f4af22fd0da44ae0a4
 
 Professor’s input SHA-256  6cd4e4a398677b188adbc4145ed42f2b18dd17bed94effef84ad61f5f4f101ad
+
+## November 11: green comments on Ver3
+
+The professor's input is C:/Users/parsa/Downloads/ParsaniaPaper-Ver3-commented.pdf. Its text matches the committed Ver3. There are 23 green marks on Ver3 pages 4–5. Used the installed Kalaris Labs scientific-writing and reviewer response skills. The green comments and corresponding old and new wording are recorded below.
+
+The professor asked for the meaning of the claim and for the specific theorem. The substantive issue is that the explicit rejection construction in Theorem 5 of Alwen et al. [12] returns a hash of the recovered message for a valid ciphertext and signals rejection for an invalid one. The mKyber decapsulation in [2] includes the ciphertext in its output key derivation and returns a fallback key when its ciphertext check fails. Theorem 1 of the X-Wing paper [9] uses C2PRI in the proof under the strong Diffie–Hellman assumption and the random oracle model. To use that proof approach for Equation (3), the chosen mKyber decapsulation and the combiner assumptions need a separate justification. This is a proof obligation. The draft presents the explanation next to Equation (3), the amKyber paragraph ends after defining adaptive corruption, and the group recovery issue remains developed in Section 5.3.
+
+Primary sources checked by the assistant:
+
+- RFC 9420 Sections 4.1.2 and 4.2 describe the direct path and the public and private views of the ratchet tree. https://www.rfc-editor.org/rfc/rfc9420.html#section-4.1.2
+- Alwen et al. [2], Figure 4, Algorithm 13 gives both output branches of mKyber decapsulation. https://csrc.nist.gov/csrc/media/Events/2024/fifth-pqc-standardization-conference/documents/papers/how-multi-recipient-kems.pdf
+- Barbosa et al. [9], Definition 7 and Theorem 1, gives the C2PRI condition and the proof based on strong Diffie–Hellman. https://cic.iacr.org/p/1/1/21/pdf
+- Alwen et al. [12], Theorem 5 and Appendix B.3, proves the collision resistance bound for their FO construction. https://cryptojedi.org/papers/mkem-20220812.pdf
+
+### Theorem and paragraph logic
+
+- Ver3 p. 4, annotation 245, “to match the selected rejection and output rules”. Professor’s comment “منظورتون چی بوده؟ لطفا جواب بدین نه اینکه ذوباره بدین هوش مصنوعی و ازش بخواین rephrase کنه.”
+- Ver3 p. 4, annotation 247, “to the applicable theorem”. Professor’s comment “کدام قضیه؟”
+- Ver3 p. 4, annotation 249, “These results”. Professor’s comment “از کدام نتایج حرف میزنید؟ در جملات قبلی نتیجه و دستاوردی ذکر نشده که الان بخواهید در مورد آن توضیح دهید. اصلا کل این جمله ربط منطقی با این پاراگراف ندارد.”
+
+### Equation font
+
+- Ver3 p. 4, annotation 251, “n”. Professor’s comment “$n$ متغیرهای داخل متن همه با فونت فرمول تایپ شوند.”
+- Ver3 p. 4, annotation 253, “e”. Green mark with no accompanying text.
+- Ver3 p. 4, annotation 255, “d”. Green mark with no accompanying text.
+- Ver3 p. 4, annotation 273, “v”. Green mark with no accompanying text.
+- Ver3 p. 4, annotation 275, “ps_v”. Green mark with no accompanying text.
+- Ver3 p. 4, annotation 277, “ns_v”. Green mark with no accompanying text.
+- Ver3 p. 4, annotation 279, “ctx_(v,e)”. Green mark with no accompanying text.
+- Ver3 p. 4, annotation 281, “Equation (1)”. Professor’s comment “تمام فرمولها باید با فونت فرمول نوشته شوند.”
+
+### Tree and keys
+
+- Ver3 p. 4, annotation 257, “public node”. Professor’s comment “مگر گره های درخت هم عمومی و خصوصی هستند؟!”
+- Ver3 p. 4, annotation 259, “location”. Professor’s comment “منظورتون آدرس در درخت d-ary است؟ یه حرفی از درخت بزنید.”
+- Ver3 p. 4, annotation 261, “authorized path”. Professor’s comment “باید تعریف شود منظور از authorized path چیست؟”
+
+### Epoch and tree roles
+
+- Ver3 p. 4, annotation 263, “The new root is the unique authority for deriving the commit secret”. Professor’s comment “يعنی یک موجودیت از جنس مرجع در ریشه قرار میگیرد؟”
+- Ver3 p. 4, annotation 265, “a delivery structure”. Professor’s comment “يعنی چه؟”
+- Ver3 p. 4, annotation 267, “epoch state”. Professor’s comment “تعریف نشده! state کلی تعریف شد اما epoch state تعریف نشده.”
+- Ver3 p. 4, annotation 269, “This logical separation”. Professor’s comment “از کدام جداسازی منطقی حرف میزنید؟”
+
+### Private data
+
+- Ver3 p. 4, annotation 271, “member state”. Professor’s comment “این هم یک state جدید! state epoch state member state ????????”
+
+### Key generation
+
+- Ver3 p. 5, annotation 284, “derivations”. Professor’s comment “چی کی کجا؟ تا الان در چند مقاله دیده اید که مثلا اینطوری بنویسند: classical key derivation”
+- Ver3 p. 5, annotation 286, “hyphen in key-generation”. Professor’s comment “خط تیره نمیخواهد. فاصله میخواهد”
+- Ver3 p. 5, annotation 288, “hyphen in classical-key”. Professor’s comment “فاصله”
+- Ver3 p. 5, annotation 290, “pq-key”. Professor’s comment “اینطوری ننویسید”
+
+### Exact text changes
+
+Original
+
+> For this article, the remaining task is to match the selected rejection and output rules and the hybrid derivation in Equation (3) to the applicable theorem, then analyze recipient eligibility and state evolution during migration. These results describe the security of the cryptographic components. To establish recovery for the group, we also need to check whether later Commit messages still encrypt fresh path secrets using public keys whose matching private keys the attacker already holds.
+
+Deleted from the amKyber paragraph. See the explanation after Equation (3).
+
+Original
+
+> Let n be the number of active members, e the epoch, and d the current arity. The candidate arities are 2, 4, and 8. A public node has a location and, when valid, a classical public key and a post-quantum public key. A member retains the private keys needed along its authorized path.
+
+Revised
+
+> Let n be the number of active members, e the epoch number, and d the arity of the current ratchet tree. We consider arities 2, 4, and 8. A node is identified by its position in its ratchet tree. The public copy of the tree records the classical and post-quantum public keys of each nonblank node. A member’s direct path starts at the parent of its leaf and ends at the root. The member stores the private keys for its leaf and for the nodes on that path whose keys it has received or derived [1].
+
+Original
+
+> During migration the state comprises an old tree, a new tree, a fixed mapping between member identities and new leaves, a tree version, and authenticated transition metadata. The old tree is a delivery structure only. The new root is the unique authority for deriving the commit secret. At most one arity transition is active. This logical separation is needed to prevent receivers from treating a retained old root as an alternative source of epoch state.
+
+Revised
+
+> In this model, the epoch state includes the group context, the ratchet tree, and the secrets used to derive the keys for the current epoch. During migration, members also keep the old tree, a fixed mapping from member identities to leaves in the new tree, and authenticated information identifying the transition and tree version. The committer can use an eligible public key from the old tree to encrypt a path secret for the new tree. A recipient uses the matching private key to recover that secret and derives path secrets up to the root of the new tree. Members derive the commit secret from the path secret at the new root. At most one arity transition is active.
+
+Original
+
+> The adversary may observe, delay, reorder, replay, or modify delivery traffic and may obtain member state through compromise.
+
+Revised
+
+> The adversary may observe, delay, reorder, replay, or modify delivery traffic. Compromising a member may reveal the private data stored by that member, including its tree private keys and any secrets it holds for the current epoch.
+
+Original
+
+> Statements about recovery concern a former compromise after the adversary has ceased obtaining fresh state, with authentication credentials and recipient selection satisfying the stated assumptions.
+
+Revised
+
+> The recovery analysis assumes that the adversary has stopped obtaining new private data from the member and that the stated conditions on authentication and recipient selection hold.
+
+Original
+
+> The node secret feeds separately labeled classical-key and pq-key derivations. Their outputs seed the corresponding key-generation procedures. Domain separation is essential because the two key families and the upward path must not reuse a derivation purpose. Equations (1) and (2) express the proposed design interface; they do not supply the missing byte-level choice of every KDF and encoding.
+
+Revised
+
+> The committer derives two seeds from the node secret. It uses one label for the seed of the classical key pair and another label for the seed of the post-quantum key pair. It passes each seed to the corresponding key generation algorithm. These labels distinguish the two seed derivations from each other and from the derivation of the parent’s path secret. Equations (1) and (2) describe how to derive the node secret and the parent’s path secret. The choice of KDF and the byte encodings remain to be specified.
+
+Original
+
+> Recipient-local C2PRI is the relevant ciphertext-binding property when a hybrid derivation omits a separate copy of the post-quantum ciphertext [9, 12]. Applying that argument to (3) requires matching the selected FO rejection and output rules and the remaining combiner assumptions.
+
+Revised
+
+> Equation (3) omits the post-quantum ciphertext as a direct input to the combiner. Theorem 1 of the X-Wing paper uses C2PRI of the underlying KEM in its proof based on the strong Diffie–Hellman assumption [9]. Theorem 5 of Alwen et al. establishes ciphertext collision resistance for their FO construction, which rejects invalid ciphertexts and returns a hash of the recovered message for valid ones [12]. The mKyber decapsulation in [2] returns a fallback key for invalid ciphertexts and includes the ciphertext when deriving the output key. To use the X-Wing proof approach for Equation (3), we would need to establish C2PRI for the exact mKyber decapsulation used and justify the assumptions of the combiner theorem.
+
+Original
+
+> Continue deriving group state from the new root and reevaluate delivery costs after accepted changes.
+
+Revised
+
+> Continue deriving commit secrets from the new tree and reevaluate delivery costs after accepted changes.
+
+Original
+
+> Figure 1 illustrates the distinct functions of the two tree versions: an old subtree key can deliver a new root path secret without becoming a second root authority.
+
+Revised
+
+> Figure 1 shows how the committer can use an old tree key to encrypt a path secret for the new root. Members use that path secret to derive the commit secret.
+
+Original
+
+> The old root does not derive the new epoch state.
+
+Revised
+
+> Members derive the commit secret from the path secret at the new root.
+
+Original
+
+> Applying them to (3) requires a precise adversarial game and a correspondence between its KDF, encapsulation mechanisms, encodings, and validity checks and those of the selected theorem.
+
+Revised
+
+> As discussed after Equation (3), a proof following this approach must establish the required ciphertext property for the chosen mKyber decapsulation and check the combiner’s assumptions for the KDF, encapsulations, and encodings.
+
+Original
+
+> Members must agree on the active arity, root authority, tree version, frozen mapping, and applicable old keys.
+
+Revised
+
+> Members must agree on which tree supplies the commit secret, its arity and version, the fixed leaf mapping, and the old keys eligible for encryption.
+
+Original
+
+> Consider an attacker that copied a member's state, including a private key from the old tree and the relevant preceding epoch state.
+
+Revised
+
+> Consider an attacker who copied a private key from the old tree and the secrets needed from the preceding epoch.
+
+Original
+
+> the attacker can continue deriving group epoch state.
+
+Revised
+
+> the attacker can continue deriving the group’s secrets for subsequent epochs.
+
+### Equation typography and PDF verification
+
+Converted 80 variable or formula occurrences in the body and Table 3 headings to native Cambria Math objects. The 14 displayed equations already used native Word equations in Cambria Math. Their content and formatting were verified at the XML level. The Word text matches the planned edits. The Markdown source records the same prose and formula notation. Kept the Table 2 discussion together after Word reflow split a numerical expression across pages.
+
+Ver4 has 12 pages and 168 yellow highlight rectangles on pages 4–11. Some rectangles cover different lines or subscript levels of the same edit. The deleted passage has no replacement highlight at the deletion site. The later highlights correspond to equation typography and the associated consistency edits. Reviewed the reflowed pages, verified the clean and annotated PDFs have identical text, and confirmed there are 13 links. Verified the prior review PDFs and the professor's input against their original hashes.
+
+Files delivered and SHA-256 fingerprints
+
+- paper/paper.docx  68932ea2285862e6eb71e6dd83d5bd7d95c9db29f78c7e03823951641df02462
+- paper/publication_work/paper.md  05142278e20e1bcf14e06b3dd5241560f44406b570211cea8235611bde50c0fc
+- paper/paper.pdf  f11fe30468de5c5873a05b88068384218b84b7c5e8b5ff0be875aa8e54861e16
+- paper/ParsaniaPaper-Ver4.pdf  c9cae19b2bbb186cb688d3fbc04b23783dce0a7045a632ae7b269dbcf66035d5
+
+## November 11: conditional C2PRI result in Ver4
+
+At the user's request, replaced the C2PRI argument in Section 2.3 with the argument from both output branches of mKyber decapsulation. Algorithm 9 of Alwen et al. [2], lines 16 and 18, includes the recipient ciphertext in the KDF input for either outcome. The revised argument assumes unambiguous encoding and collision resistance of the final KDF. The separate description of Alwen et al.'s FO result [12] remains in Section 2.3. Checked the cited algorithm at https://csrc.nist.gov/csrc/media/Events/2024/fifth-pqc-standardization-conference/documents/papers/how-multi-recipient-kems.pdf .
+
+Exact revised spans:
+
+> For a fixed recipient, mKyber includes (u,v_i) in the final KDF input whether the re-encryption check passes or fails (Algorithm 9 in Alwen et al. [2]). With unambiguous encoding, two distinct recipient ciphertexts that yield the same shared key therefore give a KDF collision. Thus, per-recipient C2PRI follows under the assumption that the final KDF is collision resistant.
+
+> Using the conditional C2PRI result from Section 2.3 in the X-Wing proof approach for Equation (3) still requires justifying the other assumptions of the combiner theorem.
+
+The second span follows Equation (3). It references the conditional result and preserves the obligation to justify the other combiner assumptions. Verified exactly two manuscript text replacements. Both PDFs have 12 pages. The review copy keeps the Ver4 highlights with positions updated for reflow.
+
+Current SHA-256 fingerprints
+
+- paper/paper.docx  bfd7369f5878505de1af7b4163d95fe90f2fbf8c31b82174a2a0cf9a4ef58ec3
+- paper/publication_work/paper.md  25b7fe80cc4bc7d85d284db6d25c7680ae34723b9b811edcdf935ae46c188cbf
+- paper/paper.pdf  387e363391ffec0f6f1aee9e2014b1ffa755cde4229cc5902400a20016c6ca60
+- paper/ParsaniaPaper-Ver4.pdf  8c96a7624a0191e91a388e091d12f3bc75e8ab36ef09d77d0437f3d3904d003a
