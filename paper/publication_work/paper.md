@@ -31,7 +31,7 @@ We evaluate the communication costs of transmitting public keys and KEM cipherte
 
 ## Paper Organisation
 
-Section 2 reviews TreeKEM, hybrid key establishment, and related work. Section 3 defines the group state and cryptographic construction. Section 4 presents the migration mechanism and the rule for discarding the old tree. Section 5 analyzes its security conditions. Section 6 evaluates communication and storage costs. Section 7 discusses limitations and future work, and Section 8 concludes the paper.
+Section 2 reviews TreeKEM, hybrid key establishment, and related work. Section 3 defines the group state and explains how members derive path secrets and node keys and how the committer encrypts path secrets for recipients. Section 4 presents the migration mechanism and the rule for discarding the old tree. Section 5 analyzes its security conditions. Section 6 evaluates communication and storage costs. Section 7 discusses limitations and future work, and Section 8 concludes the paper.
 
 # Background and related work
 
@@ -67,17 +67,20 @@ Alwen et al. also describe amKyber, a variant of mKyber with a stronger security
 
 ## Participants and state
 
-Let n be the number of active members, e the epoch number, and d the arity of the current ratchet tree. We consider arities 2, 4, and 8. A node is identified by its position in its ratchet tree. The public copy of the tree records the classical and post-quantum public keys of each nonblank node. A member’s direct path starts at the parent of its leaf and ends at the root. The member stores the private keys for its leaf and for the nodes on that path whose keys it has received or derived [1]. A blank node has no usable shared node key. A node may also become ineligible because its secret was available to a removed member, even if a public key remains stored.
+Let n be the number of active members, e the epoch number, and d the arity of the current ratchet tree. We consider arities 2, 4, and 8. A node is identified by its position in its ratchet tree. The public copy of the tree records the classical and post-quantum public keys of each nonblank node. A member’s direct path starts at the parent of its leaf and ends at the root. The member stores the private keys for its leaf and for the nodes on that path whose keys it has received or derived [1]. A blank node has no usable shared node key. A node may also become ineligible because its secret was available to a removed member.
 
 In this model, the epoch state includes the group context, the ratchet tree, and the secrets used to derive the keys for the current epoch. During migration, members also keep the old tree, a fixed mapping from member identities to leaves in the new tree, and authenticated information identifying the transition and tree version. The committer can use an eligible public key from the old tree to encrypt a path secret for the new tree. A recipient uses the matching private key to recover that secret and derives path secrets up to the root of the new tree. Members derive the commit secret from the path secret at the new root. At most one arity transition is active.
 
 The adversary may observe, delay, reorder, replay, or modify delivery traffic. Compromising a member may reveal the private data stored by that member, including its tree private keys and any secrets it holds for the current epoch. Confidentiality cannot be expected against an authorized member that currently knows the group secret. The recovery analysis assumes that the adversary has stopped obtaining new private data from the member and that the stated conditions on authentication and recipient selection hold. No availability guarantee is asserted against a delivery service that suppresses messages.
 
-## Node derivation and encapsulation
+## Secret derivation and key encapsulation
 
-For node v, ps_v denotes a path secret and ns_v a node secret. Context ctx_(v,e) identifies the relevant group, epoch, tree version, arity, and node. We use separate labels for node derivation and upward path derivation:
+For node v, ps_v denotes a path secret and ns_v a node secret. Context ctx_(v,e) identifies the relevant group, epoch number, tree version, arity, and node identity. The node secret is computed as follows:
 
 @eq ns_{v} = KDFExpand(ps_{v}, "node" || ctx_{v,e})
+
+Given ps_v, the parent’s path secret is computed as follows:
+
 @eq ps_{parent(v)} = KDFExpand(ps_{v}, "path" || ctx_{v,e})
 
 The committer derives two seeds from the node secret. It uses one label for the seed of the classical key pair and another label for the seed of the post-quantum key pair. It passes each seed to the corresponding key generation algorithm. These labels distinguish the two seed derivations from each other and from the derivation of the parent’s path secret. Equations (1) and (2) describe how to derive the node secret and the parent’s path secret. The choice of KDF and the byte encodings remain to be specified.

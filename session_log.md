@@ -1,6 +1,6 @@
 # Session log and Codex onboarding
 
-Last updated: 2026-11-11, Asia/Tehran.
+Last updated: 2026-11-13, Asia/Tehran.
 
 ## Start here in a new chat
 
@@ -18,9 +18,9 @@ Current work: an English research article derived from Mohammadreza Parsania's P
 - Manuscript title: **Adaptive Arity and Tree Migration in Hybrid TreeKEM**.
 - Authors: **Mohammadreza Parsania and Hamid Mala**. The professor requested removal of the honorific `Dr` from the author line.
 - Latest existing commit when this log was started: `0a406e1` — `docs: clarify MLS epoch definition using RFC 9420`.
-- The November 5 round is in commit ca494c1. The November 9 round and Ver3 are in commit cb05abb. Commit 4cdfe7d records the November 11 Ver4 text revisions. The variable typography follow-up is uncommitted.
-- The current Word, Markdown and clean PDF reflect Ver4. The clean PDF and Ver4 each have 12 pages. The abstract has 241 words.
-- Ver1 through Ver3 are frozen review copies. The current review PDF is ParsaniaPaper-Ver4.pdf. It has 296 yellow annotations across pages 4–10 and 13 links. The clean PDF has 13 links.
+- The November 5 round is in commit ca494c1. The November 9 round and Ver3 are in commit cb05abb. Commits 4cdfe7d and 15cddac record the Ver4 text and math typography revisions. The November 13 Ver5 edits are uncommitted.
+- The current Word, Markdown and clean PDF reflect Ver5. The clean PDF and Ver5 each have 12 pages. The abstract has 241 words.
+- Ver1 through Ver4 are prior review copies. ParsaniaPaper-Ver5.pdf highlights changes relative to Ver4. It currently has 9 highlight rectangles on pages 2 and 4 and retains the 13 links.
 - No manuscript change remains pending from the specific editing requests in these chats. Scientific strengthening discussed later remains proposed work, not completed results or an instruction to implement experiments automatically.
 
 ## Files and source hierarchy
@@ -34,7 +34,8 @@ Paths below are relative to the repository root unless explicitly absolute.
 | `paper/ParsaniaPaper-Ver1.pdf` | FROZEN prior-round comparison, restored byte-for-byte to commit 0a406e1 after the user corrected the output version. Do not modify for new feedback. This is distinct from the untouched professor review in reviews/. |
 | `paper/ParsaniaPaper-Ver2.pdf` | Frozen second-round review copy. Use it as the text baseline for Ver3. |
 | `paper/ParsaniaPaper-Ver3.pdf` | Frozen November 9 review copy and text baseline for Ver4. |
-| `paper/ParsaniaPaper-Ver4.pdf` | Current professor-facing review copy. Yellow highlights mark November 11 changes relative to Ver3. |
+| `paper/ParsaniaPaper-Ver4.pdf` | Frozen text and typography baseline for Ver5. |
+| `paper/ParsaniaPaper-Ver5.pdf` | Current review copy with highlights for the changes relative to Ver4. |
 | `paper/reviews/ParsaniaPaper-Ver1.pdf` | Preserved original professor-annotated review. Read this to see original annotations and their highlighted anchors. Do not overwrite it with revised output. |
 | `paper/publication_work/paper.md` | Synchronized manuscript text/source with custom directives such as `@title`, `@eq`, `@table`, and `@ref`. Keep it aligned with Word. |
 | `paper/publication_work/build_documents.py` | Existing DOCX/figure builder. Its main entry point builds BOTH paper and research audit and regenerates the figure. Do not run it blindly for a sentence edit. |
@@ -1206,3 +1207,117 @@ Current SHA-256 fingerprints
 - paper/paper.docx  70715fc7289271e715da3cf7ca1c3ef7babeb2b6fe4e5e44b8a11a0380c08778
 - paper/paper.pdf  a809ff878157bacdb34a0490436fff9b20db4d5ee3a8012803ec5ef8075c7261
 - paper/ParsaniaPaper-Ver4.pdf  cc65f715cf5fe08d1ebc9cc0dea953d09d4416714569c2ee91df0c7c9e629ea1
+
+## November 13: Ver5 chat feedback, comment 1
+
+Professor's comment, relayed by the user
+
+> عنوان ۳.۲ یعنی چه؟ مشتق کردن و کپسوله کردن گره؟؟؟؟ مشتق کردن گره یعنی چه؟ کپسوله کردن گره یعنی چه؟
+> سوالات من به همین سادگی اند: عبارت 《مشتق کردن گره》 ذاتا معنی مورد نظر شما رو نداره. مشتق کردن گره یعنی از یک گره چند تا گره بسازیم. پس در کار شما معنی نمیده. واضح شد؟
+
+Used the Kalaris Labs scientific writing and reviewer response skills. Section 3.2 describes deriving a node secret and a parent path secret, followed by key encapsulation using recipient public keys. Revised the heading and the introductory sentence that repeated the same ambiguous wording. Both edits appear on page 4.
+
+Original
+
+> Node derivation and encapsulation
+
+Revised
+
+> Secret derivation and key encapsulation
+
+Original
+
+> We use separate labels for node derivation and upward path derivation:
+
+Revised
+
+> We use separate labels to derive the node secret and the parent’s path secret:
+
+Verified the two replacements against the Ver4 text, inspected the reflow on page 4, and confirmed the other eleven clean pages render identically. Ver5 has three yellow rectangles covering the two revised spans and preserves the 13 links. The final Ver4 review PDF is the baseline for subsequent comments in this round.
+
+SHA-256 fingerprints
+
+- paper/paper.docx  8d2d36648ce8e963e3e97879b5dc394781117c96c7a9fe1dc6a5bf762966a79d
+- paper/publication_work/paper.md  d6c9d61dbb893daba60910a1777273c9f68305f9f54d30639457059ca230d55e
+- paper/paper.pdf  ebf201f13e010be487c1494ee3d04f890cb65f05cd9e1534445a71cc3573a219
+- paper/ParsaniaPaper-Ver5.pdf  d996dcc23d88ac8e2d32a4db8770f75ec5f78eac99676e4e84cb7ccf402bee22
+- Ver4 baseline PDF  cc65f715cf5fe08d1ebc9cc0dea953d09d4416714569c2ee91df0c7c9e629ea1
+
+## November 13: Ver5 chat feedback, comment 2
+
+Professor’s wording, relayed by the user
+
+> در این جمله node با node identity جایگزین میشه.
+> در خط دوم از 3.2 هم epoch باید به epoch number تبدیل بشه.
+> من اگه بخوام بنویسم بجای upward path derivation.... خیلی ساده مینویسم: با داشتن ps_v مقدار راز گره والد به صورت زیر محاسبه میشود ps_parent(v)=...
+
+Applied the feedback to the context field list and introduced each equation separately. The parent quantity in Equation (2) is a path secret. The manuscript separately uses “node secret” for the quantity in Equation (1).
+
+Original
+
+> Context ctx_(v,e) identifies the relevant group, epoch, tree version, arity, and node. We use separate labels to derive the node secret and the parent’s path secret:
+
+Revised before Equation (1)
+
+> Context ctx_(v,e) identifies the relevant group, epoch number, tree version, arity, and node identity. The node secret is computed as follows:
+
+Added before Equation (2)
+
+> Given ps_v, the parent’s path secret is computed as follows:
+
+Word XML and PDF text checks confirm the two equations and surrounding manuscript content. Ver5 retains the revised heading from comment 1 and highlights the cumulative edits against Ver4. Page 4 was visually checked. Both PDFs have 12 pages, and Ver5 retains 13 links.
+
+Current SHA-256 fingerprints
+
+- paper/paper.docx  bb4a7b46ea234c443f6a36ac39f90a52b7e9773c3e0fb62f22b65c9f801811db
+- paper/publication_work/paper.md  e0b6e6100178d20effcdac07866d1c2a04ae5756f2c98ff9cc9cd9f6d3150174
+- paper/paper.pdf  9ca1cc0744757b0f5e267f2419ad1bc62c6266a07d1274c99c44c8ce2f34665e
+- paper/ParsaniaPaper-Ver5.pdf  ca94502687f4f88769bc94d64cf4babd3cec7818ec6551bb7d14615a6712b72e
+
+## November 13: Ver5 chat feedback, comment 3
+
+The professor said the clause “, even if a public key remains stored” at the end of the first paragraph of Section 3.1 was unclear and asked to remove it.
+
+Original
+
+> A node may also become ineligible because its secret was available to a removed member, even if a public key remains stored.
+
+Revised
+
+> A node may also become ineligible because its secret was available to a removed member.
+
+Verified this deletion in the Word, Markdown and PDF text. Inspected the reflow on pages 4 and 5. Ver5 retains the six highlight rectangles from this review round and 13 links. The deleted clause leaves no text to highlight.
+
+Current SHA-256 fingerprints
+
+- paper/paper.docx  0a3d7f47426d5675db2de2a775654a1ec6a51c6f09d809aed73d77c076681a1f
+- paper/publication_work/paper.md  db369cb717413a1987f666235b0d7842bf57018befeaf422bab913a7c19cea20
+- paper/paper.pdf  eba7b33ddc16cbff1cd5428d68fc91ed0d26589d596435db68fdd10a1479a7f0
+- paper/ParsaniaPaper-Ver5.pdf  7f1ffc89c260079d2b5eae8d5fae7d8ae76f1f41930de44b30bc9891cf0140de
+
+## November 13: Ver5 chat feedback, comment 4
+
+Professor’s question, relayed by the user
+
+> در بخش ۳ چه چیزی رو دارین توضیح میدین؟
+> Section 3 defines the group state and cryptographic construction.
+> ساختار رمزنگاشتی چی رو دارین توضیح میدین؟
+
+The user first asked for an explanation of the comment, then requested the edit. Revised the Section 3 summary under Paper Organisation to state which secrets and keys are derived and who encrypts the path secrets.
+
+Original
+
+> Section 3 defines the group state and cryptographic construction.
+
+Revised
+
+> Section 3 defines the group state and explains how members derive path secrets and node keys and how the committer encrypts path secrets for recipients.
+
+Verified this one sentence replacement in the manuscript and checked the new highlight on page 2. Ver5 has 12 pages and retains the earlier highlights on page 4 and the 13 links.
+
+Current SHA-256 fingerprints
+
+- paper/paper.docx  99e5044bd7995536997d106116a2d561ae708f7ed6572c6d9b285e949f12b9d3
+- paper/publication_work/paper.md  01b0e9dbe52a894507eda829d7d475af2a58d7aa6b67dac25262204aea7b712a
+- paper/paper.pdf  477ef4fe9d9cf043df5631ecb9d7690a47c6770e8588d836c60880198838f375
+- paper/ParsaniaPaper-Ver5.pdf  2402acd1bac22e2ecc2e70237503ab84135e2609ee905ed191a30b4299aba571
