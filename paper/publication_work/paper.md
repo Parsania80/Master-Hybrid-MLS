@@ -35,6 +35,8 @@ Section 2 reviews TreeKEM, hybrid key establishment, and related work. Section 3
 
 # Background and related work
 
+We first review how TreeKEM distributes path secrets in MLS and how related proposals combine classical and post-quantum key establishment. We then discuss how multi-recipient encryption and tree degree affect communication costs and which security guarantees for KEMs and their combiners inform our analysis.
+
 ## Tree state and hybrid delivery
 
 An MLS ratchet tree associates members with leaves and distributes private state according to subtree membership. Members use path secrets to derive updated node keys and the commit secret. The committer encrypts the required path secrets using the public keys of suitable tree nodes and includes the ciphertexts in the Commit message. Recipients use the corresponding private keys to recover the secrets and derive the updated keys [1]. This separation is retained in the proposed scheme. The hybrid output is an encryption input for path-secret transport; it is not itself the group epoch secret. The term hybrid in Hybrid Public Key Encryption denotes a KEM–KDF–AEAD composition [5]; it does not by itself mean a classical/post-quantum combiner. Integration must ultimately use the authenticated group context and the full MLS key schedule [1].

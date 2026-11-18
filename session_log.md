@@ -1,6 +1,6 @@
 # Session log and Codex onboarding
 
-Last updated: 2026-11-13, Asia/Tehran.
+Last updated: 2026-11-18, Asia/Tehran.
 
 ## Start here in a new chat
 
@@ -18,9 +18,9 @@ Current work: an English research article derived from Mohammadreza Parsania's P
 - Manuscript title: **Adaptive Arity and Tree Migration in Hybrid TreeKEM**.
 - Authors: **Mohammadreza Parsania and Hamid Mala**. The professor requested removal of the honorific `Dr` from the author line.
 - Latest existing commit when this log was started: `0a406e1` — `docs: clarify MLS epoch definition using RFC 9420`.
-- The November 5 round is in commit ca494c1. The November 9 round and Ver3 are in commit cb05abb. Commits 4cdfe7d and 15cddac record the Ver4 text and math typography revisions. The November 13 Ver5 edits are uncommitted.
+- The November 5 round is in commit ca494c1. The November 9 round and Ver3 are in commit cb05abb. Commits 4cdfe7d and 15cddac record the Ver4 text and math typography revisions. Commit 2dd6f22 records the November 13 Ver5 edits. The November 18 review commit records the Section 2 overview.
 - The current Word, Markdown and clean PDF reflect Ver5. The clean PDF and Ver5 each have 12 pages. The abstract has 241 words.
-- Ver1 through Ver4 are prior review copies. ParsaniaPaper-Ver5.pdf highlights changes relative to Ver4. It currently has 9 highlight rectangles on pages 2 and 4 and retains the 13 links.
+- Ver1 through Ver4 are prior review copies. ParsaniaPaper-Ver5.pdf highlights changes relative to Ver4. It currently has 13 highlight rectangles on pages 2, 3, and 5 and retains the 13 links.
 - No manuscript change remains pending from the specific editing requests in these chats. Scientific strengthening discussed later remains proposed work, not completed results or an instruction to implement experiments automatically.
 
 ## Files and source hierarchy
@@ -1321,3 +1321,22 @@ Current SHA-256 fingerprints
 - paper/publication_work/paper.md  01b0e9dbe52a894507eda829d7d475af2a58d7aa6b67dac25262204aea7b712a
 - paper/paper.pdf  477ef4fe9d9cf043df5631ecb9d7690a47c6770e8588d836c60880198838f375
 - paper/ParsaniaPaper-Ver5.pdf  2402acd1bac22e2ecc2e70237503ab84135e2609ee905ed191a30b4299aba571
+
+## November 18: Ver5 chat feedback, comment 5
+
+Professor’s request, relayed by the user
+
+> یکی دو جمله هم بین بخش۲ و ۲-۱ توضیح بدین که اصلا در بخش ۲ قراره چه چیزهایی گفته بشه.
+
+Previously, Section 2.1 followed the Section 2 heading directly. Added the following paragraph between them.
+
+> We first review how TreeKEM distributes path secrets in MLS and how related proposals combine classical and post-quantum key establishment. We then discuss how multi-recipient encryption and tree degree affect communication costs and which security guarantees for KEMs and their combiners inform our analysis.
+
+Verified the addition against the Word, Markdown, and PDF text. Inspected the new paragraph on page 3 and the reflowed pages. Ver5 remains 12 pages and highlights the cumulative changes against Ver4.
+
+Current SHA-256 fingerprints
+
+- paper/paper.docx  2cd69b8e5e94eef921bc2fa257071608e8715079994d1a0fab6bf931c9e105b0
+- paper/publication_work/paper.md  3f5a8fbe939bb51bb0c194f1e1df92bd205148622b1f0f31c1ab5e9053888a89
+- paper/paper.pdf  9ad8f6c3fa8214ab8248694d863f90fae61368562a1343fbe744dc9084ad9264
+- paper/ParsaniaPaper-Ver5.pdf  dd9d6be52a21765d2f7d7e0c9705295826a5bde6f102234822b64d1e53b6721a
